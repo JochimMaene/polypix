@@ -1,0 +1,105 @@
+[build-system]
+requires = ["scikit-build-core[rich]>=0.10", "nanobind>=2.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "polypix"
+version = "0.1.0"
+description = "Fast HEALPix center-in-polygon coverage for convex spherical polygons."
+keywords = ["healpix", "spherical-geometry", "geospatial", "astronomy", "spatial-index"]
+readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "ci/licenses/*"]
+authors = [
+  { name = "Jochim Maene" },
+]
+requires-python = ">=3.12"
+dependencies = ["numpy>=1.26"]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+bench = ["numpy>=1.26"]
+docs = ["zensical"]
+release = ["build", "twine", "cibuildwheel>=3"]
+dev = ["pytest>=8", "build", "twine", "zensical", "cibuildwheel>=3"]
+
+[tool.scikit-build]
+wheel.packages = []
+# Pixi passes its environment name through PEP 517 config settings for editable
+# installs; scikit-build-core should ignore that frontend-specific key.
+strict-config = false
+cmake.build-type = "Release"
+build-dir = "build/{wheel_tag}"
+sdist.exclude = [
+  ".github/**",
+  "**/__pycache__/**",
+  "**/*.pyc",
+  ".pytest_cache/**",
+  "build/**",
+  "dist/**",
+  "polypix/_core*.so",
+  "polypix/_core*.pyd",
+  "site/**",
+  "venv*/**",
+]
+
+[tool.pixi.workspace]
+channels = ["conda-forge"]
+platforms = ["linux-64", "osx-64", "osx-arm64"]
+
+[tool.pixi.environments]
+default = { features = ["dev", "test"], solve-group = "default" }
+dev = { features = ["dev"], solve-group = "default" }
+test = { features = ["dev", "test"], solve-group = "default" }
+docs = { features = ["dev", "docs"], solve-group = "default" }
+release = { features = ["dev"], solve-group = "default" }
+
+[tool.pixi.dependencies]
+python = ">=3.12"
+numpy = ">=1.26"
+
+[tool.pixi.activation.env]
+CMAKE_PREFIX_PATH = "$CONDA_PREFIX"
+PKG_CONFIG_PATH = "$CONDA_PREFIX/lib/pkgconfig"
+
+[tool.pixi.feature.dev.dependencies]
+cmake = ">=3.21"
+ninja = "*"
+cxx-compiler = "*"
+pkg-config = "*"
+nanobind = ">=2.0"
+scikit-build-core = ">=0.10"
+python-build = "*"
+twine = "*"
+cibuildwheel = ">=3"
+healpix_cxx = "*"
+
+[tool.pixi.feature.dev.pypi-dependencies]
+polypix = { path = ".", editable = true }
+
+[tool.pixi.feature.dev.pypi-options]
+no-build-isolation = ["polypix"]
+
+[tool.pixi.feature.test.dependencies]
+pytest = ">=8"
+
+[tool.pixi.feature.docs.dependencies]
+zensical = "*"
+
+[tool.pixi.tasks]
+test = "python -m pytest -q"
+wheel = "python -m build --wheel --no-isolation --config-setting=cmake.define.POLYPIX_BUNDLE_RUNTIME_DEPS=ON"
+docs-build = "zensical build --strict"
+docs-serve = "zensical serve"
+twine-check = "python -m twine check dist/*"
+
+[tool.pixi.feature.dev.tasks.configure]
+cmd = "cmake -GNinja -S. -Bbuild/python -DSKBUILD_PROJECT_NAME=polypix -DSKBUILD_PROJECT_VERSION=0.0.0"
+inputs = ["CMakeLists.txt"]
+outputs = ["build/python/CMakeFiles/"]
+
+[tool.pixi.feature.dev.tasks.compile]
+cmd = "cmake --build build/python --config Debug"
+depends-on = ["configure"]
+inputs = ["src/polypix/**", "polypix/_core.pyi"]
+outputs = ["build/python/polypix/_core*"]

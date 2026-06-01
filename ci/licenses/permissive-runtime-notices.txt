@@ -1,0 +1,35 @@
+Additional Runtime Library Notices
+
+The repaired Polypix wheels may bundle platform runtime libraries with
+permissive licenses. This file records the short-form notices used for those
+runtime libraries. Release maintainers should refresh this file when the wheel
+repair output changes.
+
+## bzip2
+
+bzip2 is distributed under the bzip2-1.0.6 license.
+
+## curl / libcurl
+
+curl and libcurl are distributed under the curl license.
+
+## Kerberos
+
+MIT Kerberos runtime libraries are distributed under MIT-style and
+LGPL-2.1-or-later terms, depending on the component.
+
+## libnghttp2
+
+libnghttp2 is distributed under the MIT license.
+
+## libssh2
+
+libssh2 is distributed under the BSD-3-Clause license.
+
+## zlib
+
+zlib is distributed under the Zlib license.
+
+## zstd
+
+zstd is distributed under the BSD-3-Clause license.

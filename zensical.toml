@@ -1,0 +1,23 @@
+[project]
+site_name = "Polypix"
+site_description = "Fast HEALPix center-in-polygon coverage for convex spherical polygons."
+site_author = "Jochim Maene"
+copyright = "&copy; 2026 Jochim Maene"
+docs_dir = "docs"
+site_dir = "site"
+nav = [
+  { "Overview" = "index.md" },
+  { "Install" = "install.md" },
+  { "Concepts" = "concepts.md" },
+  { "API" = "api.md" },
+  { "Development" = "development.md" },
+]
+
+[project.theme]
+features = [
+  "navigation.sections",
+  "navigation.path",
+  "navigation.top",
+  "navigation.footer",
+  "toc.follow",
+]
