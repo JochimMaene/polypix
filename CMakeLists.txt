@@ -46,6 +46,18 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(HEALPIX_CXX REQUIRED IMPORTED_TARGET healpix_cxx)
 pkg_check_modules(CFITSIO REQUIRED IMPORTED_TARGET cfitsio)
 
+if(APPLE)
+    foreach(property IN ITEMS INTERFACE_COMPILE_OPTIONS INTERFACE_LINK_OPTIONS)
+        get_target_property(healpix_options PkgConfig::HEALPIX_CXX "${property}")
+        if(healpix_options)
+            list(REMOVE_ITEM healpix_options "-fopenmp")
+            set_target_properties(PkgConfig::HEALPIX_CXX PROPERTIES
+                "${property}" "${healpix_options}"
+            )
+        endif()
+    endforeach()
+endif()
+
 set(POLYPIX_SOURCES
     src/polypix/module.cpp
     src/polypix/core.cpp

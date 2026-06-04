@@ -16,15 +16,12 @@ fi
 case "$(uname -s)-$(uname -m)" in
     Linux-x86_64)
         micromamba_platform="linux-64"
-        install_compiler=false
         ;;
     Darwin-x86_64)
         micromamba_platform="osx-64"
-        install_compiler=true
         ;;
     Darwin-arm64)
         micromamba_platform="osx-arm64"
-        install_compiler=true
         ;;
     *)
         echo "Unsupported platform for Polypix wheel dependencies: $(uname -s)-$(uname -m)" >&2
@@ -40,8 +37,23 @@ mkdir -p "$micromamba_root" "$POLYPIX_DEPS_PREFIX"
 
 if [ ! -x "$micromamba_bin" ]; then
     echo "Installing micromamba for $micromamba_platform"
-    curl -Ls "https://micro.mamba.pm/api/micromamba/$micromamba_platform/$MICROMAMBA_VERSION" |
-        tar -xj -C "$micromamba_root" bin/micromamba
+    micromamba_archive="$deps_root/micromamba.tar.bz2"
+    micromamba_extract_dir="$micromamba_root/extract"
+    curl -Ls "https://micro.mamba.pm/api/micromamba/$micromamba_platform/$MICROMAMBA_VERSION" \
+        -o "$micromamba_archive"
+    rm -rf "$micromamba_extract_dir"
+    mkdir -p "$micromamba_extract_dir"
+    tar -xjf "$micromamba_archive" -C "$micromamba_extract_dir"
+    extracted_micromamba="$(find "$micromamba_extract_dir" -path "*/bin/micromamba" -type f | head -n 1)"
+    if [ -z "$extracted_micromamba" ]; then
+        echo "Could not find bin/micromamba in downloaded micromamba archive" >&2
+        tar -tjf "$micromamba_archive" >&2
+        exit 1
+    fi
+    mkdir -p "$(dirname "$micromamba_bin")"
+    cp "$extracted_micromamba" "$micromamba_bin"
+    chmod +x "$micromamba_bin"
+    rm -rf "$micromamba_extract_dir"
 fi
 
 packages=(
@@ -50,20 +62,5 @@ packages=(
     "pkg-config"
 )
 
-if [ "$install_compiler" = true ]; then
-    packages+=("cxx-compiler")
-fi
-
 "$micromamba_bin" create -y -p "$POLYPIX_DEPS_PREFIX" -c conda-forge \
     "${packages[@]}"
-
-if [ "$install_compiler" = true ]; then
-    cc_path="$(find "$POLYPIX_DEPS_PREFIX/bin" -maxdepth 1 -name '*-apple-darwin*-clang' \( -type f -o -type l \) | head -n 1)"
-    cxx_path="$(find "$POLYPIX_DEPS_PREFIX/bin" -maxdepth 1 -name '*-apple-darwin*-clang++' \( -type f -o -type l \) | head -n 1)"
-    if [ -z "$cc_path" ] || [ -z "$cxx_path" ]; then
-        echo "Could not find conda-forge macOS clang compiler wrappers in $POLYPIX_DEPS_PREFIX/bin" >&2
-        exit 1
-    fi
-    ln -sf "$cc_path" "$POLYPIX_DEPS_PREFIX/bin/polypix-cc"
-    ln -sf "$cxx_path" "$POLYPIX_DEPS_PREFIX/bin/polypix-cxx"
-fi

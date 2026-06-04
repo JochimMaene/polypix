@@ -83,8 +83,6 @@ jobs:
             CFITSIO_VERSION='${{ env.CFITSIO_VERSION }}'
           CIBW_ENVIRONMENT_MACOS:
             POLYPIX_DEPS_PREFIX='${{ runner.temp }}/polypix-deps/dist'
-            CC='${{ runner.temp }}/polypix-deps/dist/bin/polypix-cc'
-            CXX='${{ runner.temp }}/polypix-deps/dist/bin/polypix-cxx'
             CMAKE_PREFIX_PATH='${{ runner.temp }}/polypix-deps/dist'
             PKG_CONFIG_PATH='${{ runner.temp }}/polypix-deps/dist/lib/pkgconfig'
             PATH="${{ runner.temp }}/polypix-deps/dist/bin:$PATH"
@@ -148,8 +146,6 @@ jobs:
             CFITSIO_VERSION='${{ env.CFITSIO_VERSION }}'
           CIBW_ENVIRONMENT_MACOS:
             POLYPIX_DEPS_PREFIX='${{ runner.temp }}/polypix-deps/dist'
-            CC='${{ runner.temp }}/polypix-deps/dist/bin/polypix-cc'
-            CXX='${{ runner.temp }}/polypix-deps/dist/bin/polypix-cxx'
             CMAKE_PREFIX_PATH='${{ runner.temp }}/polypix-deps/dist'
             PKG_CONFIG_PATH='${{ runner.temp }}/polypix-deps/dist/lib/pkgconfig'
             PATH="${{ runner.temp }}/polypix-deps/dist/bin:$PATH"
