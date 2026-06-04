@@ -7,6 +7,16 @@ name = "polypix"
 version = "0.1.0"
 description = "Fast HEALPix center-in-polygon coverage for convex spherical polygons."
 keywords = ["healpix", "spherical-geometry", "geospatial", "astronomy", "spatial-index"]
+classifiers = [
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Topic :: Scientific/Engineering :: Astronomy",
+]
 readme = "README.md"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "ci/licenses/*"]

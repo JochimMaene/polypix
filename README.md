@@ -3,18 +3,23 @@
 Fast HEALPix center-in-polygon coverage for convex spherical polygons.
 
 [![PyPI](https://img.shields.io/pypi/v/polypix.svg)](https://pypi.org/project/polypix/)
-[![Python](https://img.shields.io/pypi/pyversions/polypix.svg)](https://pypi.org/project/polypix/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-3776AB.svg?logo=python&logoColor=white)](https://pypi.org/project/polypix/)
 [![License](https://img.shields.io/pypi/l/polypix.svg)](LICENSE)
 [![Tests](https://github.com/JochimMaene/polypix/actions/workflows/run-tests.yml/badge.svg)](https://github.com/JochimMaene/polypix/actions/workflows/run-tests.yml)
 [![Docs](https://github.com/JochimMaene/polypix/actions/workflows/docs.yml/badge.svg)](https://github.com/JochimMaene/polypix/actions/workflows/docs.yml)
 
 [Documentation](https://jochimmaene.github.io/polypix/) |
 [PyPI](https://pypi.org/project/polypix/) |
-[Repository](https://github.com/JochimMaene/polypix)
+[Repository](https://github.com/JochimMaene/polypix) |
+[Issues](https://github.com/JochimMaene/polypix/issues)
 
-Polypix is a small Python package for workloads that already have clean
-spherical footprints and need fast, NumPy-friendly coverage results. It returns
-HEALPix cells whose centers fall inside each polygon.
+Polypix returns the HEALPix cells whose centers fall inside a convex spherical
+polygon. It is built for NumPy-friendly, throughput-oriented workloads where
+the input footprint is already valid on the unit sphere.
+
+Use Polypix when you want a deterministic center-sampled cover of a convex
+region. It is not a fit for holes, non-convex polygons, planar geometry
+semantics, or conservative overlap coverage.
 
 ## Install
 
@@ -50,7 +55,7 @@ The returned cell IDs are packed `uint64` tokens that include both the HEALPix
 resolution and the NESTED pixel index. Treat them as opaque IDs; use
 `center()` or `boundary()` when you need longitude/latitude geometry.
 
-## Scope
+## Supported Inputs
 
 Polypix supports:
 
@@ -59,9 +64,14 @@ Polypix supports:
 - unit-vector vertices as `(x, y, z)`,
 - dense and ragged polygon batches.
 
-Polypix does not support holes, non-convex polygons, planar geometry semantics,
-or conservative overlap coverage. A cell is included only when its center is
-inside the polygon.
+Vertex orientation does not matter; Polypix normalizes it internally. A
+repeated final vertex is accepted as a closed-ring marker.
+
+## Coverage Rule
+
+Polypix uses center-in-polygon coverage: a HEALPix cell is included only when
+its center lies inside the polygon. Boundary-touching cells whose centers fall
+outside the polygon are excluded.
 
 Windows wheels are not published because `healpix_cxx` is not currently
 available as a conda-forge `win-64` package.
@@ -69,47 +79,15 @@ available as a conda-forge `win-64` package.
 ## Documentation
 
 The public documentation is published at
-<https://jochimmaene.github.io/polypix/>.
+<https://jochimmaene.github.io/polypix/>:
 
-## Development
+- [Install guide](https://jochimmaene.github.io/polypix/install/)
+- [Concepts](https://jochimmaene.github.io/polypix/concepts/)
+- [API reference](https://jochimmaene.github.io/polypix/api/)
+- [Development guide](https://jochimmaene.github.io/polypix/development/)
 
-Polypix uses Pixi for the supported development environments:
-
-- Linux x86_64
-- macOS 11 or newer on Intel
-- macOS 11 or newer on Apple Silicon
-
-Install Pixi, then run:
-
-```bash
-pixi run test
-```
-
-That command creates a conda-forge based environment with Python, NumPy, CMake,
-nanobind, and `healpix_cxx`, installs Polypix in editable mode without build
-isolation, and runs the test suite.
-
-To build a local wheel:
-
-```bash
-pixi run wheel
-```
-
-The local wheel bundles runtime libraries from the active build environment for
-smoke testing. Publishable wheels are built by the release workflow with
-`cibuildwheel` and repaired with the platform wheel repair tools.
-
-Build the documentation site with Zensical:
-
-```bash
-pixi run docs-build
-```
-
-Preview the documentation while editing:
-
-```bash
-pixi run docs-serve
-```
+Contributor workflows, release notes, and local docs authoring live in the
+development guide instead of this user-facing overview.
 
 ## License
 

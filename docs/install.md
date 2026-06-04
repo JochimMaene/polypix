@@ -52,20 +52,5 @@ That wheel is intended for local smoke testing. Release wheels are built by the
 GitHub Actions release workflow with `cibuildwheel` and repaired with
 `auditwheel` on Linux or `delocate` on macOS.
 
-## Documentation
-
-The public documentation site is published to GitHub Pages:
-
-<https://jochimmaene.github.io/polypix/>
-
-Build the site locally with:
-
-```bash
-pixi run docs-build
-```
-
-Preview it while editing:
-
-```bash
-pixi run docs-serve
-```
+For contributor workflows such as documentation authoring, packaging, and
+release steps, see [Development](development.md).
