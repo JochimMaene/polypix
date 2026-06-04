@@ -44,15 +44,15 @@ inside the polygon.
 
 ## Install
 
-No public release has been published yet. For now, use the source checkout with
-Pixi:
+Polypix supports Python 3.12 and newer on Linux x86_64, macOS Intel, and macOS
+Apple Silicon:
 
 ```bash
-pixi run test
+python -m pip install polypix
 ```
 
-This creates the development environment, installs Polypix in editable mode, and
-runs the test suite.
+Windows wheels are not enabled yet because `healpix_cxx` is not currently
+available as a conda-forge `win-64` package.
 
 ## Development
 
@@ -93,9 +93,6 @@ Preview the documentation while editing:
 ```bash
 pixi run docs-serve
 ```
-
-Windows is not enabled yet because `healpix_cxx` is not currently available as a
-conda-forge `win-64` package.
 
 ## License
 
