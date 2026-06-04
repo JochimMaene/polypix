@@ -77,18 +77,18 @@ jobs:
             POLYPIX_DEPS_PREFIX='/host${{ runner.temp }}/polypix-deps/dist'
             CMAKE_PREFIX_PATH='/host${{ runner.temp }}/polypix-deps/dist'
             PKG_CONFIG_PATH='/host${{ runner.temp }}/polypix-deps/dist/lib/pkgconfig'
-            PATH='/host${{ runner.temp }}/polypix-deps/dist/bin:$PATH'
+            PATH="/host${{ runner.temp }}/polypix-deps/dist/bin:$PATH"
             HEALPIX_CXX_VERSION='${{ env.HEALPIX_CXX_VERSION }}'
             CFITSIO_VERSION='${{ env.CFITSIO_VERSION }}'
           CIBW_ENVIRONMENT_MACOS:
             POLYPIX_DEPS_PREFIX='${{ runner.temp }}/polypix-deps/dist'
             CMAKE_PREFIX_PATH='${{ runner.temp }}/polypix-deps/dist'
             PKG_CONFIG_PATH='${{ runner.temp }}/polypix-deps/dist/lib/pkgconfig'
-            PATH='${{ runner.temp }}/polypix-deps/dist/bin:$PATH'
+            PATH="${{ runner.temp }}/polypix-deps/dist/bin:$PATH"
             HEALPIX_CXX_VERSION='${{ env.HEALPIX_CXX_VERSION }}'
             CFITSIO_VERSION='${{ env.CFITSIO_VERSION }}'
             MACOSX_DEPLOYMENT_TARGET='${{ matrix.macosx_deployment_target }}'
-          CIBW_BEFORE_ALL: "bash ci/install_3rdparty.sh"
+          CIBW_BEFORE_ALL: "/bin/bash ci/install_3rdparty.sh"
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: "LD_LIBRARY_PATH='/host${{ runner.temp }}/polypix-deps/dist/lib' auditwheel repair -w {dest_dir} {wheel}"
           CIBW_REPAIR_WHEEL_COMMAND_MACOS: "DYLD_LIBRARY_PATH='${{ runner.temp }}/polypix-deps/dist/lib' delocate-wheel --require-archs=${{ matrix.arch }} -w {dest_dir} -v {wheel}"
           CIBW_TEST_REQUIRES: "pytest"
@@ -139,18 +139,18 @@ jobs:
             POLYPIX_DEPS_PREFIX='/host${{ runner.temp }}/polypix-deps/dist'
             CMAKE_PREFIX_PATH='/host${{ runner.temp }}/polypix-deps/dist'
             PKG_CONFIG_PATH='/host${{ runner.temp }}/polypix-deps/dist/lib/pkgconfig'
-            PATH='/host${{ runner.temp }}/polypix-deps/dist/bin:$PATH'
+            PATH="/host${{ runner.temp }}/polypix-deps/dist/bin:$PATH"
             HEALPIX_CXX_VERSION='${{ env.HEALPIX_CXX_VERSION }}'
             CFITSIO_VERSION='${{ env.CFITSIO_VERSION }}'
           CIBW_ENVIRONMENT_MACOS:
             POLYPIX_DEPS_PREFIX='${{ runner.temp }}/polypix-deps/dist'
             CMAKE_PREFIX_PATH='${{ runner.temp }}/polypix-deps/dist'
             PKG_CONFIG_PATH='${{ runner.temp }}/polypix-deps/dist/lib/pkgconfig'
-            PATH='${{ runner.temp }}/polypix-deps/dist/bin:$PATH'
+            PATH="${{ runner.temp }}/polypix-deps/dist/bin:$PATH"
             HEALPIX_CXX_VERSION='${{ env.HEALPIX_CXX_VERSION }}'
             CFITSIO_VERSION='${{ env.CFITSIO_VERSION }}'
             MACOSX_DEPLOYMENT_TARGET='${{ matrix.macosx_deployment_target }}'
-          CIBW_BEFORE_ALL: "bash ci/install_3rdparty.sh"
+          CIBW_BEFORE_ALL: "/bin/bash ci/install_3rdparty.sh"
           CIBW_REPAIR_WHEEL_COMMAND_LINUX: "LD_LIBRARY_PATH='/host${{ runner.temp }}/polypix-deps/dist/lib' auditwheel repair -w {dest_dir} {wheel}"
           CIBW_REPAIR_WHEEL_COMMAND_MACOS: "DYLD_LIBRARY_PATH='${{ runner.temp }}/polypix-deps/dist/lib' delocate-wheel --require-archs=${{ matrix.arch }} -w {dest_dir} -v {wheel}"
           CIBW_TEST_REQUIRES: "pytest"
