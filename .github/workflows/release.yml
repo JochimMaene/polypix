@@ -19,7 +19,7 @@ jobs:
     name: Build sdist
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -30,7 +30,7 @@ jobs:
         run: pipx run twine check dist/*
 
       - name: Upload sdist
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: release-sdist
           path: dist/*.tar.gz
@@ -49,23 +49,20 @@ jobs:
         include:
           - os: ubuntu-latest
             arch: x86_64
-            deps_prefix: /host${{ runner.temp }}/polypix-deps/dist
           - os: macos-15-intel
             arch: x86_64
-            deps_prefix: ${{ runner.temp }}/polypix-deps/dist
-            macosx_deployment_target: "15.0"
+            macosx_deployment_target: "10.13"
           - os: macos-14
             arch: arm64
-            deps_prefix: ${{ runner.temp }}/polypix-deps/dist
-            macosx_deployment_target: "14.0"
+            macosx_deployment_target: "11.0"
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Cache native dependency prefix
-        uses: actions/cache@v5
+        uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/polypix-deps
           key: polypix-deps-${{ matrix.os }}-${{ matrix.arch }}-${{ env.HEALPIX_CXX_VERSION }}-${{ env.CFITSIO_VERSION }}-${{ hashFiles('ci/install_3rdparty.sh') }}
@@ -77,28 +74,28 @@ jobs:
           CIBW_BUILD: "cp312-* cp313-* cp314-*"
           CIBW_SKIP: "*musllinux*"
           CIBW_ENVIRONMENT_LINUX:
-            POLYPIX_DEPS_PREFIX='${{ matrix.deps_prefix }}'
-            CMAKE_PREFIX_PATH='${{ matrix.deps_prefix }}'
-            PKG_CONFIG_PATH='${{ matrix.deps_prefix }}/lib/pkgconfig'
-            PATH='${{ matrix.deps_prefix }}/bin:$PATH'
+            POLYPIX_DEPS_PREFIX='/host${{ runner.temp }}/polypix-deps/dist'
+            CMAKE_PREFIX_PATH='/host${{ runner.temp }}/polypix-deps/dist'
+            PKG_CONFIG_PATH='/host${{ runner.temp }}/polypix-deps/dist/lib/pkgconfig'
+            PATH='/host${{ runner.temp }}/polypix-deps/dist/bin:$PATH'
             HEALPIX_CXX_VERSION='${{ env.HEALPIX_CXX_VERSION }}'
             CFITSIO_VERSION='${{ env.CFITSIO_VERSION }}'
           CIBW_ENVIRONMENT_MACOS:
-            POLYPIX_DEPS_PREFIX='${{ matrix.deps_prefix }}'
-            CMAKE_PREFIX_PATH='${{ matrix.deps_prefix }}'
-            PKG_CONFIG_PATH='${{ matrix.deps_prefix }}/lib/pkgconfig'
-            PATH='${{ matrix.deps_prefix }}/bin:$PATH'
+            POLYPIX_DEPS_PREFIX='${{ runner.temp }}/polypix-deps/dist'
+            CMAKE_PREFIX_PATH='${{ runner.temp }}/polypix-deps/dist'
+            PKG_CONFIG_PATH='${{ runner.temp }}/polypix-deps/dist/lib/pkgconfig'
+            PATH='${{ runner.temp }}/polypix-deps/dist/bin:$PATH'
             HEALPIX_CXX_VERSION='${{ env.HEALPIX_CXX_VERSION }}'
             CFITSIO_VERSION='${{ env.CFITSIO_VERSION }}'
             MACOSX_DEPLOYMENT_TARGET='${{ matrix.macosx_deployment_target }}'
           CIBW_BEFORE_ALL: "bash ci/install_3rdparty.sh"
-          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "LD_LIBRARY_PATH='${{ matrix.deps_prefix }}/lib' auditwheel repair -w {dest_dir} {wheel}"
-          CIBW_REPAIR_WHEEL_COMMAND_MACOS: "DYLD_LIBRARY_PATH='${{ matrix.deps_prefix }}/lib' delocate-wheel --require-archs=${{ matrix.arch }} -w {dest_dir} -v {wheel}"
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "LD_LIBRARY_PATH='/host${{ runner.temp }}/polypix-deps/dist/lib' auditwheel repair -w {dest_dir} {wheel}"
+          CIBW_REPAIR_WHEEL_COMMAND_MACOS: "DYLD_LIBRARY_PATH='${{ runner.temp }}/polypix-deps/dist/lib' delocate-wheel --require-archs=${{ matrix.arch }} -w {dest_dir} -v {wheel}"
           CIBW_TEST_REQUIRES: "pytest"
           CIBW_TEST_COMMAND: "python -m pytest {project}/tests"
 
       - name: Upload wheels
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.os }}-${{ matrix.arch }}
           path: wheelhouse/*.whl
@@ -117,19 +114,17 @@ jobs:
         include:
           - os: ubuntu-latest
             arch: x86_64
-            deps_prefix: /host${{ runner.temp }}/polypix-deps/dist
           - os: macos-14
             arch: arm64
-            deps_prefix: ${{ runner.temp }}/polypix-deps/dist
-            macosx_deployment_target: "14.0"
+            macosx_deployment_target: "11.0"
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
       - name: Cache native dependency prefix
-        uses: actions/cache@v5
+        uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/polypix-deps
           key: polypix-deps-smoke-${{ matrix.os }}-${{ matrix.arch }}-${{ env.HEALPIX_CXX_VERSION }}-${{ env.CFITSIO_VERSION }}-${{ hashFiles('ci/install_3rdparty.sh') }}
@@ -141,28 +136,28 @@ jobs:
           CIBW_BUILD: "cp312-* cp314-*"
           CIBW_SKIP: "*musllinux*"
           CIBW_ENVIRONMENT_LINUX:
-            POLYPIX_DEPS_PREFIX='${{ matrix.deps_prefix }}'
-            CMAKE_PREFIX_PATH='${{ matrix.deps_prefix }}'
-            PKG_CONFIG_PATH='${{ matrix.deps_prefix }}/lib/pkgconfig'
-            PATH='${{ matrix.deps_prefix }}/bin:$PATH'
+            POLYPIX_DEPS_PREFIX='/host${{ runner.temp }}/polypix-deps/dist'
+            CMAKE_PREFIX_PATH='/host${{ runner.temp }}/polypix-deps/dist'
+            PKG_CONFIG_PATH='/host${{ runner.temp }}/polypix-deps/dist/lib/pkgconfig'
+            PATH='/host${{ runner.temp }}/polypix-deps/dist/bin:$PATH'
             HEALPIX_CXX_VERSION='${{ env.HEALPIX_CXX_VERSION }}'
             CFITSIO_VERSION='${{ env.CFITSIO_VERSION }}'
           CIBW_ENVIRONMENT_MACOS:
-            POLYPIX_DEPS_PREFIX='${{ matrix.deps_prefix }}'
-            CMAKE_PREFIX_PATH='${{ matrix.deps_prefix }}'
-            PKG_CONFIG_PATH='${{ matrix.deps_prefix }}/lib/pkgconfig'
-            PATH='${{ matrix.deps_prefix }}/bin:$PATH'
+            POLYPIX_DEPS_PREFIX='${{ runner.temp }}/polypix-deps/dist'
+            CMAKE_PREFIX_PATH='${{ runner.temp }}/polypix-deps/dist'
+            PKG_CONFIG_PATH='${{ runner.temp }}/polypix-deps/dist/lib/pkgconfig'
+            PATH='${{ runner.temp }}/polypix-deps/dist/bin:$PATH'
             HEALPIX_CXX_VERSION='${{ env.HEALPIX_CXX_VERSION }}'
             CFITSIO_VERSION='${{ env.CFITSIO_VERSION }}'
             MACOSX_DEPLOYMENT_TARGET='${{ matrix.macosx_deployment_target }}'
           CIBW_BEFORE_ALL: "bash ci/install_3rdparty.sh"
-          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "LD_LIBRARY_PATH='${{ matrix.deps_prefix }}/lib' auditwheel repair -w {dest_dir} {wheel}"
-          CIBW_REPAIR_WHEEL_COMMAND_MACOS: "DYLD_LIBRARY_PATH='${{ matrix.deps_prefix }}/lib' delocate-wheel --require-archs=${{ matrix.arch }} -w {dest_dir} -v {wheel}"
+          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "LD_LIBRARY_PATH='/host${{ runner.temp }}/polypix-deps/dist/lib' auditwheel repair -w {dest_dir} {wheel}"
+          CIBW_REPAIR_WHEEL_COMMAND_MACOS: "DYLD_LIBRARY_PATH='${{ runner.temp }}/polypix-deps/dist/lib' delocate-wheel --require-archs=${{ matrix.arch }} -w {dest_dir} -v {wheel}"
           CIBW_TEST_REQUIRES: "pytest"
           CIBW_TEST_COMMAND: "python -m pytest {project}/tests"
 
       - name: Upload smoke wheels
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
           name: smoke-${{ matrix.os }}-${{ matrix.arch }}
           path: wheelhouse/*.whl
@@ -178,7 +173,7 @@ jobs:
     if: github.event_name == 'release' && github.event.action == 'published'
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           pattern: release-*
           merge-multiple: true
