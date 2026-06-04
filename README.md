@@ -2,10 +2,30 @@
 
 Fast HEALPix center-in-polygon coverage for convex spherical polygons.
 
-Polypix takes one polygon or a batch of polygons on the unit sphere and returns
-the HEALPix cells whose centers fall inside each polygon. It is meant for
-throughput-oriented workloads where the input is already a valid convex
-spherical polygon.
+[![PyPI](https://img.shields.io/pypi/v/polypix.svg)](https://pypi.org/project/polypix/)
+[![Python](https://img.shields.io/pypi/pyversions/polypix.svg)](https://pypi.org/project/polypix/)
+[![License](https://img.shields.io/pypi/l/polypix.svg)](LICENSE)
+[![Tests](https://github.com/JochimMaene/polypix/actions/workflows/run-tests.yml/badge.svg)](https://github.com/JochimMaene/polypix/actions/workflows/run-tests.yml)
+[![Docs](https://github.com/JochimMaene/polypix/actions/workflows/docs.yml/badge.svg)](https://github.com/JochimMaene/polypix/actions/workflows/docs.yml)
+
+[Documentation](https://jochimmaene.github.io/polypix/) |
+[PyPI](https://pypi.org/project/polypix/) |
+[Repository](https://github.com/JochimMaene/polypix)
+
+Polypix is a small Python package for workloads that already have clean
+spherical footprints and need fast, NumPy-friendly coverage results. It returns
+HEALPix cells whose centers fall inside each polygon.
+
+## Install
+
+```bash
+python -m pip install polypix
+```
+
+Published wheels support Python 3.12 and newer on Linux x86_64 and macOS 11 or
+newer on Intel and Apple Silicon.
+
+## Quick Start
 
 ```python
 import numpy as np
@@ -23,6 +43,7 @@ polygon = np.array(
 
 cell_ids = px.cover(px.Polygon.from_lonlat(polygon), resolution=8)
 centers = px.center(cell_ids)
+boundaries = px.boundary(cell_ids[:3])
 ```
 
 The returned cell IDs are packed `uint64` tokens that include both the HEALPix
@@ -42,17 +63,13 @@ Polypix does not support holes, non-convex polygons, planar geometry semantics,
 or conservative overlap coverage. A cell is included only when its center is
 inside the polygon.
 
-## Install
-
-Polypix supports Python 3.12 and newer on Linux x86_64 and macOS 11 or newer
-on Intel and Apple Silicon:
-
-```bash
-python -m pip install polypix
-```
-
-Windows wheels are not enabled yet because `healpix_cxx` is not currently
+Windows wheels are not published because `healpix_cxx` is not currently
 available as a conda-forge `win-64` package.
+
+## Documentation
+
+The public documentation is published at
+<https://jochimmaene.github.io/polypix/>.
 
 ## Development
 

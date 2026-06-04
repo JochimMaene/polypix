@@ -71,20 +71,46 @@ This is a local development wheel for smoke testing. It bundles runtime
 libraries from the active Pixi environment and is not the artifact to upload to
 PyPI.
 
-Publishable wheels are built by `.github/workflows/release.yml` with
-`cibuildwheel`. That workflow prepares a pinned native dependency prefix,
-builds wheels, repairs them with `auditwheel` on Linux or `delocate` on macOS,
-and runs the test suite against the repaired wheels.
+## Release Builds
 
-Build with Python's stable ABI:
+Publishable wheels are built by `.github/workflows/release.yml` with
+`cibuildwheel`. The workflow prepares a pinned native dependency prefix, builds
+wheels, repairs them with `auditwheel` on Linux or `delocate` on macOS, and
+runs the test suite against the repaired wheels.
+
+Publishing is release-driven: creating or publishing a GitHub release builds the
+source distribution and release wheels, then uploads them to PyPI through trusted
+publishing. Pull requests run a smaller wheel smoke matrix so packaging changes
+are checked before a release.
+
+The published wheel targets are Linux x86_64 and macOS 11 or newer on Intel and
+Apple Silicon. The Linux wheels use a `manylinux_2_34` image because the native
+runtime dependencies come from conda-forge. The macOS deployment target is 11.0
+because the bundled conda-forge runtime libraries require macOS 11 or newer.
+
+## Stable ABI Build
+
+The CMake build has an optional stable-ABI mode:
 
 ```bash
 python -m build --wheel --no-isolation \
   --config-setting=cmake.define.POLYPIX_STABLE_ABI=ON
 ```
 
-Polypix supports Python 3.12 and newer, so release builds can use one `abi3`
-wheel per platform when `POLYPIX_STABLE_ABI=ON`.
+This mode requires Python 3.12 or newer. It is not part of the current release
+matrix, which builds version-specific CPython wheels.
+
+## Documentation Publishing
+
+The documentation source lives in `docs/` and is configured by
+`zensical.toml`. Build it locally with:
+
+```bash
+pixi run docs-build
+```
+
+The `.github/workflows/docs.yml` workflow builds the same site on pull requests
+and publishes `site/` to GitHub Pages on pushes to `main`.
 
 ## License And Notices
 
