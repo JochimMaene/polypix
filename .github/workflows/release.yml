@@ -73,6 +73,7 @@ jobs:
           CIBW_ARCHS: ${{ matrix.arch }}
           CIBW_BUILD: "cp312-* cp313-* cp314-*"
           CIBW_SKIP: "*musllinux*"
+          CIBW_MANYLINUX_X86_64_IMAGE: "manylinux_2_34"
           CIBW_ENVIRONMENT_LINUX:
             POLYPIX_DEPS_PREFIX='/host${{ runner.temp }}/polypix-deps/dist'
             CMAKE_PREFIX_PATH='/host${{ runner.temp }}/polypix-deps/dist'
@@ -135,6 +136,7 @@ jobs:
           CIBW_ARCHS: ${{ matrix.arch }}
           CIBW_BUILD: "cp312-* cp314-*"
           CIBW_SKIP: "*musllinux*"
+          CIBW_MANYLINUX_X86_64_IMAGE: "manylinux_2_34"
           CIBW_ENVIRONMENT_LINUX:
             POLYPIX_DEPS_PREFIX='/host${{ runner.temp }}/polypix-deps/dist'
             CMAKE_PREFIX_PATH='/host${{ runner.temp }}/polypix-deps/dist'
