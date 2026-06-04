@@ -1,7 +1,7 @@
 # Install
 
-Polypix supports Python 3.12 and newer on Linux x86_64, macOS Intel, and macOS
-Apple Silicon:
+Polypix supports Python 3.12 and newer on Linux x86_64 and macOS 11 or newer
+on Intel and Apple Silicon:
 
 ```bash
 python -m pip install polypix

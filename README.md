@@ -44,8 +44,8 @@ inside the polygon.
 
 ## Install
 
-Polypix supports Python 3.12 and newer on Linux x86_64, macOS Intel, and macOS
-Apple Silicon:
+Polypix supports Python 3.12 and newer on Linux x86_64 and macOS 11 or newer
+on Intel and Apple Silicon:
 
 ```bash
 python -m pip install polypix
@@ -59,8 +59,8 @@ available as a conda-forge `win-64` package.
 Polypix uses Pixi for the supported development environments:
 
 - Linux x86_64
-- macOS Intel
-- macOS Apple Silicon
+- macOS 11 or newer on Intel
+- macOS 11 or newer on Apple Silicon
 
 Install Pixi, then run:
 
