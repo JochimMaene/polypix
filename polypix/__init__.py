@@ -1,68 +1,22 @@
 from __future__ import annotations
 
 import operator
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Sequence
 
 import numpy as np
 
-from ._core import __version__, _boundary, _boundary_many, _center, _cover, _cover_lonlat
+from ._core import __version__, _boundary, _boundary_many, _center, _cover
 
 
 @dataclass(frozen=True)
-class Polygon:
-    vertices: np.ndarray
-    coordinates: str
-    offsets: np.ndarray = field(init=False, repr=False)
-
-    def __post_init__(self) -> None:
-        width = _coordinate_width(self.coordinates)
-        vertices = _as_float_matrix(self.vertices, width, "vertices")
-        object.__setattr__(self, "vertices", vertices)
-        object.__setattr__(self, "offsets", np.asarray([0, vertices.shape[0]], dtype=np.uint64))
-
-    @classmethod
-    def from_xyz(cls, vertices: Sequence[Sequence[float]] | np.ndarray) -> Polygon:
-        return cls(vertices, "xyz")
-
-    @classmethod
-    def from_lonlat(cls, vertices: Sequence[Sequence[float]] | np.ndarray) -> Polygon:
-        return cls(vertices, "lonlat")
-
-
-@dataclass(frozen=True)
-class MultiPolygon:
-    vertices: np.ndarray
+class Coverage:
+    cell_ids: np.ndarray
     offsets: np.ndarray
-    coordinates: str
 
-    def __post_init__(self) -> None:
-        width = _coordinate_width(self.coordinates)
-        vertices = _as_float_matrix(self.vertices, width, "vertices")
-        offsets = _as_offsets(self.offsets, vertices.shape[0])
-        object.__setattr__(self, "vertices", vertices)
-        object.__setattr__(self, "offsets", offsets)
-
-    @classmethod
-    def from_xyz(cls, vertices: Sequence[Sequence[float]] | Sequence[np.ndarray] | np.ndarray) -> MultiPolygon:
-        flat_vertices, offsets = _as_polygon_vertices(vertices, 3, "polygons")
-        return cls(flat_vertices, offsets, "xyz")
-
-    @classmethod
-    def from_lonlat(cls, vertices: Sequence[Sequence[float]] | Sequence[np.ndarray] | np.ndarray) -> MultiPolygon:
-        flat_vertices, offsets = _as_polygon_vertices(vertices, 2, "polygons")
-        return cls(flat_vertices, offsets, "lonlat")
-
-    def __len__(self) -> int:
-        return max(self.offsets.shape[0] - 1, 0)
-
-
-def _coordinate_width(coordinates: str) -> int:
-    if coordinates == "xyz":
-        return 3
-    if coordinates == "lonlat":
-        return 2
-    raise ValueError("coordinates must be 'xyz' or 'lonlat'.")
+    @property
+    def counts(self) -> np.ndarray:
+        return np.diff(self.offsets).astype(np.intp, copy=False)
 
 
 def _as_resolution(value: int) -> int:
@@ -72,7 +26,7 @@ def _as_resolution(value: int) -> int:
         resolution = operator.index(value)
     except TypeError as exc:
         raise TypeError("resolution must be an integer.") from exc
-    return int(resolution)
+    return resolution
 
 
 def _as_uint64_scalar(value: object, name: str) -> int:
@@ -86,7 +40,7 @@ def _as_uint64_scalar(value: object, name: str) -> int:
         raise ValueError(f"{name} must contain non-negative integers.")
     if integer > np.iinfo(np.uint64).max:
         raise OverflowError(f"{name} value is out of range for uint64.")
-    return int(integer)
+    return integer
 
 
 def _as_uint64_vector(values: Sequence[int] | np.ndarray, name: str) -> np.ndarray:
@@ -110,58 +64,31 @@ def _as_uint64_vector(values: Sequence[int] | np.ndarray, name: str) -> np.ndarr
 def _as_float_matrix(values: Sequence[Sequence[float]] | np.ndarray, width: int, name: str) -> np.ndarray:
     array = np.ascontiguousarray(np.asarray(values, dtype=np.float64))
     if array.ndim != 2 or array.shape[1] != width:
-        raise ValueError(f"{name} must be a contiguous array of shape (vertices, {width}).")
+        raise ValueError(f"{name} must have shape (items, {width}).")
     return array
 
 
-def _as_polygon_vertices(
-    values: Sequence[Sequence[float]] | np.ndarray,
-    width: int,
-    name: str,
-) -> tuple[np.ndarray, np.ndarray]:
-    try:
-        array = np.asarray(values, dtype=np.float64)
-    except ValueError:
-        array = None
-
-    if array is not None:
-        if array.ndim == 2 and array.shape[1] == width:
-            vertices = np.ascontiguousarray(array)
-            return vertices, np.array([0, vertices.shape[0]], dtype=np.uint64)
-        if array.ndim == 3 and array.shape[2] == width:
-            polygon_count, vertex_count, _ = array.shape
-            vertices = np.ascontiguousarray(array.reshape(polygon_count * vertex_count, width))
-            offsets = np.arange(0, vertices.shape[0] + 1, vertex_count, dtype=np.uint64)
-            return vertices, offsets
-
-    polygons = [_as_float_matrix(polygon, width, name) for polygon in values]
-    offsets = np.empty(len(polygons) + 1, dtype=np.uint64)
-    offsets[0] = 0
-    if not polygons:
-        return np.empty((0, width), dtype=np.float64), offsets
-    lengths = np.fromiter((polygon.shape[0] for polygon in polygons), dtype=np.uint64, count=len(polygons))
-    np.cumsum(lengths, out=offsets[1:])
-    return np.ascontiguousarray(np.concatenate(polygons)), offsets
+def _as_footprints(values: Sequence[Sequence[float]] | np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    array = np.ascontiguousarray(np.asarray(values, dtype=np.float64))
+    if array.ndim == 2 and array.shape[1] == 3:
+        return array, np.asarray([0, array.shape[0]], dtype=np.uint64)
+    if array.ndim == 3 and array.shape[2] == 3:
+        footprint_count, vertex_count, _ = array.shape
+        if vertex_count == 0:
+            if footprint_count == 0:
+                return np.empty((0, 3), dtype=np.float64), np.asarray([0], dtype=np.uint64)
+            raise ValueError("footprints must contain at least one vertex per footprint.")
+        vertices = np.ascontiguousarray(array.reshape(footprint_count * vertex_count, 3))
+        offsets = np.arange(0, vertices.shape[0] + 1, vertex_count, dtype=np.uint64)
+        return vertices, offsets
+    raise ValueError("footprints must have shape (vertices, 3) or (footprints, vertices, 3).")
 
 
-def _as_offsets(values: Sequence[int] | np.ndarray, vertex_count: int) -> np.ndarray:
-    offsets = _as_uint64_vector(values, "offsets")
-    if offsets.size == 0:
-        raise ValueError("offsets must contain at least the starting zero offset.")
-    if int(offsets[0]) != 0:
-        raise ValueError("offsets must start at 0.")
-    if int(offsets[-1]) != vertex_count:
-        raise ValueError("offsets must end at the total vertex count.")
-    if np.any(offsets[1:] < offsets[:-1]):
-        raise ValueError("offsets must be nondecreasing.")
-    return offsets
-
-
-def _coverage_result(payload: dict) -> tuple[np.ndarray, np.ndarray]:
-    cell_ids = np.asarray(payload["cell_ids"])
-    offsets = np.asarray(payload["offsets"])
-    counts = np.diff(offsets).astype(np.intp, copy=False)
-    return cell_ids, counts
+def _coverage(payload: dict) -> Coverage:
+    return Coverage(
+        cell_ids=payload["cell_ids"],
+        offsets=payload["offsets"],
+    )
 
 
 def _cell_ids(values: int | Sequence[int] | np.ndarray) -> tuple[np.ndarray, bool]:
@@ -173,41 +100,35 @@ def _cell_ids(values: int | Sequence[int] | np.ndarray) -> tuple[np.ndarray, boo
     return _as_uint64_vector(array, "cell_ids"), False
 
 
-def cover(
-    polygons: Polygon | MultiPolygon,
-    resolution: int,
-) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
-    if not isinstance(polygons, (Polygon, MultiPolygon)):
-        raise TypeError(
-            "cover() requires a Polygon or MultiPolygon. "
-            "Use Polygon.from_lonlat(), Polygon.from_xyz(), MultiPolygon.from_lonlat(), or MultiPolygon.from_xyz()."
-        )
-
+def cover_footprint(footprints_xyz: Sequence[Sequence[float]] | np.ndarray, resolution: int) -> Coverage:
     resolved = _as_resolution(resolution)
-    if polygons.coordinates == "xyz":
-        cell_ids, _counts = _coverage_result(_cover(polygons.vertices, polygons.offsets, resolved))
-    elif polygons.coordinates == "lonlat":
-        cell_ids, _counts = _coverage_result(_cover_lonlat(polygons.vertices, polygons.offsets, resolved))
-    else:
-        raise ValueError("unsupported polygon coordinate system.")
-
-    if isinstance(polygons, Polygon):
-        return cell_ids
-    return cell_ids, _counts
+    vertices, offsets = _as_footprints(footprints_xyz)
+    return _coverage(_cover(vertices, offsets, resolved))
 
 
-def _cover_flat(
-    vertices: Sequence[Sequence[float]] | np.ndarray,
+def cover_swath(
+    left_edge_xyz: Sequence[Sequence[float]] | np.ndarray,
+    right_edge_xyz: Sequence[Sequence[float]] | np.ndarray,
     resolution: int,
-    offsets: Sequence[int] | np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    vertices_xyz = _as_float_matrix(vertices, 3, "vertices")
-    polygon_offsets = _as_offsets(offsets, vertices_xyz.shape[0])
+) -> Coverage:
     resolved = _as_resolution(resolution)
-    return _coverage_result(_cover(vertices_xyz, polygon_offsets, resolved))
+    left = _as_float_matrix(left_edge_xyz, 3, "left_edge_xyz")
+    right = _as_float_matrix(right_edge_xyz, 3, "right_edge_xyz")
+    if left.shape[0] != right.shape[0]:
+        raise ValueError("left_edge_xyz and right_edge_xyz must contain the same number of samples.")
+    if left.shape[0] < 2:
+        raise ValueError("cover_swath() requires at least two edge samples.")
+
+    footprints = np.empty((left.shape[0] - 1, 4, 3), dtype=np.float64)
+    footprints[:, 0, :] = left[:-1]
+    footprints[:, 1, :] = right[:-1]
+    footprints[:, 2, :] = right[1:]
+    footprints[:, 3, :] = left[1:]
+    vertices, offsets = _as_footprints(footprints)
+    return _coverage(_cover(vertices, offsets, resolved))
 
 
-def center(cell_ids: int | Sequence[int] | np.ndarray) -> tuple[float, float] | np.ndarray:
+def centers(cell_ids: int | Sequence[int] | np.ndarray) -> tuple[float, float] | np.ndarray:
     ids, is_scalar = _cell_ids(cell_ids)
     lonlat = np.asarray(_center(ids))
     if is_scalar:
@@ -215,11 +136,11 @@ def center(cell_ids: int | Sequence[int] | np.ndarray) -> tuple[float, float] | 
     return lonlat
 
 
-def boundary(cell_ids: int | Sequence[int] | np.ndarray) -> np.ndarray:
+def boundaries(cell_ids: int | Sequence[int] | np.ndarray) -> np.ndarray:
     ids, is_scalar = _cell_ids(cell_ids)
     if is_scalar:
         return np.asarray(_boundary(int(ids[0])))
     return np.asarray(_boundary_many(ids))
 
 
-__all__ = ["MultiPolygon", "Polygon", "__version__", "boundary", "center", "cover"]
+__all__ = ["Coverage", "__version__", "boundaries", "centers", "cover_footprint", "cover_swath"]

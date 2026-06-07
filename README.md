@@ -1,25 +1,29 @@
 # Polypix
 
-Fast HEALPix center-in-polygon coverage for convex spherical polygons.
+Fast HEALPix coverage for convex footprints on the sphere.
 
 [![PyPI](https://img.shields.io/pypi/v/polypix.svg)](https://pypi.org/project/polypix/)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-3776AB.svg?logo=python&logoColor=white)](https://pypi.org/project/polypix/)
 [![License](https://img.shields.io/pypi/l/polypix.svg)](LICENSE)
 [![Tests](https://github.com/JochimMaene/polypix/actions/workflows/run-tests.yml/badge.svg)](https://github.com/JochimMaene/polypix/actions/workflows/run-tests.yml)
 [![Docs](https://github.com/JochimMaene/polypix/actions/workflows/docs.yml/badge.svg)](https://github.com/JochimMaene/polypix/actions/workflows/docs.yml)
+[![Benchmarks](https://github.com/JochimMaene/polypix/actions/workflows/codspeed.yml/badge.svg)](https://github.com/JochimMaene/polypix/actions/workflows/codspeed.yml)
 
 [Documentation](https://jochimmaene.github.io/polypix/) |
 [PyPI](https://pypi.org/project/polypix/) |
 [Repository](https://github.com/JochimMaene/polypix) |
 [Issues](https://github.com/JochimMaene/polypix/issues)
 
-Polypix returns the HEALPix cells whose centers fall inside a convex spherical
-polygon. It is built for NumPy-friendly, throughput-oriented workloads where
-the input footprint is already valid on the unit sphere.
+Polypix returns the HEALPix cells whose centers fall inside convex footprints on
+the unit sphere. It is built for coverage simulations and indexing pipelines
+where footprints are already valid spherical geometry and throughput matters.
 
-Use Polypix when you want a deterministic center-sampled cover of a convex
-region. It is not a fit for holes, non-convex polygons, planar geometry
-semantics, or conservative overlap coverage.
+Typical inputs are sensor footprints, beam contours, access regions, and swath
+edges from satellite, aerial, astronomy, or other spherical-domain simulations.
+Use Polypix when you want deterministic center-sampled coverage for convex
+regions. It is not a fit for holes, non-convex footprints, planar geometry
+semantics, conservative overlap coverage, or generating footprints from orbit,
+attitude, sensor, or beam models.
 
 ## Install
 
@@ -33,45 +37,55 @@ newer on Intel and Apple Silicon.
 ## Quick Start
 
 ```python
+import math
+
 import numpy as np
 import polypix as px
 
-polygon = np.array(
+
+def lonlat_to_xyz(lon_deg, lat_deg):
+    lon = math.radians(lon_deg)
+    lat = math.radians(lat_deg)
+    cos_lat = math.cos(lat)
+    return cos_lat * math.cos(lon), cos_lat * math.sin(lon), math.sin(lat)
+
+
+footprint = np.asarray(
     [
-        [-5.0, -5.0],
-        [12.0, -4.0],
-        [10.0, 9.0],
-        [-6.0, 7.0],
+        lonlat_to_xyz(-5.0, -5.0),
+        lonlat_to_xyz(12.0, -4.0),
+        lonlat_to_xyz(10.0, 9.0),
+        lonlat_to_xyz(-6.0, 7.0),
     ],
     dtype=np.float64,
 )
 
-cell_ids = px.cover(px.Polygon.from_lonlat(polygon), resolution=8)
-centers = px.center(cell_ids)
-boundaries = px.boundary(cell_ids[:3])
+coverage = px.cover_footprint(footprint, resolution=8)
+centers = px.centers(coverage.cell_ids)
+boundaries = px.boundaries(coverage.cell_ids[:3])
 ```
 
 The returned cell IDs are packed `uint64` tokens that include both the HEALPix
 resolution and the NESTED pixel index. Treat them as opaque IDs; use
-`center()` or `boundary()` when you need longitude/latitude geometry.
+`centers()` or `boundaries()` when you need longitude/latitude geometry.
 
 ## Supported Inputs
 
 Polypix supports:
 
-- convex spherical polygons with great-circle edges,
-- longitude/latitude vertices in degrees,
+- convex spherical footprints with great-circle edges,
 - unit-vector vertices as `(x, y, z)`,
-- dense and ragged polygon batches.
+- dense footprint batches as arrays with shape `(footprints, vertices, 3)`,
+- swaths from sampled left and right edge vectors.
 
 Vertex orientation does not matter; Polypix normalizes it internally. A
 repeated final vertex is accepted as a closed-ring marker.
 
 ## Coverage Rule
 
-Polypix uses center-in-polygon coverage: a HEALPix cell is included only when
-its center lies inside the polygon. Boundary-touching cells whose centers fall
-outside the polygon are excluded.
+Polypix uses center-in-footprint coverage: a HEALPix cell is included only when
+its center lies inside the footprint. Boundary-touching cells whose centers fall
+outside the footprint are excluded.
 
 Windows wheels are not published because `healpix_cxx` is not currently
 available as a conda-forge `win-64` package.

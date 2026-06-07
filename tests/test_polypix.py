@@ -55,7 +55,7 @@ def brute_force_cover(vertices_lonlat: list[tuple[float, float]], resolution: in
     polygon = orient_convex(vertices_lonlat)
     nested_indices = np.arange(12 * (4**resolution), dtype=np.uint64)
     cell_ids = encode_nested(resolution, nested_indices)
-    centers = px.center(cell_ids)
+    centers = px.centers(cell_ids)
     covered = [
         cell_id
         for cell_id, (lon, lat) in zip(cell_ids, centers, strict=True)
@@ -64,34 +64,77 @@ def brute_force_cover(vertices_lonlat: list[tuple[float, float]], resolution: in
     return np.asarray(covered, dtype=np.uint64)
 
 
-def split_cells(cell_ids: np.ndarray, counts: np.ndarray) -> list[np.ndarray]:
-    return np.split(cell_ids, np.cumsum(counts[:-1]))
+def split_coverage(coverage: px.Coverage) -> list[np.ndarray]:
+    return [
+        coverage.cell_ids[start:stop]
+        for start, stop in zip(coverage.offsets[:-1], coverage.offsets[1:], strict=True)
+    ]
 
 
 class PolypixTests(unittest.TestCase):
+    def test_cover_accepts_single_xyz_array(self) -> None:
+        polygon = [(-5.0, -5.0), (12.0, -4.0), (10.0, 9.0), (-6.0, 7.0)]
+        vertices = np.asarray([lonlat_to_vec(lon, lat) for lon, lat in polygon], dtype=np.float64)
+
+        coverage = px.cover_footprint(vertices, resolution=2)
+
+        self.assertIsInstance(coverage, px.Coverage)
+        np.testing.assert_array_equal(coverage.offsets, np.asarray([0, coverage.cell_ids.size], dtype=np.uint64))
+        np.testing.assert_array_equal(coverage.counts, np.asarray([coverage.cell_ids.size], dtype=np.intp))
+        np.testing.assert_array_equal(coverage.cell_ids, brute_force_cover(polygon, resolution=2))
+
+    def test_cover_accepts_batched_xyz_array(self) -> None:
+        polygons = [
+            (-5.0, -5.0),
+            (12.0, -4.0),
+            (10.0, 9.0),
+            (-6.0, 7.0),
+            (20.0, -10.0),
+            (33.0, -10.0),
+            (33.0, 0.0),
+            (20.0, 0.0),
+        ]
+        vertices = np.asarray([lonlat_to_vec(lon, lat) for lon, lat in polygons], dtype=np.float64).reshape(2, 4, 3)
+
+        coverage = px.cover_footprint(vertices, resolution=2)
+        covered = split_coverage(coverage)
+
+        self.assertEqual(coverage.offsets.shape, (3,))
+        np.testing.assert_array_equal(covered[0], brute_force_cover(polygons[:4], resolution=2))
+        np.testing.assert_array_equal(covered[1], brute_force_cover(polygons[4:], resolution=2))
+
+    def test_cover_swath_covers_consecutive_edge_intervals(self) -> None:
+        left = np.asarray([lonlat_to_vec(-5.0, -5.0), lonlat_to_vec(-4.0, 0.0), lonlat_to_vec(-3.0, 5.0)])
+        right = np.asarray([lonlat_to_vec(5.0, -5.0), lonlat_to_vec(4.0, 0.0), lonlat_to_vec(3.0, 5.0)])
+        polygons = np.asarray(
+            [
+                [left[0], right[0], right[1], left[1]],
+                [left[1], right[1], right[2], left[2]],
+            ],
+            dtype=np.float64,
+        )
+
+        expected = px.cover_footprint(polygons, resolution=3)
+        actual = px.cover_swath(left, right, resolution=3)
+
+        np.testing.assert_array_equal(actual.offsets, expected.offsets)
+        np.testing.assert_array_equal(actual.cell_ids, expected.cell_ids)
+
     def test_cover_single_polygon_matches_bruteforce_oracle(self) -> None:
         polygon = [(-5.0, -5.0), (12.0, -4.0), (10.0, 9.0), (-6.0, 7.0)]
         vectors = np.asarray([lonlat_to_vec(lon, lat) for lon, lat in polygon], dtype=np.float64)
 
         expected = brute_force_cover(polygon, resolution=2)
-        cell_ids = px.cover(px.Polygon.from_xyz(vectors), resolution=2)
+        coverage = px.cover_footprint(vectors, resolution=2)
 
-        np.testing.assert_array_equal(cell_ids, expected)
-
-    def test_cover_accepts_lonlat_polygon(self) -> None:
-        polygon = np.asarray([(-5.0, -5.0), (12.0, -4.0), (10.0, 9.0), (-6.0, 7.0)], dtype=np.float64)
-
-        expected = brute_force_cover(polygon.tolist(), resolution=2)
-        cell_ids = px.cover(px.Polygon.from_lonlat(polygon), resolution=2)
-
-        np.testing.assert_array_equal(cell_ids, expected)
+        np.testing.assert_array_equal(coverage.cell_ids, expected)
 
     def test_cover_single_polygon_matches_bruteforce_across_antimeridian(self) -> None:
         polygon = [(170.0, -8.0), (-170.0, -8.0), (-170.0, 8.0), (170.0, 8.0)]
         vectors = np.asarray([lonlat_to_vec(lon, lat) for lon, lat in polygon], dtype=np.float64)
 
-        cell_ids = px.cover(px.Polygon.from_xyz(vectors), resolution=2)
-        np.testing.assert_array_equal(cell_ids, brute_force_cover(polygon, resolution=2))
+        coverage = px.cover_footprint(vectors, resolution=2)
+        np.testing.assert_array_equal(coverage.cell_ids, brute_force_cover(polygon, resolution=2))
 
     def test_cover_matches_bruteforce_for_spherical_edge_cases(self) -> None:
         cases = {
@@ -115,10 +158,10 @@ class PolypixTests(unittest.TestCase):
 
         for name, (polygon, resolution) in cases.items():
             with self.subTest(name=name):
-                vertices = np.asarray(polygon, dtype=np.float64)
-                cell_ids = px.cover(px.Polygon.from_lonlat(vertices), resolution=resolution)
+                vertices = np.asarray([lonlat_to_vec(lon, lat) for lon, lat in polygon], dtype=np.float64)
+                coverage = px.cover_footprint(vertices, resolution=resolution)
 
-                np.testing.assert_array_equal(cell_ids, brute_force_cover(polygon, resolution=resolution))
+                np.testing.assert_array_equal(coverage.cell_ids, brute_force_cover(polygon, resolution=resolution))
 
     def test_cover_batched_polygons_returns_cells_and_counts(self) -> None:
         polygons = [
@@ -133,13 +176,13 @@ class PolypixTests(unittest.TestCase):
         ]
         vertices = np.asarray([lonlat_to_vec(lon, lat) for lon, lat in polygons], dtype=np.float64).reshape(2, 4, 3)
 
-        cell_ids, counts = px.cover(px.MultiPolygon.from_xyz(vertices), resolution=2)
-        first = px.cover(px.Polygon.from_xyz(vertices[0]), resolution=2)
-        second = px.cover(px.Polygon.from_xyz(vertices[1]), resolution=2)
-        cells_by_polygon = split_cells(cell_ids, counts)
+        coverage = px.cover_footprint(vertices, resolution=2)
+        first = px.cover_footprint(vertices[0], resolution=2).cell_ids
+        second = px.cover_footprint(vertices[1], resolution=2).cell_ids
+        cells_by_polygon = split_coverage(coverage)
 
-        self.assertEqual(counts.shape, (2,))
-        np.testing.assert_array_equal(counts, np.asarray([first.size, second.size], dtype=np.intp))
+        self.assertEqual(coverage.counts.shape, (2,))
+        np.testing.assert_array_equal(coverage.counts, np.asarray([first.size, second.size], dtype=np.intp))
         np.testing.assert_array_equal(cells_by_polygon[0], first)
         np.testing.assert_array_equal(cells_by_polygon[-1], second)
 
@@ -155,8 +198,8 @@ class PolypixTests(unittest.TestCase):
             (20.0, 0.0),
         ]
         vertices = np.asarray([lonlat_to_vec(lon, lat) for lon, lat in polygons], dtype=np.float64).reshape(2, 4, 3)
-        cell_ids, counts = px.cover(px.MultiPolygon.from_xyz(vertices), resolution=2)
-        covered = split_cells(cell_ids, counts)
+        coverage = px.cover_footprint(vertices, resolution=2)
+        covered = split_coverage(coverage)
 
         np.testing.assert_array_equal(covered[0], brute_force_cover(polygons[:4], resolution=2))
         np.testing.assert_array_equal(covered[1], brute_force_cover(polygons[4:], resolution=2))
@@ -171,61 +214,22 @@ class PolypixTests(unittest.TestCase):
         previous_threads = os.environ.get("POLYPIX_NUM_THREADS")
         try:
             os.environ["POLYPIX_NUM_THREADS"] = "1"
-            expected_cell_ids, expected_counts = px.cover(px.MultiPolygon.from_xyz(vertices), resolution=3)
+            expected = px.cover_footprint(vertices, resolution=3)
             os.environ["POLYPIX_NUM_THREADS"] = "4"
-            actual_cell_ids, actual_counts = px.cover(px.MultiPolygon.from_xyz(vertices), resolution=3)
+            actual = px.cover_footprint(vertices, resolution=3)
         finally:
             if previous_threads is None:
                 os.environ.pop("POLYPIX_NUM_THREADS", None)
             else:
                 os.environ["POLYPIX_NUM_THREADS"] = previous_threads
 
-        np.testing.assert_array_equal(actual_cell_ids, expected_cell_ids)
-        np.testing.assert_array_equal(actual_counts, expected_counts)
-
-    def test_cover_accepts_ragged_polygon_list(self) -> None:
-        polygon_a = np.asarray(
-            [lonlat_to_vec(lon, lat) for lon, lat in [(-5.0, -5.0), (12.0, -4.0), (10.0, 9.0), (-6.0, 7.0)]],
-            dtype=np.float64,
-        )
-        polygon_b = np.asarray(
-            [lonlat_to_vec(lon, lat) for lon, lat in [(20.0, -10.0), (33.0, -10.0), (33.0, 0.0), (26.0, 5.0), (20.0, 0.0)]],
-            dtype=np.float64,
-        )
-
-        cell_ids, counts = px.cover(px.MultiPolygon.from_xyz([polygon_a, polygon_b]), resolution=2)
-        result = split_cells(cell_ids, counts)
-
-        self.assertEqual(len(result), 2)
-        np.testing.assert_array_equal(result[0], px.cover(px.Polygon.from_xyz(polygon_a), resolution=2))
-        np.testing.assert_array_equal(result[1], px.cover(px.Polygon.from_xyz(polygon_b), resolution=2))
-
-    def test_cover_accepts_explicit_flat_lonlat_offsets(self) -> None:
-        vertices = np.asarray(
-            [
-                (-5.0, -5.0),
-                (12.0, -4.0),
-                (10.0, 9.0),
-                (-6.0, 7.0),
-                (-45.0, 70.0),
-                (45.0, 70.0),
-                (135.0, 70.0),
-                (-135.0, 70.0),
-            ],
-            dtype=np.float64,
-        )
-
-        cell_ids, counts = px.cover(px.MultiPolygon(vertices, [0, 4, 8], "lonlat"), resolution=2)
-        result = split_cells(cell_ids, counts)
-
-        self.assertEqual(counts.shape, (2,))
-        np.testing.assert_array_equal(result[0], brute_force_cover(vertices[:4].tolist(), resolution=2))
-        np.testing.assert_array_equal(result[1], brute_force_cover(vertices[4:].tolist(), resolution=2))
+        np.testing.assert_array_equal(actual.cell_ids, expected.cell_ids)
+        np.testing.assert_array_equal(actual.offsets, expected.offsets)
 
     def test_center_accepts_scalar_and_array(self) -> None:
         cell_ids = encode_nested(3, [0, 17, 123])
-        first = px.center(int(cell_ids[0]))
-        centers = px.center(cell_ids)
+        first = px.centers(int(cell_ids[0]))
+        centers = px.centers(cell_ids)
 
         self.assertIsInstance(first, tuple)
         np.testing.assert_allclose(centers[0], np.asarray(first))
@@ -241,19 +245,19 @@ class PolypixTests(unittest.TestCase):
             dtype=np.uint64,
         )
 
-        centers = px.center(cell_ids)
-        boundaries = px.boundary(cell_ids)
+        centers = px.centers(cell_ids)
+        boundaries = px.boundaries(cell_ids)
 
         self.assertEqual(centers.shape, (3, 2))
         self.assertEqual(boundaries.shape, (3, 4, 2))
-        np.testing.assert_allclose(centers[1], np.asarray(px.center(int(cell_ids[1]))))
-        np.testing.assert_allclose(boundaries[2], px.boundary(int(cell_ids[2])))
+        np.testing.assert_allclose(centers[1], np.asarray(px.centers(int(cell_ids[1]))))
+        np.testing.assert_allclose(boundaries[2], px.boundaries(int(cell_ids[2])))
 
     def test_boundary_accepts_scalar_and_array(self) -> None:
         cell_ids = encode_nested(3, [17, 123])
 
-        boundary = px.boundary(int(cell_ids[0]))
-        boundaries = px.boundary(cell_ids)
+        boundary = px.boundaries(int(cell_ids[0]))
+        boundaries = px.boundaries(cell_ids)
 
         self.assertEqual(boundary.shape, (4, 2))
         self.assertEqual(boundaries.shape, (2, 4, 2))
@@ -262,54 +266,34 @@ class PolypixTests(unittest.TestCase):
     def test_center_and_boundary_accept_empty_arrays(self) -> None:
         cell_ids = np.empty(0, dtype=np.uint64)
 
-        self.assertEqual(px.center(cell_ids).shape, (0, 2))
-        self.assertEqual(px.boundary(cell_ids).shape, (0, 4, 2))
+        self.assertEqual(px.centers(cell_ids).shape, (0, 2))
+        self.assertEqual(px.boundaries(cell_ids).shape, (0, 4, 2))
 
     def test_resolution_requires_integer_without_coercion(self) -> None:
         polygon = [(-5.0, -5.0), (12.0, -4.0), (10.0, 9.0), (-6.0, 7.0)]
         vertices = np.asarray([lonlat_to_vec(lon, lat) for lon, lat in polygon], dtype=np.float64)
-        geometry = px.Polygon.from_xyz(vertices)
 
         for resolution in (2.0, "2", True):
             with self.subTest(resolution=resolution):
                 with self.assertRaises(TypeError):
-                    px.cover(geometry, resolution=resolution)
+                    px.cover_footprint(vertices, resolution=resolution)
 
-        self.assertIsInstance(px.cover(geometry, resolution=np.int64(2)), np.ndarray)
+        self.assertIsInstance(px.cover_footprint(vertices, resolution=np.int64(2)), px.Coverage)
 
     def test_cell_ids_require_integers_without_coercion(self) -> None:
         for cell_ids in (256.0, [256.9], np.asarray([256.9]), True, [True]):
             with self.subTest(cell_ids=cell_ids):
                 with self.assertRaises(TypeError):
-                    px.center(cell_ids)
+                    px.centers(cell_ids)
 
         for cell_ids in (-1, [-1], np.asarray([-1], dtype=np.int64)):
             with self.subTest(cell_ids=cell_ids):
                 with self.assertRaises(ValueError):
-                    px.boundary(cell_ids)
+                    px.boundaries(cell_ids)
 
-        self.assertIsInstance(px.center(np.uint64(encode_nested(2, [0])[0])), tuple)
+        self.assertIsInstance(px.centers(np.uint64(encode_nested(2, [0])[0])), tuple)
 
-    def test_polygon_offsets_require_integers_without_coercion(self) -> None:
-        vertices = np.asarray(
-            [
-                lonlat_to_vec(-5.0, -5.0),
-                lonlat_to_vec(12.0, -4.0),
-                lonlat_to_vec(10.0, 9.0),
-                lonlat_to_vec(-6.0, 7.0),
-            ],
-            dtype=np.float64,
-        )
-
-        for offsets in ([0.0, 4.0], [0.2, 4.9], np.asarray([0.0, 4.0])):
-            with self.subTest(offsets=offsets):
-                with self.assertRaises(TypeError):
-                    px.MultiPolygon(vertices, offsets, "xyz")
-
-        with self.assertRaises(ValueError):
-            px.MultiPolygon(vertices, [0, -1], "xyz")
-
-    def test_cover_requires_polygon_objects(self) -> None:
+    def test_cover_rejects_invalid_array_shape(self) -> None:
         polygon = np.asarray(
             [
                 lonlat_to_vec(-5.0, -5.0),
@@ -320,8 +304,8 @@ class PolypixTests(unittest.TestCase):
             dtype=np.float64,
         )
 
-        with self.assertRaisesRegex(TypeError, "requires a Polygon or MultiPolygon"):
-            px.cover(polygon, resolution=2)
+        with self.assertRaisesRegex(ValueError, "shape"):
+            px.cover_footprint(polygon[:, :2], resolution=2)
 
     def test_cover_rejects_invalid_resolution_bounds(self) -> None:
         vertices = np.asarray(
@@ -335,7 +319,7 @@ class PolypixTests(unittest.TestCase):
         for resolution in (-1, 30):
             with self.subTest(resolution=resolution):
                 with self.assertRaisesRegex(ValueError, "resolution must be between 0 and 29"):
-                    px.cover(px.Polygon.from_xyz(vertices), resolution=resolution)
+                    px.cover_footprint(vertices, resolution=resolution)
 
     def test_cover_rejects_invalid_xyz_vertices(self) -> None:
         polygons = {
@@ -356,24 +340,7 @@ class PolypixTests(unittest.TestCase):
         for name, polygon in polygons.items():
             with self.subTest(name=name):
                 with self.assertRaises(ValueError):
-                    px.cover(px.Polygon.from_xyz(polygon), resolution=1)
-
-    def test_cover_rejects_invalid_lonlat_vertices(self) -> None:
-        polygons = {
-            "latitude_out_of_range": np.asarray(
-                [[0.0, 0.0], [1.0, 0.0], [0.0, 91.0]],
-                dtype=np.float64,
-            ),
-            "non_finite": np.asarray(
-                [[np.nan, 0.0], [1.0, 0.0], [0.0, 1.0]],
-                dtype=np.float64,
-            ),
-        }
-
-        for name, polygon in polygons.items():
-            with self.subTest(name=name):
-                with self.assertRaises(ValueError):
-                    px.cover(px.Polygon.from_lonlat(polygon), resolution=1)
+                    px.cover_footprint(polygon, resolution=1)
 
     def test_cover_rejects_invalid_polygon_geometry(self) -> None:
         polygons = {
@@ -391,7 +358,8 @@ class PolypixTests(unittest.TestCase):
         for name, polygon in polygons.items():
             with self.subTest(name=name):
                 with self.assertRaises(ValueError):
-                    px.cover(px.Polygon.from_lonlat(polygon), resolution=1)
+                    vertices = np.asarray([lonlat_to_vec(lon, lat) for lon, lat in polygon], dtype=np.float64)
+                    px.cover_footprint(vertices, resolution=1)
 
     def test_center_and_boundary_reject_invalid_packed_cell_ids(self) -> None:
         invalid_cell_ids = [
@@ -403,25 +371,49 @@ class PolypixTests(unittest.TestCase):
         for cell_id in invalid_cell_ids:
             with self.subTest(cell_id=cell_id):
                 with self.assertRaisesRegex(ValueError, "valid packed HEALPix token"):
-                    px.center(cell_id)
+                    px.centers(cell_id)
                 with self.assertRaisesRegex(ValueError, "valid packed HEALPix token"):
-                    px.boundary(cell_id)
+                    px.boundaries(cell_id)
 
     def test_cover_accepts_empty_polygon_batch(self) -> None:
-        cell_ids, counts = px.cover(px.MultiPolygon.from_xyz([]), resolution=1)
+        coverage = px.cover_footprint(np.empty((0, 4, 3), dtype=np.float64), resolution=1)
 
-        self.assertEqual(cell_ids.dtype, np.dtype("uint64"))
-        self.assertEqual(counts.dtype, np.dtype("intp"))
-        self.assertEqual(cell_ids.shape, (0,))
-        self.assertEqual(counts.shape, (0,))
+        self.assertEqual(coverage.cell_ids.dtype, np.dtype("uint64"))
+        self.assertEqual(coverage.counts.dtype, np.dtype("intp"))
+        self.assertEqual(coverage.cell_ids.shape, (0,))
+        self.assertEqual(coverage.counts.shape, (0,))
+
+    def test_cover_accepts_empty_zero_vertex_polygon_batch(self) -> None:
+        coverage = px.cover_footprint(np.empty((0, 0, 3), dtype=np.float64), resolution=1)
+
+        self.assertEqual(coverage.cell_ids.dtype, np.dtype("uint64"))
+        self.assertEqual(coverage.offsets.dtype, np.dtype("uint64"))
+        self.assertEqual(coverage.cell_ids.shape, (0,))
+        np.testing.assert_array_equal(coverage.offsets, np.asarray([0], dtype=np.uint64))
+        self.assertEqual(coverage.counts.shape, (0,))
+
+    def test_cover_rejects_non_empty_zero_vertex_polygon_batch(self) -> None:
+        with self.assertRaisesRegex(ValueError, "at least one vertex"):
+            px.cover_footprint(np.empty((1, 0, 3), dtype=np.float64), resolution=1)
 
     def test_only_fast_public_endpoints_are_exposed(self) -> None:
-        self.assertEqual(px.__all__, ["MultiPolygon", "Polygon", "__version__", "boundary", "center", "cover"])
+        self.assertEqual(
+            px.__all__,
+            [
+                "Coverage",
+                "__version__",
+                "boundaries",
+                "centers",
+                "cover_footprint",
+                "cover_swath",
+            ],
+        )
         for name in [
             "cell_area_from_resolution",
             "cell_boundary",
             "cell_center",
             "cell_centers",
+            "cover",
             "children",
             "cover_many_lonlat",
             "cover_many_unit_vectors",

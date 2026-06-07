@@ -71,6 +71,16 @@ This is a local development wheel for smoke testing. It bundles runtime
 libraries from the active Pixi environment and is not the artifact to upload to
 PyPI.
 
+Run the CodSpeed benchmark suite locally:
+
+```bash
+pixi run --environment bench bench
+```
+
+Local benchmark runs validate that the benchmark cases execute. Performance
+regression reports are produced by `.github/workflows/codspeed.yml` on pull
+requests and pushes to `main`.
+
 ## Release Builds
 
 Publishable wheels are built by `.github/workflows/release.yml` with
