@@ -37,10 +37,22 @@ jobs:
           PIXI_CACHE_DIR: ${{ runner.temp }}/pixi-cache
         run: pixi install --locked --environment bench
 
+      - name: Verify benchmark import
+        working-directory: ${{ runner.temp }}
+        env:
+          PIXI_CACHE_DIR: ${{ runner.temp }}/pixi-cache
+        run: |
+          pixi run --manifest-path "$GITHUB_WORKSPACE" --environment bench python - <<'PY'
+          import polypix
+          import polypix._core
+
+          print(polypix.__file__)
+          PY
+
       - name: Run benchmarks
         uses: CodSpeedHQ/action@v4
         env:
           PIXI_CACHE_DIR: ${{ runner.temp }}/pixi-cache
         with:
           mode: simulation
-          run: pixi run --manifest-path "$GITHUB_WORKSPACE" --environment bench python -m pytest "$GITHUB_WORKSPACE/benchmarks" --codspeed
+          run: cd "$RUNNER_TEMP" && pixi run --manifest-path "$GITHUB_WORKSPACE" --environment bench python -m pytest "$GITHUB_WORKSPACE/benchmarks" --codspeed
