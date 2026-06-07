@@ -14,7 +14,7 @@ class Coverage:
     def counts(self) -> npt.NDArray[np.intp]: ...
 
 def cover_footprint(
-    footprints_xyz: Sequence[Sequence[float]] | npt.NDArray[np.float64],
+    footprints_xyz: Sequence[Sequence[float]] | Sequence[Sequence[Sequence[float]]] | npt.NDArray[np.float64],
     resolution: int,
 ) -> Coverage: ...
 
