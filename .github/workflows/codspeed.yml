@@ -1,0 +1,46 @@
+name: Benchmarks
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: benchmarks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmarks:
+    name: CodSpeed
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      POLYPIX_NUM_THREADS: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prefix-dev/setup-pixi@v0.9.5
+        with:
+          pixi-version: v0.70.1
+          cache: false
+          run-install: false
+
+      - name: Install benchmark environment
+        env:
+          PIXI_CACHE_DIR: ${{ runner.temp }}/pixi-cache
+        run: pixi install --locked --environment bench
+
+      - name: Run benchmarks
+        uses: CodSpeedHQ/action@v4
+        env:
+          PIXI_CACHE_DIR: ${{ runner.temp }}/pixi-cache
+        with:
+          mode: simulation
+          run: pixi run --manifest-path "$GITHUB_WORKSPACE" --environment bench python -m pytest "$GITHUB_WORKSPACE/benchmarks" --codspeed

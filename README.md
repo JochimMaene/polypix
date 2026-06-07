@@ -7,6 +7,7 @@ Fast HEALPix coverage for convex footprints on the sphere.
 [![License](https://img.shields.io/pypi/l/polypix.svg)](LICENSE)
 [![Tests](https://github.com/JochimMaene/polypix/actions/workflows/run-tests.yml/badge.svg)](https://github.com/JochimMaene/polypix/actions/workflows/run-tests.yml)
 [![Docs](https://github.com/JochimMaene/polypix/actions/workflows/docs.yml/badge.svg)](https://github.com/JochimMaene/polypix/actions/workflows/docs.yml)
+[![Benchmarks](https://github.com/JochimMaene/polypix/actions/workflows/codspeed.yml/badge.svg)](https://github.com/JochimMaene/polypix/actions/workflows/codspeed.yml)
 
 [Documentation](https://jochimmaene.github.io/polypix/) |
 [PyPI](https://pypi.org/project/polypix/) |

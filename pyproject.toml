@@ -33,7 +33,7 @@ Issues = "https://github.com/JochimMaene/polypix/issues"
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
-bench = ["numpy>=1.26"]
+bench = ["numpy>=1.26", "pytest-codspeed>=5"]
 docs = ["zensical"]
 release = ["build", "twine", "cibuildwheel>=3"]
 dev = ["pytest>=8", "build", "twine", "zensical", "cibuildwheel>=3"]
@@ -66,6 +66,7 @@ platforms = ["linux-64", "osx-64", "osx-arm64"]
 default = { features = ["dev", "test"], solve-group = "default" }
 dev = { features = ["dev"], solve-group = "default" }
 test = { features = ["dev", "test"], solve-group = "default" }
+bench = { features = ["dev", "test", "bench"], solve-group = "default" }
 docs = { features = ["dev", "docs"], solve-group = "default" }
 release = { features = ["dev"], solve-group = "default" }
 
@@ -98,11 +99,15 @@ no-build-isolation = ["polypix"]
 [tool.pixi.feature.test.dependencies]
 pytest = ">=8"
 
+[tool.pixi.feature.bench.dependencies]
+pytest-codspeed = ">=5"
+
 [tool.pixi.feature.docs.dependencies]
 zensical = "*"
 
 [tool.pixi.tasks]
-test = "python -m pytest -q"
+test = "python -m pytest -q tests"
+bench = "python -m pytest benchmarks --codspeed"
 wheel = "python -m build --wheel --no-isolation --config-setting=cmake.define.POLYPIX_BUNDLE_RUNTIME_DEPS=ON"
 docs-build = "zensical build --strict"
 docs-serve = "zensical serve"
