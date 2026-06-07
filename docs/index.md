@@ -1,13 +1,16 @@
 # Polypix
 
-Polypix computes HEALPix cells whose centers fall inside convex spherical
-polygons. It is a small Python package for workloads that already have clean
-spherical footprints and need fast, NumPy-friendly coverage results.
+Polypix computes HEALPix cells whose centers fall inside convex footprints on
+the sphere. It is a small Python package for coverage simulations and indexing
+pipelines that already have clean spherical footprints and need fast,
+NumPy-friendly results.
 
-Use Polypix when you want a deterministic center-sampled cover of a convex
-region on the sphere. Do not use it when you need planar polygon semantics,
-holes, non-convex polygons, or every HEALPix cell that touches a polygon
-boundary.
+Typical inputs are sensor footprints, beam contours, access regions, and swath
+edges from satellite, aerial, astronomy, or other spherical-domain simulations.
+Use Polypix when you want deterministic center-sampled coverage for convex
+regions. Do not use it when you need planar geometry semantics, holes,
+non-convex footprints, every HEALPix cell that touches a footprint boundary, or
+footprint generation from orbit, attitude, sensor, or beam models.
 
 ## Install
 
@@ -21,76 +24,96 @@ macOS 11 or newer on Intel and Apple Silicon.
 ## Quick Start
 
 ```python
+import math
+
 import numpy as np
 import polypix as px
 
-polygon = np.array(
+
+def lonlat_to_xyz(lon_deg, lat_deg):
+    lon = math.radians(lon_deg)
+    lat = math.radians(lat_deg)
+    cos_lat = math.cos(lat)
+    return cos_lat * math.cos(lon), cos_lat * math.sin(lon), math.sin(lat)
+
+
+footprint = np.asarray(
     [
-        [-5.0, -5.0],
-        [12.0, -4.0],
-        [10.0, 9.0],
-        [-6.0, 7.0],
+        lonlat_to_xyz(-5.0, -5.0),
+        lonlat_to_xyz(12.0, -4.0),
+        lonlat_to_xyz(10.0, 9.0),
+        lonlat_to_xyz(-6.0, 7.0),
     ],
     dtype=np.float64,
 )
 
-geometry = px.Polygon.from_lonlat(polygon)
-cell_ids = px.cover(geometry, resolution=8)
-centers = px.center(cell_ids)
-boundaries = px.boundary(cell_ids[:3])
+coverage = px.cover_footprint(footprint, resolution=8)
+centers = px.centers(coverage.cell_ids)
+boundaries = px.boundaries(coverage.cell_ids[:3])
 ```
 
-`cell_ids` is a one-dimensional `uint64` array. Each value is a packed Polypix
-cell token that stores the HEALPix resolution and NESTED pixel index. Treat
-these values as opaque IDs; use `center()` or `boundary()` when you need
-longitude/latitude geometry.
+`coverage.cell_ids` is a one-dimensional `uint64` array. Each value is a packed
+Polypix cell token that stores the HEALPix resolution and NESTED pixel index.
+Treat these values as opaque IDs; use `centers()` or `boundaries()` when you
+need longitude/latitude geometry.
 
 ## Batch Coverage
 
-For many polygons, use `MultiPolygon`. The result is a flat cell array plus one
-cell count per input polygon.
+For many footprints, pass a dense array with shape `(footprints, vertices, 3)`.
+The result stores one flat cell array plus output offsets.
 
 ```python
-polygon_a = np.array(
+footprint_a = np.asarray(
     [
-        [-5.0, -5.0],
-        [12.0, -4.0],
-        [10.0, 9.0],
-        [-6.0, 7.0],
+        lonlat_to_xyz(-5.0, -5.0),
+        lonlat_to_xyz(12.0, -4.0),
+        lonlat_to_xyz(10.0, 9.0),
+        lonlat_to_xyz(-6.0, 7.0),
     ],
     dtype=np.float64,
 )
-polygon_b = np.array(
+footprint_b = np.asarray(
     [
-        [20.0, -10.0],
-        [33.0, -10.0],
-        [33.0, 0.0],
-        [20.0, 0.0],
+        lonlat_to_xyz(20.0, -10.0),
+        lonlat_to_xyz(33.0, -10.0),
+        lonlat_to_xyz(33.0, 0.0),
+        lonlat_to_xyz(20.0, 0.0),
     ],
     dtype=np.float64,
 )
 
-batch = px.MultiPolygon.from_lonlat([polygon_a, polygon_b])
-cell_ids, counts = px.cover(batch, resolution=8)
-cells_by_polygon = np.split(cell_ids, np.cumsum(counts[:-1]))
+coverage = px.cover_footprint(np.stack([footprint_a, footprint_b]), resolution=8)
+cells_by_footprint = [
+    coverage.cell_ids[start:stop]
+    for start, stop in zip(coverage.offsets[:-1], coverage.offsets[1:])
+]
 ```
 
 ## Coordinate Systems
 
-Polypix accepts two explicit coordinate systems:
+Polypix accepts normalized unit vectors as `(x, y, z)`.
 
-- longitude/latitude vertices in degrees, through `from_lonlat(...)`;
-- normalized unit vectors as `(x, y, z)`, through `from_xyz(...)`.
+Footprint edges are interpreted as great-circle segments. Vertex orientation
+does not matter; Polypix normalizes orientation internally. A repeated final
+vertex is accepted as a closed-ring marker.
 
-Polygon edges are interpreted as great-circle segments. Vertex orientation does
-not matter; Polypix normalizes orientation internally. A repeated final vertex
-is accepted as a closed-ring marker.
+## Swath Coverage
+
+For strip-like coverage, pass the sampled left and right footprint edges
+directly:
+
+```python
+coverage = px.cover_swath(left_edge_xyz, right_edge_xyz, resolution=8)
+```
+
+Both edge arrays must have shape `(samples, 3)`. Polypix covers each
+consecutive interval as one quadrilateral.
 
 ## Coverage Rule
 
-Polypix uses center-in-polygon coverage: a HEALPix cell is included only if its
-center lies inside the spherical polygon. Boundary-touching cells whose centers
-fall outside the polygon are not included.
+Polypix uses center-in-footprint coverage: a HEALPix cell is included only if
+its center lies inside the spherical footprint. Boundary-touching cells whose
+centers fall outside the footprint are not included.
 
 This rule is compact and deterministic, but it is not a conservative overlap
 cover.

@@ -7,57 +7,26 @@ import numpy.typing as npt
 __version__: str
 
 @dataclass(frozen=True)
-class Polygon:
-    vertices: npt.NDArray[np.float64]
-    coordinates: str
+class Coverage:
+    cell_ids: npt.NDArray[np.uint64]
     offsets: npt.NDArray[np.uint64]
-    def __init__(
-        self,
-        vertices: Sequence[Sequence[float]] | npt.NDArray[np.float64],
-        coordinates: str,
-    ) -> None: ...
-    @classmethod
-    def from_xyz(
-        cls,
-        vertices: Sequence[Sequence[float]] | npt.NDArray[np.float64],
-    ) -> Polygon: ...
-    @classmethod
-    def from_lonlat(
-        cls,
-        vertices: Sequence[Sequence[float]] | npt.NDArray[np.float64],
-    ) -> Polygon: ...
+    @property
+    def counts(self) -> npt.NDArray[np.intp]: ...
 
-@dataclass(frozen=True)
-class MultiPolygon:
-    vertices: npt.NDArray[np.float64]
-    offsets: npt.NDArray[np.uint64]
-    coordinates: str
-    @classmethod
-    def from_xyz(
-        cls,
-        vertices: Sequence[Sequence[float]] | Sequence[npt.NDArray[np.float64]] | npt.NDArray[np.float64],
-    ) -> MultiPolygon: ...
-    @classmethod
-    def from_lonlat(
-        cls,
-        vertices: Sequence[Sequence[float]] | Sequence[npt.NDArray[np.float64]] | npt.NDArray[np.float64],
-    ) -> MultiPolygon: ...
-    def __len__(self) -> int: ...
-
-@overload
-def cover(
-    polygons: Polygon,
+def cover_footprint(
+    footprints_xyz: Sequence[Sequence[float]] | npt.NDArray[np.float64],
     resolution: int,
-) -> npt.NDArray[np.uint64]: ...
-@overload
-def cover(
-    polygons: MultiPolygon,
+) -> Coverage: ...
+
+def cover_swath(
+    left_edge_xyz: Sequence[Sequence[float]] | npt.NDArray[np.float64],
+    right_edge_xyz: Sequence[Sequence[float]] | npt.NDArray[np.float64],
     resolution: int,
-) -> tuple[npt.NDArray[np.uint64], npt.NDArray[np.intp]]: ...
+) -> Coverage: ...
 
 @overload
-def center(cell_ids: int) -> tuple[float, float]: ...
+def centers(cell_ids: int) -> tuple[float, float]: ...
 @overload
-def center(cell_ids: Sequence[int] | npt.NDArray[np.uint64]) -> npt.NDArray[np.float64]: ...
+def centers(cell_ids: Sequence[int] | npt.NDArray[np.uint64]) -> npt.NDArray[np.float64]: ...
 
-def boundary(cell_ids: int | Sequence[int] | npt.NDArray[np.uint64]) -> npt.NDArray[np.float64]: ...
+def boundaries(cell_ids: int | Sequence[int] | npt.NDArray[np.uint64]) -> npt.NDArray[np.float64]: ...

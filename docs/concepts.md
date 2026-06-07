@@ -31,63 +31,74 @@ Each packed ID contains both:
 
 This allows one array to contain cells from multiple resolutions. The packing
 format is not part of the public API. Treat returned values as stable opaque
-tokens and use `center()` or `boundary()` to recover longitude/latitude
+tokens and use `centers()` or `boundaries()` to recover longitude/latitude
 geometry.
 
-## Center-In-Polygon Coverage
+## Intended Geometry
 
-Polypix includes a HEALPix cell if the cell center lies inside the polygon.
-Cells that touch the polygon boundary but have centers outside the polygon are
-not included.
+Polypix is designed for coverage simulation outputs that can be represented as
+convex footprints on the unit sphere. Examples include sensor footprints, beam
+contours, access regions, and swath strips from satellite, aerial, astronomy,
+or other spherical-domain simulations.
+
+Inputs are not projected planar geometry. They are normalized `(x, y, z)` unit
+vectors from the sphere center to the footprint vertices, all in one common
+frame.
+
+Polypix starts after footprint generation. Orbit propagation, attitude
+modeling, sensor projection, and beam-shape modeling belong upstream.
+
+## Center-In-Footprint Coverage
+
+Polypix includes a HEALPix cell if the cell center lies inside the footprint.
+Cells that touch the footprint boundary but have centers outside the footprint
+are not included.
 
 This is useful when you need a compact representative cover. It is not a
 conservative overlap cover, and it should not be used as a substitute for
-full polygon intersection.
+full footprint intersection.
 
-## Spherical Polygons
+## Spherical Footprints
 
-Input polygons are interpreted on the unit sphere. Edges are great-circle
+Input footprints are interpreted on the unit sphere. Edges are great-circle
 segments between consecutive vertices.
 
-Longitude/latitude vertices are passed as `(longitude, latitude)` pairs in
-degrees. Longitudes may wrap around the antimeridian; latitudes must be between
-`-90` and `90` degrees. Unit-vector vertices are passed as normalized
-`(x, y, z)` coordinates.
+Footprint edges may cross the antimeridian because the geometry is evaluated on
+the sphere, not in a planar longitude/latitude coordinate system.
 
-Polypix normalizes polygon orientation internally and rejects invalid geometry:
+Polypix normalizes footprint orientation internally and rejects invalid
+geometry:
 
 - fewer than three unique vertices,
 - duplicate vertices,
 - degenerate edges,
-- non-convex polygons,
+- non-convex footprints,
 - non-finite coordinates,
 - unit vectors that are not normalized.
 
 A repeated final vertex is accepted as a closed-ring marker and is removed
 before coverage is computed.
 
-## Batch Layout
+## Coverage Results
 
-`Polygon` represents one polygon. `MultiPolygon` represents a batch of polygons
-using a flat vertex array and offsets before calling the native implementation.
+`cover_footprint()` accepts one footprint with shape `(vertices, 3)` or a dense
+batch with shape `(footprints, vertices, 3)`. `cover_swath()` accepts two edge
+arrays with shape `(samples, 3)` and covers each consecutive interval as one
+quadrilateral.
 
-Use `Polygon.from_lonlat(...)` or `Polygon.from_xyz(...)` for one polygon. Use
-`MultiPolygon.from_lonlat(...)` or `MultiPolygon.from_xyz(...)` for dense or
-ragged batches.
-
-For `N` polygons, the internal offsets array has length `N + 1`:
+Both functions return `Coverage`. For `N` covered footprints or swath intervals,
+the output offsets array has length `N + 1`:
 
 ```text
-polygon i vertices = vertices[offsets[i] : offsets[i + 1]]
+covered cells for item i = cell_ids[offsets[i] : offsets[i + 1]]
 ```
 
-For a `Polygon`, `cover()` returns one `uint64` cell ID array. For a
-`MultiPolygon`, it returns a flat `uint64` cell ID array plus a `counts` array
-with one covered-cell count per input polygon.
+`Coverage.counts` is derived from the offsets and contains one covered-cell
+count per input footprint or swath interval.
 
 ## Parallel Execution
 
-For sufficiently large batches, Polypix parallelizes coverage across polygons.
+For sufficiently large batches, Polypix parallelizes coverage across footprints.
 The default worker count is based on hardware concurrency and the requested
 resolution. Set `POLYPIX_NUM_THREADS` to a positive integer to choose a fixed
 worker count:

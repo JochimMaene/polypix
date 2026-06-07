@@ -4,8 +4,8 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "polypix"
-version = "0.1.0"
-description = "Fast HEALPix center-in-polygon coverage for convex spherical polygons."
+version = "0.2.0"
+description = "Fast HEALPix coverage for convex footprints on the sphere."
 keywords = ["healpix", "spherical-geometry", "geospatial", "astronomy", "spatial-index"]
 classifiers = [
   "Operating System :: MacOS",

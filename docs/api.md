@@ -8,152 +8,153 @@ import polypix as px
 
 The public API is intentionally small:
 
-- `Polygon`
-- `MultiPolygon`
-- `cover`
-- `center`
-- `boundary`
+- `Coverage`
+- `cover_footprint`
+- `cover_swath`
+- `centers`
+- `boundaries`
 
-## Polygon
-
-```python
-px.Polygon.from_lonlat(vertices)
-px.Polygon.from_xyz(vertices)
-```
-
-Represents one convex spherical polygon.
-
-`from_lonlat(...)` accepts an array-like object with shape `(vertices, 2)`.
-Each row is `(longitude, latitude)` in degrees.
-
-`from_xyz(...)` accepts an array-like object with shape `(vertices, 3)`. Each
-row is a normalized unit vector `(x, y, z)`.
-
-Example:
+## Coverage
 
 ```python
-vertices = np.array(
-    [
-        [-5.0, -5.0],
-        [12.0, -4.0],
-        [10.0, 9.0],
-        [-6.0, 7.0],
-    ],
-    dtype=np.float64,
-)
-
-polygon = px.Polygon.from_lonlat(vertices)
+px.Coverage(cell_ids, offsets)
 ```
 
-The constructor stores vertices as contiguous `float64` arrays. It validates
-array shape and coordinate-system names immediately. Geometry validation happens
-when the polygon is passed to `cover()`.
+Coverage results are returned by `cover_footprint()` and `cover_swath()`.
 
-## MultiPolygon
+Attributes:
+
+- `cell_ids`: a one-dimensional `np.ndarray` with dtype `uint64`.
+- `offsets`: a one-dimensional `np.ndarray` with dtype `uint64`.
+- `counts`: a derived one-dimensional `np.ndarray` with dtype `intp`.
+
+For `N` input footprints, `offsets` has length `N + 1`. The covered cells for
+footprint `i` are:
 
 ```python
-px.MultiPolygon.from_lonlat(polygons)
-px.MultiPolygon.from_xyz(polygons)
-px.MultiPolygon(vertices, offsets, coordinates)
+coverage.cell_ids[coverage.offsets[i] : coverage.offsets[i + 1]]
 ```
 
-Represents a batch of convex spherical polygons.
+For a single footprint, `offsets` is `[0, len(cell_ids)]`.
 
-The `from_lonlat(...)` and `from_xyz(...)` constructors accept either dense or
-ragged input:
-
-- a dense array with shape `(polygons, vertices, 2)` or `(polygons, vertices, 3)`,
-- a ragged list of arrays with shape `(vertices, 2)` or `(vertices, 3)`,
-- for a single polygon, an array with shape `(vertices, 2)` or `(vertices, 3)`.
-
-Use the direct constructor when you already have flat vertices and offsets:
+## cover_footprint
 
 ```python
-vertices = np.array(
-    [
-        [-5.0, -5.0],
-        [12.0, -4.0],
-        [10.0, 9.0],
-        [-6.0, 7.0],
-        [20.0, -10.0],
-        [33.0, -10.0],
-        [33.0, 0.0],
-        [20.0, 0.0],
-    ],
-    dtype=np.float64,
-)
-
-batch = px.MultiPolygon(vertices, offsets=[0, 4, 8], coordinates="lonlat")
+px.cover_footprint(footprints_xyz, resolution)
 ```
 
-`offsets` must be a one-dimensional integer array that starts at `0`, is
-nondecreasing, and ends at the total vertex count.
-
-`len(batch)` returns the number of polygons.
-
-## cover
-
-```python
-px.cover(polygons, resolution)
-```
-
-Returns packed Polypix cell IDs for one polygon or a batch of polygons.
+Returns packed Polypix cell IDs for one convex spherical footprint or a dense
+batch of footprints. Footprints are normalized `(x, y, z)` unit vectors in a
+common frame.
 
 Parameters:
 
-- `polygons`: a `Polygon` or `MultiPolygon`.
+- `footprints_xyz`: unit-vector vertices with shape `(vertices, 3)` or
+  `(footprints, vertices, 3)`.
 - `resolution`: integer HEALPix resolution from 0 through 29.
 
 Returns:
 
-- for `Polygon`, a one-dimensional `np.ndarray` with dtype `uint64`;
-- for `MultiPolygon`, `(cell_ids, counts)`, where `cell_ids` is a flat
-  one-dimensional `uint64` array and `counts` has one integer count per input
-  polygon.
+- `Coverage`.
 
 Example:
 
 ```python
-cell_ids = px.cover(polygon, resolution=8)
+import math
+
+import numpy as np
+import polypix as px
+
+
+def lonlat_to_xyz(lon_deg, lat_deg):
+    lon = math.radians(lon_deg)
+    lat = math.radians(lat_deg)
+    cos_lat = math.cos(lat)
+    return cos_lat * math.cos(lon), cos_lat * math.sin(lon), math.sin(lat)
+
+
+footprint = np.asarray(
+    [
+        lonlat_to_xyz(-5.0, -5.0),
+        lonlat_to_xyz(12.0, -4.0),
+        lonlat_to_xyz(10.0, 9.0),
+        lonlat_to_xyz(-6.0, 7.0),
+    ],
+    dtype=np.float64,
+)
+
+coverage = px.cover_footprint(footprint, resolution=8)
 ```
 
 Batch example:
 
 ```python
-batch = px.MultiPolygon.from_lonlat(
+footprint_a = np.asarray(
     [
-        np.array(
-            [
-                [-5.0, -5.0],
-                [12.0, -4.0],
-                [10.0, 9.0],
-                [-6.0, 7.0],
-            ],
-            dtype=np.float64,
-        ),
-        np.array(
-            [
-                [20.0, -10.0],
-                [33.0, -10.0],
-                [33.0, 0.0],
-                [20.0, 0.0],
-            ],
-            dtype=np.float64,
-        ),
-    ]
+        lonlat_to_xyz(-5.0, -5.0),
+        lonlat_to_xyz(12.0, -4.0),
+        lonlat_to_xyz(10.0, 9.0),
+        lonlat_to_xyz(-6.0, 7.0),
+    ],
+    dtype=np.float64,
 )
-cell_ids, counts = px.cover(batch, resolution=8)
-cells_by_polygon = np.split(cell_ids, np.cumsum(counts[:-1]))
+footprint_b = np.asarray(
+    [
+        lonlat_to_xyz(20.0, -10.0),
+        lonlat_to_xyz(33.0, -10.0),
+        lonlat_to_xyz(33.0, 0.0),
+        lonlat_to_xyz(20.0, 0.0),
+    ],
+    dtype=np.float64,
+)
+
+coverage = px.cover_footprint(np.stack([footprint_a, footprint_b]), resolution=8)
+cells_by_footprint = [
+    coverage.cell_ids[start:stop]
+    for start, stop in zip(coverage.offsets[:-1], coverage.offsets[1:])
+]
 ```
 
-`cover()` raises `TypeError` when called with raw arrays instead of `Polygon` or
-`MultiPolygon` objects. It raises `ValueError` for invalid resolutions or
-invalid polygon geometry.
-
-## center
+## cover_swath
 
 ```python
-px.center(cell_ids)
+px.cover_swath(left_edge_xyz, right_edge_xyz, resolution)
+```
+
+Returns packed Polypix cell IDs for consecutive swath intervals.
+
+Parameters:
+
+- `left_edge_xyz`: unit-vector left edge samples with shape `(samples, 3)`.
+- `right_edge_xyz`: unit-vector right edge samples with shape `(samples, 3)`.
+- `resolution`: integer HEALPix resolution from 0 through 29.
+
+Returns:
+
+- `Coverage`.
+
+`left_edge_xyz` and `right_edge_xyz` must contain the same number of samples,
+and at least two samples. Each consecutive interval is covered as one
+quadrilateral:
+
+```text
+[left[i], right[i], right[i + 1], left[i + 1]]
+```
+
+Example:
+
+```python
+coverage = px.cover_swath(left_edge_xyz, right_edge_xyz, resolution=8)
+cells_by_interval = [
+    coverage.cell_ids[start:stop]
+    for start, stop in zip(coverage.offsets[:-1], coverage.offsets[1:])
+]
+```
+
+## centers
+
+```python
+px.centers(cell_ids)
 ```
 
 Returns HEALPix cell centers as `(longitude, latitude)` in degrees.
@@ -172,16 +173,16 @@ Returns:
 Example:
 
 ```python
-lon, lat = px.center(int(cell_ids[0]))
-centers = px.center(cell_ids)
+lon, lat = px.centers(int(coverage.cell_ids[0]))
+center_lonlat = px.centers(coverage.cell_ids)
 ```
 
 The input may contain cells from different resolutions.
 
-## boundary
+## boundaries
 
 ```python
-px.boundary(cell_ids)
+px.boundaries(cell_ids)
 ```
 
 Returns HEALPix cell boundaries as longitude/latitude coordinates in degrees.
@@ -199,8 +200,8 @@ Returns:
 Example:
 
 ```python
-outline = px.boundary(int(cell_ids[0]))
-outlines = px.boundary(cell_ids[:10])
+outline = px.boundaries(int(coverage.cell_ids[0]))
+outlines = px.boundaries(coverage.cell_ids[:10])
 ```
 
 The four returned vertices are the HEALPix cell corners. The boundary is not
@@ -214,9 +215,10 @@ The native code validates spherical geometry.
 Common validation errors include:
 
 - `resolution` is not an integer or is outside `0..29`;
-- longitude/latitude arrays do not have shape `(vertices, 2)`;
-- unit-vector arrays do not have shape `(vertices, 3)`;
+- footprint arrays do not have shape `(vertices, 3)` or `(footprints, vertices, 3)`;
+- swath edge arrays do not have shape `(samples, 3)`;
+- swath edge arrays have different lengths or fewer than two samples;
 - unit vectors are not finite or not normalized;
-- a polygon has fewer than three unique vertices;
-- a polygon has duplicate vertices, degenerate edges, or is non-convex;
-- packed cell IDs passed to `center()` or `boundary()` are invalid.
+- a footprint has fewer than three unique vertices;
+- a footprint has duplicate vertices, degenerate edges, or is non-convex;
+- packed cell IDs passed to `centers()` or `boundaries()` are invalid.
