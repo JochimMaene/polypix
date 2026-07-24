@@ -58,6 +58,18 @@ sdist.exclude = [
   "venv*/**",
 ]
 
+[tool.cibuildwheel]
+skip = "*musllinux*"
+manylinux-x86_64-image = "manylinux_2_34"
+test-requires = ["pytest"]
+test-command = "python -m pytest {project}/tests"
+
+[tool.cibuildwheel.linux]
+repair-wheel-command = "LD_LIBRARY_PATH=$POLYPIX_DEPS_PREFIX/lib auditwheel repair -w {dest_dir} {wheel}"
+
+[tool.cibuildwheel.macos]
+repair-wheel-command = "DYLD_LIBRARY_PATH=$POLYPIX_DEPS_PREFIX/lib delocate-wheel --require-archs {delocate_archs} -w {dest_dir} -v {wheel}"
+
 [tool.pixi.workspace]
 channels = ["conda-forge"]
 platforms = ["linux-64", "osx-64", "osx-arm64"]
@@ -69,6 +81,7 @@ test = { features = ["dev", "test"], solve-group = "default" }
 bench = { features = ["dev", "test", "bench"], solve-group = "default" }
 docs = { features = ["dev", "docs"], solve-group = "default" }
 release = { features = ["dev"], solve-group = "default" }
+wheel-deps = { features = ["wheel-deps"], no-default-feature = true }
 
 [tool.pixi.dependencies]
 python = ">=3.12"
@@ -104,6 +117,15 @@ pytest-codspeed = ">=5"
 
 [tool.pixi.feature.docs.dependencies]
 zensical = "*"
+
+[tool.pixi.feature.wheel-deps.dependencies]
+healpix_cxx = "==3.83"
+cfitsio = "==4.6.3"
+pkg-config = "*"
+
+[tool.pixi.feature.wheel-deps.target.linux-64.dependencies]
+# Newer libcurl builds pull in ICU with a newer C++ ABI than manylinux_2_34.
+libcurl = "==8.20.0"
 
 [tool.pixi.tasks]
 test = "python -m pytest -q tests"

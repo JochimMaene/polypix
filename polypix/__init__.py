@@ -100,16 +100,40 @@ def _cell_ids(values: int | Sequence[int] | np.ndarray) -> tuple[np.ndarray, boo
     return _as_uint64_vector(array, "cell_ids"), False
 
 
-def cover_footprint(footprints_xyz: Sequence[Sequence[float]] | np.ndarray, resolution: int) -> Coverage:
+def _cover_xyz(
+    vertices: np.ndarray,
+    offsets: np.ndarray,
+    resolution: int,
+    allowed_cell_ids: Sequence[int] | np.ndarray | None,
+) -> Coverage:
+    if allowed_cell_ids is None:
+        return _coverage(_cover(vertices, offsets, resolution))
+    allowed_array = np.asarray(allowed_cell_ids)
+    allowed = (
+        np.empty(0, dtype=np.uint64)
+        if allowed_array.ndim == 1 and allowed_array.size == 0
+        else _as_uint64_vector(allowed_array, "allowed_cell_ids")
+    )
+    return _coverage(_cover(vertices, offsets, resolution, allowed))
+
+
+def cover_footprint(
+    footprints_xyz: Sequence[Sequence[float]] | np.ndarray,
+    resolution: int,
+    *,
+    allowed_cell_ids: Sequence[int] | np.ndarray | None = None,
+) -> Coverage:
     resolved = _as_resolution(resolution)
     vertices, offsets = _as_footprints(footprints_xyz)
-    return _coverage(_cover(vertices, offsets, resolved))
+    return _cover_xyz(vertices, offsets, resolved, allowed_cell_ids)
 
 
 def cover_swath(
     left_edge_xyz: Sequence[Sequence[float]] | np.ndarray,
     right_edge_xyz: Sequence[Sequence[float]] | np.ndarray,
     resolution: int,
+    *,
+    allowed_cell_ids: Sequence[int] | np.ndarray | None = None,
 ) -> Coverage:
     resolved = _as_resolution(resolution)
     left = _as_float_matrix(left_edge_xyz, 3, "left_edge_xyz")
@@ -125,7 +149,7 @@ def cover_swath(
     footprints[:, 2, :] = right[1:]
     footprints[:, 3, :] = left[1:]
     vertices, offsets = _as_footprints(footprints)
-    return _coverage(_cover(vertices, offsets, resolved))
+    return _cover_xyz(vertices, offsets, resolved, allowed_cell_ids)
 
 
 def centers(cell_ids: int | Sequence[int] | np.ndarray) -> tuple[float, float] | np.ndarray:

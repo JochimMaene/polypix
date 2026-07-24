@@ -7,6 +7,7 @@ on:
       - ".github/workflows/release.yml"
       - "ci/**"
       - "CMakeLists.txt"
+      - "pixi.lock"
       - "polypix/**"
       - "pyproject.toml"
       - "src/polypix/**"
@@ -40,9 +41,6 @@ jobs:
     name: Build wheel on ${{ matrix.os }} ${{ matrix.arch }}
     if: github.event_name != 'pull_request'
     runs-on: ${{ matrix.os }}
-    env:
-      HEALPIX_CXX_VERSION: "3.83"
-      CFITSIO_VERSION: "4.6.3"
     strategy:
       fail-fast: false
       matrix:
@@ -61,39 +59,39 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Cache native dependency prefix
-        uses: actions/cache@v4
+      - name: Install locked wheel dependencies
+        uses: prefix-dev/setup-pixi@v0.10.0
         with:
-          path: ${{ runner.temp }}/polypix-deps
-          key: polypix-deps-${{ matrix.os }}-${{ matrix.arch }}-${{ env.HEALPIX_CXX_VERSION }}-${{ env.CFITSIO_VERSION }}-${{ hashFiles('ci/install_3rdparty.sh') }}
+          pixi-version: v0.70.1
+          pixi-bin-path: ${{ runner.temp }}/pixi-bin/pixi
+          manifest-path: pyproject.toml
+          environments: ${{ runner.os != 'Linux' && 'wheel-deps' || '' }}
+          run-install: ${{ runner.os != 'Linux' }}
+          locked: ${{ runner.os != 'Linux' }}
+          cache: ${{ runner.os != 'Linux' }}
 
       - name: Build wheels
         uses: pypa/cibuildwheel@v3.4.0
         env:
           CIBW_ARCHS: ${{ matrix.arch }}
           CIBW_BUILD: "cp312-* cp313-* cp314-*"
-          CIBW_SKIP: "*musllinux*"
-          CIBW_MANYLINUX_X86_64_IMAGE: "manylinux_2_34"
+          CIBW_BEFORE_ALL_LINUX: >-
+            /host${{ runner.temp }}/pixi-bin/pixi install
+            --manifest-path /project/pyproject.toml
+            --environment wheel-deps
+            --locked
           CIBW_ENVIRONMENT_LINUX:
-            POLYPIX_DEPS_PREFIX='/host${{ runner.temp }}/polypix-deps/dist'
-            CMAKE_PREFIX_PATH='/host${{ runner.temp }}/polypix-deps/dist'
-            PKG_CONFIG_PATH='/host${{ runner.temp }}/polypix-deps/dist/lib/pkgconfig'
-            PATH="/host${{ runner.temp }}/polypix-deps/dist/bin:$PATH"
-            HEALPIX_CXX_VERSION='${{ env.HEALPIX_CXX_VERSION }}'
-            CFITSIO_VERSION='${{ env.CFITSIO_VERSION }}'
+            POLYPIX_DEPS_PREFIX='/project/.pixi/envs/wheel-deps'
+            CMAKE_PREFIX_PATH='/project/.pixi/envs/wheel-deps'
+            PKG_CONFIG_PATH='/project/.pixi/envs/wheel-deps/lib/pkgconfig'
+            PATH="/project/.pixi/envs/wheel-deps/bin:$PATH"
+            LDFLAGS='-static-libstdc++'
           CIBW_ENVIRONMENT_MACOS:
-            POLYPIX_DEPS_PREFIX='${{ runner.temp }}/polypix-deps/dist'
-            CMAKE_PREFIX_PATH='${{ runner.temp }}/polypix-deps/dist'
-            PKG_CONFIG_PATH='${{ runner.temp }}/polypix-deps/dist/lib/pkgconfig'
-            PATH="${{ runner.temp }}/polypix-deps/dist/bin:$PATH"
-            HEALPIX_CXX_VERSION='${{ env.HEALPIX_CXX_VERSION }}'
-            CFITSIO_VERSION='${{ env.CFITSIO_VERSION }}'
+            POLYPIX_DEPS_PREFIX='${{ github.workspace }}/.pixi/envs/wheel-deps'
+            CMAKE_PREFIX_PATH='${{ github.workspace }}/.pixi/envs/wheel-deps'
+            PKG_CONFIG_PATH='${{ github.workspace }}/.pixi/envs/wheel-deps/lib/pkgconfig'
+            PATH="${{ github.workspace }}/.pixi/envs/wheel-deps/bin:$PATH"
             MACOSX_DEPLOYMENT_TARGET='${{ matrix.macosx_deployment_target }}'
-          CIBW_BEFORE_ALL: "/bin/bash ci/install_3rdparty.sh"
-          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "LD_LIBRARY_PATH='/host${{ runner.temp }}/polypix-deps/dist/lib' auditwheel repair -w {dest_dir} {wheel}"
-          CIBW_REPAIR_WHEEL_COMMAND_MACOS: "DYLD_LIBRARY_PATH='${{ runner.temp }}/polypix-deps/dist/lib' delocate-wheel --require-archs=${{ matrix.arch }} -w {dest_dir} -v {wheel}"
-          CIBW_TEST_REQUIRES: "pytest"
-          CIBW_TEST_COMMAND: "python -m pytest {project}/tests"
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
@@ -106,9 +104,6 @@ jobs:
     name: PR wheel smoke on ${{ matrix.os }} ${{ matrix.arch }}
     if: github.event_name == 'pull_request'
     runs-on: ${{ matrix.os }}
-    env:
-      HEALPIX_CXX_VERSION: "3.83"
-      CFITSIO_VERSION: "4.6.3"
     strategy:
       fail-fast: false
       matrix:
@@ -124,39 +119,39 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Cache native dependency prefix
-        uses: actions/cache@v4
+      - name: Install locked wheel dependencies
+        uses: prefix-dev/setup-pixi@v0.10.0
         with:
-          path: ${{ runner.temp }}/polypix-deps
-          key: polypix-deps-smoke-${{ matrix.os }}-${{ matrix.arch }}-${{ env.HEALPIX_CXX_VERSION }}-${{ env.CFITSIO_VERSION }}-${{ hashFiles('ci/install_3rdparty.sh') }}
+          pixi-version: v0.70.1
+          pixi-bin-path: ${{ runner.temp }}/pixi-bin/pixi
+          manifest-path: pyproject.toml
+          environments: ${{ runner.os != 'Linux' && 'wheel-deps' || '' }}
+          run-install: ${{ runner.os != 'Linux' }}
+          locked: ${{ runner.os != 'Linux' }}
+          cache: ${{ runner.os != 'Linux' }}
 
       - name: Build smoke wheels
         uses: pypa/cibuildwheel@v3.4.0
         env:
           CIBW_ARCHS: ${{ matrix.arch }}
           CIBW_BUILD: "cp312-* cp314-*"
-          CIBW_SKIP: "*musllinux*"
-          CIBW_MANYLINUX_X86_64_IMAGE: "manylinux_2_34"
+          CIBW_BEFORE_ALL_LINUX: >-
+            /host${{ runner.temp }}/pixi-bin/pixi install
+            --manifest-path /project/pyproject.toml
+            --environment wheel-deps
+            --locked
           CIBW_ENVIRONMENT_LINUX:
-            POLYPIX_DEPS_PREFIX='/host${{ runner.temp }}/polypix-deps/dist'
-            CMAKE_PREFIX_PATH='/host${{ runner.temp }}/polypix-deps/dist'
-            PKG_CONFIG_PATH='/host${{ runner.temp }}/polypix-deps/dist/lib/pkgconfig'
-            PATH="/host${{ runner.temp }}/polypix-deps/dist/bin:$PATH"
-            HEALPIX_CXX_VERSION='${{ env.HEALPIX_CXX_VERSION }}'
-            CFITSIO_VERSION='${{ env.CFITSIO_VERSION }}'
+            POLYPIX_DEPS_PREFIX='/project/.pixi/envs/wheel-deps'
+            CMAKE_PREFIX_PATH='/project/.pixi/envs/wheel-deps'
+            PKG_CONFIG_PATH='/project/.pixi/envs/wheel-deps/lib/pkgconfig'
+            PATH="/project/.pixi/envs/wheel-deps/bin:$PATH"
+            LDFLAGS='-static-libstdc++'
           CIBW_ENVIRONMENT_MACOS:
-            POLYPIX_DEPS_PREFIX='${{ runner.temp }}/polypix-deps/dist'
-            CMAKE_PREFIX_PATH='${{ runner.temp }}/polypix-deps/dist'
-            PKG_CONFIG_PATH='${{ runner.temp }}/polypix-deps/dist/lib/pkgconfig'
-            PATH="${{ runner.temp }}/polypix-deps/dist/bin:$PATH"
-            HEALPIX_CXX_VERSION='${{ env.HEALPIX_CXX_VERSION }}'
-            CFITSIO_VERSION='${{ env.CFITSIO_VERSION }}'
+            POLYPIX_DEPS_PREFIX='${{ github.workspace }}/.pixi/envs/wheel-deps'
+            CMAKE_PREFIX_PATH='${{ github.workspace }}/.pixi/envs/wheel-deps'
+            PKG_CONFIG_PATH='${{ github.workspace }}/.pixi/envs/wheel-deps/lib/pkgconfig'
+            PATH="${{ github.workspace }}/.pixi/envs/wheel-deps/bin:$PATH"
             MACOSX_DEPLOYMENT_TARGET='${{ matrix.macosx_deployment_target }}'
-          CIBW_BEFORE_ALL: "/bin/bash ci/install_3rdparty.sh"
-          CIBW_REPAIR_WHEEL_COMMAND_LINUX: "LD_LIBRARY_PATH='/host${{ runner.temp }}/polypix-deps/dist/lib' auditwheel repair -w {dest_dir} {wheel}"
-          CIBW_REPAIR_WHEEL_COMMAND_MACOS: "DYLD_LIBRARY_PATH='${{ runner.temp }}/polypix-deps/dist/lib' delocate-wheel --require-archs=${{ matrix.arch }} -w {dest_dir} -v {wheel}"
-          CIBW_TEST_REQUIRES: "pytest"
-          CIBW_TEST_COMMAND: "python -m pytest {project}/tests"
 
       - name: Upload smoke wheels
         uses: actions/upload-artifact@v4

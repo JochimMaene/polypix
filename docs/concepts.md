@@ -96,6 +96,28 @@ covered cells for item i = cell_ids[offsets[i] : offsets[i + 1]]
 `Coverage.counts` is derived from the offsets and contains one covered-cell
 count per input footprint or swath interval.
 
+## Restricted Coverage
+
+Pass `allowed_cell_ids` to `cover_footprint()` or `cover_swath()` when only an
+existing set of cells is relevant:
+
+```python
+coverage = px.cover_swath(
+    left_edge_xyz,
+    right_edge_xyz,
+    resolution=12,
+    allowed_cell_ids=aoi_cell_ids,
+)
+```
+
+All allowed IDs must have the requested resolution. The filter has set
+semantics, so duplicates are ignored. Empty filters return empty `cell_ids`
+while retaining one offset per input footprint or swath interval.
+
+Filtered coverage tests only the allowed cell centers in the native kernel. It
+does not construct or expand the unfiltered HEALPix coverage, so memory use is
+proportional to the allowed cells and returned matches.
+
 ## Parallel Execution
 
 For sufficiently large batches, Polypix parallelizes coverage across footprints.

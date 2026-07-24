@@ -40,7 +40,7 @@ For a single footprint, `offsets` is `[0, len(cell_ids)]`.
 ## cover_footprint
 
 ```python
-px.cover_footprint(footprints_xyz, resolution)
+px.cover_footprint(footprints_xyz, resolution, *, allowed_cell_ids=None)
 ```
 
 Returns packed Polypix cell IDs for one convex spherical footprint or a dense
@@ -52,6 +52,9 @@ Parameters:
 - `footprints_xyz`: unit-vector vertices with shape `(vertices, 3)` or
   `(footprints, vertices, 3)`.
 - `resolution`: integer HEALPix resolution from 0 through 29.
+- `allowed_cell_ids`: optional one-dimensional integer array-like. When
+  supplied, only these cells can appear in the result. Every ID must belong to
+  `resolution`.
 
 Returns:
 
@@ -86,6 +89,19 @@ footprint = np.asarray(
 coverage = px.cover_footprint(footprint, resolution=8)
 ```
 
+To restrict coverage to an existing set of cells:
+
+```python
+coverage = px.cover_footprint(
+    footprint,
+    resolution=8,
+    allowed_cell_ids=aoi_cell_ids,
+)
+```
+
+`allowed_cell_ids` has set semantics: duplicates are ignored, and results keep
+the normal ascending NESTED order rather than the input filter order.
+
 Batch example:
 
 ```python
@@ -118,7 +134,13 @@ cells_by_footprint = [
 ## cover_swath
 
 ```python
-px.cover_swath(left_edge_xyz, right_edge_xyz, resolution)
+px.cover_swath(
+    left_edge_xyz,
+    right_edge_xyz,
+    resolution,
+    *,
+    allowed_cell_ids=None,
+)
 ```
 
 Returns packed Polypix cell IDs for consecutive swath intervals.
@@ -128,6 +150,8 @@ Parameters:
 - `left_edge_xyz`: unit-vector left edge samples with shape `(samples, 3)`.
 - `right_edge_xyz`: unit-vector right edge samples with shape `(samples, 3)`.
 - `resolution`: integer HEALPix resolution from 0 through 29.
+- `allowed_cell_ids`: optional one-dimensional integer array-like restricting
+  each swath interval to cells at `resolution`.
 
 Returns:
 
@@ -150,6 +174,9 @@ cells_by_interval = [
     for start, stop in zip(coverage.offsets[:-1], coverage.offsets[1:])
 ]
 ```
+
+The native kernel tests only the allowed cell centers for every interval; it
+does not construct the unfiltered swath coverage first.
 
 ## centers
 

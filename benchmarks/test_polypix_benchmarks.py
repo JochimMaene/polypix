@@ -44,6 +44,14 @@ def cell_ids(footprints: np.ndarray) -> np.ndarray:
     return px.cover_footprint(footprints, resolution=7).cell_ids
 
 
+@pytest.fixture(scope="module")
+def sparse_resolution_12_cells() -> np.ndarray:
+    resolution = 12
+    pixel_count = 12 * (4**resolution)
+    nested_indices = np.arange(1024, dtype=np.uint64) * np.uint64(pixel_count // 1024)
+    return nested_indices | np.uint64(1 << (4 + 2 * resolution))
+
+
 @pytest.mark.parametrize("resolution", [4, 6, 7], ids=lambda value: f"resolution_{value}")
 def test_cover_footprint_batch(benchmark, footprints: np.ndarray, resolution: int) -> None:
     coverage = benchmark(px.cover_footprint, footprints, resolution)
@@ -55,6 +63,24 @@ def test_cover_footprint_batch(benchmark, footprints: np.ndarray, resolution: in
 def test_cover_swath(benchmark, swath_edges: tuple[np.ndarray, np.ndarray]) -> None:
     left, right = swath_edges
     coverage = benchmark(px.cover_swath, left, right, 7)
+
+    assert coverage.offsets.shape == (left.shape[0],)
+    assert coverage.cell_ids.dtype == np.uint64
+
+
+def test_cover_swath_with_sparse_high_resolution_filter(
+    benchmark,
+    swath_edges: tuple[np.ndarray, np.ndarray],
+    sparse_resolution_12_cells: np.ndarray,
+) -> None:
+    left, right = swath_edges
+    coverage = benchmark(
+        px.cover_swath,
+        left,
+        right,
+        12,
+        allowed_cell_ids=sparse_resolution_12_cells,
+    )
 
     assert coverage.offsets.shape == (left.shape[0],)
     assert coverage.cell_ids.dtype == np.uint64
