@@ -79,6 +79,7 @@ jobs:
             CMAKE_PREFIX_PATH='/host${{ runner.temp }}/polypix-deps/dist'
             PKG_CONFIG_PATH='/host${{ runner.temp }}/polypix-deps/dist/lib/pkgconfig'
             PATH="/host${{ runner.temp }}/polypix-deps/dist/bin:$PATH"
+            LDFLAGS='-static-libstdc++'
             HEALPIX_CXX_VERSION='${{ env.HEALPIX_CXX_VERSION }}'
             CFITSIO_VERSION='${{ env.CFITSIO_VERSION }}'
           CIBW_ENVIRONMENT_MACOS:
@@ -142,6 +143,7 @@ jobs:
             CMAKE_PREFIX_PATH='/host${{ runner.temp }}/polypix-deps/dist'
             PKG_CONFIG_PATH='/host${{ runner.temp }}/polypix-deps/dist/lib/pkgconfig'
             PATH="/host${{ runner.temp }}/polypix-deps/dist/bin:$PATH"
+            LDFLAGS='-static-libstdc++'
             HEALPIX_CXX_VERSION='${{ env.HEALPIX_CXX_VERSION }}'
             CFITSIO_VERSION='${{ env.CFITSIO_VERSION }}'
           CIBW_ENVIRONMENT_MACOS:

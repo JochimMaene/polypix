@@ -62,5 +62,10 @@ packages=(
     "pkg-config"
 )
 
+if [ "$micromamba_platform" = "linux-64" ]; then
+    # libcurl 8.21 pulls in ICU 78, which exceeds the manylinux_2_34 C++ ABI.
+    packages+=("libcurl=8.20.0")
+fi
+
 "$micromamba_bin" create -y -p "$POLYPIX_DEPS_PREFIX" -c conda-forge \
     "${packages[@]}"
