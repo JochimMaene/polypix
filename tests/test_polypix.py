@@ -71,6 +71,17 @@ def split_coverage(coverage: px.Coverage) -> list[np.ndarray]:
     ]
 
 
+def post_filter_coverage(coverage: px.Coverage, allowed_cell_ids: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    filtered = [
+        cells[np.isin(cells, allowed_cell_ids)]
+        for cells in split_coverage(coverage)
+    ]
+    counts = np.asarray([cells.size for cells in filtered], dtype=np.uint64)
+    offsets = np.concatenate((np.zeros(1, dtype=np.uint64), np.cumsum(counts, dtype=np.uint64)))
+    cell_ids = np.concatenate(filtered) if filtered else np.empty(0, dtype=np.uint64)
+    return cell_ids, offsets
+
+
 class PolypixTests(unittest.TestCase):
     def test_cover_accepts_single_xyz_array(self) -> None:
         polygon = [(-5.0, -5.0), (12.0, -4.0), (10.0, 9.0), (-6.0, 7.0)]
@@ -119,6 +130,161 @@ class PolypixTests(unittest.TestCase):
 
         np.testing.assert_array_equal(actual.offsets, expected.offsets)
         np.testing.assert_array_equal(actual.cell_ids, expected.cell_ids)
+
+    def test_cover_filter_matches_post_filtering_for_batched_footprints(self) -> None:
+        polygons = np.asarray(
+            [
+                [lonlat_to_vec(lon, lat) for lon, lat in [(-15.0, -8.0), (8.0, -8.0), (8.0, 8.0), (-15.0, 8.0)]],
+                [lonlat_to_vec(lon, lat) for lon, lat in [(20.0, -8.0), (43.0, -8.0), (43.0, 8.0), (20.0, 8.0)]],
+            ],
+            dtype=np.float64,
+        )
+        unfiltered = px.cover_footprint(polygons, resolution=4)
+        selected = unfiltered.cell_ids[::2]
+        allowed = np.concatenate((selected[::-1], selected[:2], encode_nested(4, [0])))
+
+        expected_cell_ids, expected_offsets = post_filter_coverage(unfiltered, allowed)
+        actual = px.cover_footprint(polygons, resolution=4, allowed_cell_ids=allowed)
+
+        np.testing.assert_array_equal(actual.cell_ids, expected_cell_ids)
+        np.testing.assert_array_equal(actual.offsets, expected_offsets)
+
+    def test_cover_swath_filter_matches_post_filtering(self) -> None:
+        left = np.asarray(
+            [lonlat_to_vec(-8.0, -12.0), lonlat_to_vec(-7.0, 0.0), lonlat_to_vec(-6.0, 12.0)]
+        )
+        right = np.asarray(
+            [lonlat_to_vec(8.0, -12.0), lonlat_to_vec(7.0, 0.0), lonlat_to_vec(6.0, 12.0)]
+        )
+        unfiltered = px.cover_swath(left, right, resolution=4)
+        allowed = unfiltered.cell_ids[::2][::-1]
+
+        expected_cell_ids, expected_offsets = post_filter_coverage(unfiltered, allowed)
+        actual = px.cover_swath(left, right, resolution=4, allowed_cell_ids=allowed)
+
+        np.testing.assert_array_equal(actual.cell_ids, expected_cell_ids)
+        np.testing.assert_array_equal(actual.offsets, expected_offsets)
+
+    def test_empty_cover_filter_preserves_item_offsets(self) -> None:
+        polygon = np.asarray(
+            [lonlat_to_vec(lon, lat) for lon, lat in [(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)]],
+            dtype=np.float64,
+        )
+        footprints = np.repeat(polygon[np.newaxis, :, :], 3, axis=0)
+        coverage = px.cover_footprint(
+            footprints,
+            resolution=4,
+            allowed_cell_ids=np.empty(0, dtype=np.uint64),
+        )
+
+        np.testing.assert_array_equal(coverage.cell_ids, np.empty(0, dtype=np.uint64))
+        np.testing.assert_array_equal(coverage.offsets, np.zeros(4, dtype=np.uint64))
+
+    def test_empty_swath_filter_preserves_interval_offsets(self) -> None:
+        left = np.asarray(
+            [lonlat_to_vec(-5.0, -5.0), lonlat_to_vec(-5.0, 0.0), lonlat_to_vec(-5.0, 5.0)]
+        )
+        right = np.asarray(
+            [lonlat_to_vec(5.0, -5.0), lonlat_to_vec(5.0, 0.0), lonlat_to_vec(5.0, 5.0)]
+        )
+        coverage = px.cover_swath(left, right, resolution=4, allowed_cell_ids=[])
+
+        np.testing.assert_array_equal(coverage.cell_ids, np.empty(0, dtype=np.uint64))
+        np.testing.assert_array_equal(coverage.offsets, np.zeros(3, dtype=np.uint64))
+
+    def test_cover_filter_rejects_cells_from_another_resolution(self) -> None:
+        polygon = np.asarray(
+            [lonlat_to_vec(lon, lat) for lon, lat in [(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)]],
+            dtype=np.float64,
+        )
+
+        with self.assertRaisesRegex(ValueError, "only cell IDs at resolution 4"):
+            px.cover_footprint(polygon, resolution=4, allowed_cell_ids=encode_nested(3, [0]))
+
+    def test_cover_filter_validates_cell_id_inputs(self) -> None:
+        polygon = np.asarray(
+            [lonlat_to_vec(lon, lat) for lon, lat in [(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)]],
+            dtype=np.float64,
+        )
+
+        for allowed_cell_ids in ([1.5], [True], [-1]):
+            with self.subTest(allowed_cell_ids=allowed_cell_ids):
+                with self.assertRaises((TypeError, ValueError)):
+                    px.cover_footprint(
+                        polygon,
+                        resolution=4,
+                        allowed_cell_ids=allowed_cell_ids,
+                    )
+
+        with self.assertRaisesRegex(ValueError, "one-dimensional"):
+            px.cover_footprint(
+                polygon,
+                resolution=4,
+                allowed_cell_ids=np.empty((1, 0), dtype=np.uint64),
+            )
+        with self.assertRaisesRegex(ValueError, "valid packed HEALPix token"):
+            px.cover_footprint(polygon, resolution=4, allowed_cell_ids=[0])
+
+    def test_cover_filter_matches_post_filtering_at_antimeridian_and_pole(self) -> None:
+        cases = [
+            [(170.0, -8.0), (-170.0, -8.0), (-170.0, 8.0), (170.0, 8.0)],
+            [(-45.0, 70.0), (45.0, 70.0), (135.0, 70.0), (-135.0, 70.0)],
+        ]
+
+        for polygon in cases:
+            with self.subTest(polygon=polygon):
+                vertices = np.asarray(
+                    [lonlat_to_vec(lon, lat) for lon, lat in polygon],
+                    dtype=np.float64,
+                )
+                unfiltered = px.cover_footprint(vertices, resolution=4)
+                allowed = unfiltered.cell_ids[::2][::-1]
+                actual = px.cover_footprint(vertices, resolution=4, allowed_cell_ids=allowed)
+
+                np.testing.assert_array_equal(actual.cell_ids, unfiltered.cell_ids[::2])
+                np.testing.assert_array_equal(
+                    actual.offsets,
+                    np.asarray([0, actual.cell_ids.size], dtype=np.uint64),
+                )
+
+    def test_cover_filter_includes_a_cell_center_on_the_boundary(self) -> None:
+        resolution = 3
+        cell_id = encode_nested(resolution, [123])[0]
+        lon_deg, lat_deg = px.centers(int(cell_id))
+        center = lonlat_to_vec(lon_deg, lat_deg)
+        reference = (
+            np.asarray([0.0, 0.0, 1.0])
+            if abs(center[2]) < 0.9
+            else np.asarray([0.0, 1.0, 0.0])
+        )
+        tangent = np.cross(reference, center)
+        tangent /= np.linalg.norm(tangent)
+        inward = np.cross(center, tangent)
+        inward /= np.linalg.norm(inward)
+
+        def offset_point(x: float, y: float) -> np.ndarray:
+            point = center + x * tangent + y * inward
+            return point / np.linalg.norm(point)
+
+        footprint = np.asarray(
+            [
+                offset_point(-0.05, 0.0),
+                offset_point(0.05, 0.0),
+                offset_point(0.05, 0.05),
+                offset_point(-0.05, 0.05),
+            ]
+        )
+
+        unfiltered = px.cover_footprint(footprint, resolution)
+        filtered = px.cover_footprint(
+            footprint,
+            resolution,
+            allowed_cell_ids=[cell_id],
+        )
+
+        np.testing.assert_array_equal(unfiltered.cell_ids, np.asarray([cell_id]))
+        np.testing.assert_array_equal(filtered.cell_ids, unfiltered.cell_ids)
+        np.testing.assert_array_equal(filtered.offsets, unfiltered.offsets)
 
     def test_cover_single_polygon_matches_bruteforce_oracle(self) -> None:
         polygon = [(-5.0, -5.0), (12.0, -4.0), (10.0, 9.0), (-6.0, 7.0)]
@@ -217,6 +383,29 @@ class PolypixTests(unittest.TestCase):
             expected = px.cover_footprint(vertices, resolution=3)
             os.environ["POLYPIX_NUM_THREADS"] = "4"
             actual = px.cover_footprint(vertices, resolution=3)
+        finally:
+            if previous_threads is None:
+                os.environ.pop("POLYPIX_NUM_THREADS", None)
+            else:
+                os.environ["POLYPIX_NUM_THREADS"] = previous_threads
+
+        np.testing.assert_array_equal(actual.cell_ids, expected.cell_ids)
+        np.testing.assert_array_equal(actual.offsets, expected.offsets)
+
+    def test_parallel_filtered_cover_matches_single_thread(self) -> None:
+        polygon = np.asarray(
+            [lonlat_to_vec(lon, lat) for lon, lat in [(-5.0, -5.0), (12.0, -4.0), (10.0, 9.0), (-6.0, 7.0)]],
+            dtype=np.float64,
+        )
+        vertices = np.repeat(polygon[np.newaxis, :, :], 300, axis=0)
+        allowed = px.cover_footprint(polygon, resolution=4).cell_ids[::2]
+
+        previous_threads = os.environ.get("POLYPIX_NUM_THREADS")
+        try:
+            os.environ["POLYPIX_NUM_THREADS"] = "1"
+            expected = px.cover_footprint(vertices, resolution=4, allowed_cell_ids=allowed)
+            os.environ["POLYPIX_NUM_THREADS"] = "4"
+            actual = px.cover_footprint(vertices, resolution=4, allowed_cell_ids=allowed)
         finally:
             if previous_threads is None:
                 os.environ.pop("POLYPIX_NUM_THREADS", None)

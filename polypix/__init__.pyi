@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Sequence, overload
+from typing import Any, Sequence, overload
 
 import numpy as np
 import numpy.typing as npt
@@ -16,12 +16,16 @@ class Coverage:
 def cover_footprint(
     footprints_xyz: Sequence[Sequence[float]] | Sequence[Sequence[Sequence[float]]] | npt.NDArray[np.float64],
     resolution: int,
+    *,
+    allowed_cell_ids: Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
 ) -> Coverage: ...
 
 def cover_swath(
     left_edge_xyz: Sequence[Sequence[float]] | npt.NDArray[np.float64],
     right_edge_xyz: Sequence[Sequence[float]] | npt.NDArray[np.float64],
     resolution: int,
+    *,
+    allowed_cell_ids: Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
 ) -> Coverage: ...
 
 @overload

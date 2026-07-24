@@ -1,6 +1,7 @@
 #include "core.h"
 
 #include <healpix_cxx/healpix_base.h>
+#include <healpix_cxx/lsconstants.h>
 #include <healpix_cxx/pointing.h>
 #include <healpix_cxx/rangeset.h>
 #include <healpix_cxx/vec3.h>
@@ -122,19 +123,69 @@ unsigned int configured_worker_count(int resolution) {
 struct CoverageChunk {
     std::vector<std::uint64_t> cell_ids;
     std::vector<std::uint64_t> cell_counts;
-    std::size_t total_candidate_cells = 0;
 };
+
+struct AllowedPixel {
+    std::uint64_t cell_id;
+    vec3 center;
+};
+
+std::vector<vec3> polygon_edge_normals(const std::vector<pointing>& polygon) {
+    std::vector<vec3> vertices;
+    vertices.reserve(polygon.size());
+    for (const auto& vertex : polygon) {
+        vertices.push_back(vertex.to_vec3());
+    }
+
+    std::vector<vec3> normals;
+    normals.reserve(vertices.size());
+    int flip = 0;
+    for (std::size_t index = 0; index < vertices.size(); ++index) {
+        auto normal =
+            crossprod(vertices[index], vertices[(index + 1) % vertices.size()]).Norm();
+        if (index == 0) {
+            const auto handedness =
+                dotprod(normal, vertices[(index + 2) % vertices.size()]);
+            flip = handedness < 0.0 ? -1 : 1;
+        }
+        normal *= flip;
+        normals.push_back(normal);
+    }
+    return normals;
+}
+
+bool contains_center(const std::vector<vec3>& edge_normals, const vec3& center) {
+    // Match HEALPix query_polygon()'s non-inclusive center predicate.
+    const auto threshold = std::cos(halfpi);
+    return std::all_of(
+        edge_normals.begin(),
+        edge_normals.end(),
+        [&](const auto& normal) { return dotprod(center, normal) >= threshold; });
+}
 
 void append_polygon_cells(
     const std::vector<pointing>& polygon,
     T_Healpix_Base<int64>& healpix,
     int resolution,
+    const std::vector<AllowedPixel>* allowed_pixels,
     CoverageChunk& chunk) {
+    if (allowed_pixels != nullptr) {
+        const auto edge_normals = polygon_edge_normals(polygon);
+        const auto initial_cell_count = chunk.cell_ids.size();
+        for (const auto& allowed_pixel : *allowed_pixels) {
+            if (contains_center(edge_normals, allowed_pixel.center)) {
+                chunk.cell_ids.push_back(allowed_pixel.cell_id);
+            }
+        }
+        chunk.cell_counts.push_back(static_cast<std::uint64_t>(
+            chunk.cell_ids.size() - initial_cell_count));
+        return;
+    }
+
     rangeset<int64> pixel_ranges;
     healpix.query_polygon(polygon, pixel_ranges);
 
     const auto polygon_cell_count = static_cast<std::size_t>(pixel_ranges.nval());
-    chunk.total_candidate_cells += polygon_cell_count;
     chunk.cell_counts.push_back(static_cast<std::uint64_t>(polygon_cell_count));
 
     for (std::size_t range_index = 0; range_index < pixel_ranges.nranges(); ++range_index) {
@@ -148,17 +199,14 @@ void append_polygon_cells(
 
 CoverageResultNative merge_chunks(
     std::vector<CoverageChunk>& chunks,
-    int resolution,
     std::size_t polygon_count) {
     CoverageResultNative result;
-    result.resolution = resolution;
     result.cell_offsets.reserve(polygon_count + 1);
     result.cell_offsets.push_back(0);
 
     std::size_t total_cell_count = 0;
     for (const auto& chunk : chunks) {
         total_cell_count += chunk.cell_ids.size();
-        result.total_candidate_cells += chunk.total_candidate_cells;
     }
     result.cell_ids.reserve(total_cell_count);
 
@@ -179,16 +227,76 @@ CoverageResultNative cover_many_healpix_sequential(
     const PolygonBatch& batch,
     int resolution,
     std::size_t start,
-    std::size_t end) {
+    std::size_t end,
+    const std::vector<AllowedPixel>* allowed_pixels) {
     std::vector<CoverageChunk> chunks(1);
     chunks.front().cell_counts.reserve(end - start);
 
     T_Healpix_Base<int64> healpix(resolution_to_nside(resolution), NEST, SET_NSIDE);
     for (std::size_t polygon_index = start; polygon_index < end; ++polygon_index) {
-        append_polygon_cells(batch.polygon(polygon_index), healpix, resolution, chunks.front());
+        append_polygon_cells(
+            batch.polygon(polygon_index),
+            healpix,
+            resolution,
+            allowed_pixels,
+            chunks.front());
     }
 
-    return merge_chunks(chunks, resolution, end - start);
+    return merge_chunks(chunks, end - start);
+}
+
+CoverageResultNative cover_many_healpix_impl(
+    const PolygonBatch& batch,
+    int resolution,
+    const std::vector<AllowedPixel>* allowed_pixels) {
+    validate_resolution(resolution);
+
+    const auto polygon_count = batch.polygon_count();
+    const auto configured_workers = configured_worker_count(resolution);
+    const auto worker_count = std::min<std::size_t>(configured_workers, polygon_count);
+
+    nb::gil_scoped_release release;
+    if (worker_count <= 1 || polygon_count < kMinParallelPolygons) {
+        return cover_many_healpix_sequential(
+            batch, resolution, 0, polygon_count, allowed_pixels);
+    }
+
+    std::vector<CoverageChunk> chunks(worker_count);
+    std::vector<std::exception_ptr> exceptions(worker_count);
+    std::vector<std::thread> workers;
+    workers.reserve(worker_count);
+
+    for (std::size_t worker_index = 0; worker_index < worker_count; ++worker_index) {
+        const auto start = polygon_count * worker_index / worker_count;
+        const auto end = polygon_count * (worker_index + 1) / worker_count;
+        chunks[worker_index].cell_counts.reserve(end - start);
+        workers.emplace_back([&, worker_index, start, end]() {
+            try {
+                T_Healpix_Base<int64> healpix(resolution_to_nside(resolution), NEST, SET_NSIDE);
+                for (std::size_t polygon_index = start; polygon_index < end; ++polygon_index) {
+                    append_polygon_cells(
+                        batch.polygon(polygon_index),
+                        healpix,
+                        resolution,
+                        allowed_pixels,
+                        chunks[worker_index]);
+                }
+            } catch (...) {
+                exceptions[worker_index] = std::current_exception();
+            }
+        });
+    }
+
+    for (auto& worker : workers) {
+        worker.join();
+    }
+    for (const auto& exception : exceptions) {
+        if (exception) {
+            std::rethrow_exception(exception);
+        }
+    }
+
+    return merge_chunks(chunks, polygon_count);
 }
 
 }  // namespace
@@ -517,50 +625,41 @@ std::vector<std::array<double, 2>> cell_boundaries_lonlat(
 }
 
 CoverageResultNative cover_many_healpix(const PolygonBatch& batch, int resolution) {
+    return cover_many_healpix_impl(batch, resolution, nullptr);
+}
+
+CoverageResultNative cover_many_healpix(
+    const PolygonBatch& batch,
+    int resolution,
+    const std::uint64_t* allowed_cell_ids,
+    std::size_t allowed_cell_count) {
     validate_resolution(resolution);
 
-    const auto polygon_count = batch.polygon_count();
-    const auto configured_workers = configured_worker_count(resolution);
-    const auto worker_count = std::min<std::size_t>(configured_workers, polygon_count);
-
-    nb::gil_scoped_release release;
-    if (worker_count <= 1 || polygon_count < kMinParallelPolygons) {
-        return cover_many_healpix_sequential(batch, resolution, 0, polygon_count);
+    std::vector<int64> allowed_pixels;
+    allowed_pixels.reserve(allowed_cell_count);
+    for (std::size_t index = 0; index < allowed_cell_count; ++index) {
+        const auto [cell_resolution, nested_index] = decode_cell_id(allowed_cell_ids[index]);
+        if (cell_resolution != resolution) {
+            throw std::invalid_argument(
+                "allowed_cell_ids must contain only cell IDs at resolution " +
+                std::to_string(resolution) + ".");
+        }
+        allowed_pixels.push_back(static_cast<int64>(nested_index));
     }
 
-    std::vector<CoverageChunk> chunks(worker_count);
-    std::vector<std::exception_ptr> exceptions(worker_count);
-    std::vector<std::thread> workers;
-    workers.reserve(worker_count);
+    std::sort(allowed_pixels.begin(), allowed_pixels.end());
+    allowed_pixels.erase(
+        std::unique(allowed_pixels.begin(), allowed_pixels.end()), allowed_pixels.end());
 
-    for (std::size_t worker_index = 0; worker_index < worker_count; ++worker_index) {
-        const auto start = polygon_count * worker_index / worker_count;
-        const auto end = polygon_count * (worker_index + 1) / worker_count;
-        chunks[worker_index].cell_counts.reserve(end - start);
-        workers.emplace_back([&, worker_index, start, end]() {
-            try {
-                T_Healpix_Base<int64> healpix(resolution_to_nside(resolution), NEST, SET_NSIDE);
-                for (std::size_t polygon_index = start; polygon_index < end; ++polygon_index) {
-                    append_polygon_cells(
-                        batch.polygon(polygon_index),
-                        healpix,
-                        resolution,
-                        chunks[worker_index]);
-                }
-            } catch (...) {
-                exceptions[worker_index] = std::current_exception();
-            }
+    T_Healpix_Base<int64> healpix(resolution_to_nside(resolution), NEST, SET_NSIDE);
+    std::vector<AllowedPixel> prepared_allowed_pixels;
+    prepared_allowed_pixels.reserve(allowed_pixels.size());
+    for (const auto pixel : allowed_pixels) {
+        prepared_allowed_pixels.push_back(AllowedPixel{
+            encode_cell_id(resolution, static_cast<std::uint64_t>(pixel)),
+            healpix.pix2vec(pixel),
         });
     }
 
-    for (auto& worker : workers) {
-        worker.join();
-    }
-    for (const auto& exception : exceptions) {
-        if (exception) {
-            std::rethrow_exception(exception);
-        }
-    }
-
-    return merge_chunks(chunks, resolution, polygon_count);
+    return cover_many_healpix_impl(batch, resolution, &prepared_allowed_pixels);
 }

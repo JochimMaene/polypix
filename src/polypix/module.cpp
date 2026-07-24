@@ -86,6 +86,23 @@ NB_MODULE(_core, module) {
         "vertices_xyz"_a.noconvert(), "offsets"_a.noconvert(), "resolution"_a);
 
     module.def(
+        "_cover",
+        [](const DoubleMatrix& vertices,
+           const UInt64Vector& polygon_offsets,
+           int resolution,
+           const UInt64Vector& allowed_cell_ids) {
+            return coverage_to_python(cover_many_healpix(
+                load_xyz_batch(vertices, polygon_offsets),
+                resolution,
+                allowed_cell_ids.data(),
+                static_cast<std::size_t>(allowed_cell_ids.shape(0))));
+        },
+        "vertices_xyz"_a.noconvert(),
+        "offsets"_a.noconvert(),
+        "resolution"_a,
+        "allowed_cell_ids"_a.noconvert());
+
+    module.def(
         "_cover_lonlat",
         [](const DoubleMatrix& vertices,
            const UInt64Vector& polygon_offsets,

@@ -1,14 +1,22 @@
-from typing import Any
+from typing import Any, overload
 
 import numpy as np
 import numpy.typing as npt
 
 __version__: str
 
+@overload
 def _cover(
     vertices_xyz: npt.NDArray[np.float64],
     offsets: npt.NDArray[np.uint64],
     resolution: int,
+) -> dict[str, Any]: ...
+@overload
+def _cover(
+    vertices_xyz: npt.NDArray[np.float64],
+    offsets: npt.NDArray[np.uint64],
+    resolution: int,
+    allowed_cell_ids: npt.NDArray[np.uint64],
 ) -> dict[str, Any]: ...
 
 def _cover_lonlat(

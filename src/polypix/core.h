@@ -31,8 +31,6 @@ struct PolygonBatch {
 };
 
 struct CoverageResultNative {
-    int resolution = 0;
-    std::size_t total_candidate_cells = 0;
     std::vector<std::uint64_t> cell_offsets;
     std::vector<std::uint64_t> cell_ids;
 };
@@ -76,3 +74,8 @@ std::vector<std::array<double, 2>> cell_boundaries_lonlat(
     std::size_t cell_count);
 
 CoverageResultNative cover_many_healpix(const PolygonBatch& batch, int resolution);
+CoverageResultNative cover_many_healpix(
+    const PolygonBatch& batch,
+    int resolution,
+    const std::uint64_t* allowed_cell_ids,
+    std::size_t allowed_cell_count);
