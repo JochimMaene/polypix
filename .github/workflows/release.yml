@@ -65,9 +65,9 @@ jobs:
           pixi-version: v0.70.1
           pixi-bin-path: ${{ runner.temp }}/pixi-bin/pixi
           manifest-path: pyproject.toml
-          environments: wheel-deps
+          environments: ${{ runner.os != 'Linux' && 'wheel-deps' || '' }}
           run-install: ${{ runner.os != 'Linux' }}
-          locked: true
+          locked: ${{ runner.os != 'Linux' }}
           cache: ${{ runner.os != 'Linux' }}
 
       - name: Build wheels
@@ -125,9 +125,9 @@ jobs:
           pixi-version: v0.70.1
           pixi-bin-path: ${{ runner.temp }}/pixi-bin/pixi
           manifest-path: pyproject.toml
-          environments: wheel-deps
+          environments: ${{ runner.os != 'Linux' && 'wheel-deps' || '' }}
           run-install: ${{ runner.os != 'Linux' }}
-          locked: true
+          locked: ${{ runner.os != 'Linux' }}
           cache: ${{ runner.os != 'Linux' }}
 
       - name: Build smoke wheels
