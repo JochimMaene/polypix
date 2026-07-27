@@ -39,6 +39,19 @@ or dependency burden became material. Both now have evidence:
 
 These facts justify a spike. They do not prove that a new kernel will be faster.
 
+## Rejected Alternatives
+
+The briefly selected `cdshealpix` adapter was never released. It remained
+correct by using CDS overlap results only as candidates and retaining Polypix's
+own validation, side selection, center filtering, ordering, and threading.
+The mixed performance and 53-crate dependency breadth above justified
+replacing it with the measured direct RING traversal. Its thin-southern-
+footprint side-selection finding remains a named regression test.
+
+The BSD-3-Clause `healpix_bare` subset provides cell conversion but not polygon
+coverage. It would leave Polypix responsible for traversal while adding a
+runtime dependency, so it remains suitable only as a possible external oracle.
+
 ## Small Primitive Experiment
 
 A clean internal NESTED-to-XYZ center implementation was temporarily substituted

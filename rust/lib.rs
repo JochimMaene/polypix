@@ -24,16 +24,6 @@ fn validate_resolution(resolution: u8) -> PyResult<()> {
     Ok(())
 }
 
-fn validate_cells(cells: &[u64], resolution: u8) -> Result<(), String> {
-    let cell_count = 12_u64 << (2 * resolution);
-    if cells.iter().any(|&cell| cell >= cell_count) {
-        return Err(format!(
-            "cells must contain valid RING indices at resolution {resolution}."
-        ));
-    }
-    Ok(())
-}
-
 #[pyfunction(signature = (vertices_xyz, offsets, resolution, candidate_cells=None, threads=None))]
 fn _cover<'py>(
     py: Python<'py>,
@@ -132,7 +122,7 @@ fn _center<'py>(
         .map_err(|_| PyValueError::new_err("cells must be C-contiguous."))?;
     let values = py
         .detach(|| {
-            validate_cells(cells, resolution)?;
+            ring::validate_cell_range(cells, resolution, "cells")?;
             let mut values = Vec::with_capacity(cells.len() * 3);
             for &cell in cells {
                 values.extend(ring::center(cell, resolution));
@@ -157,7 +147,7 @@ fn _boundary_many<'py>(
         .map_err(|_| PyValueError::new_err("cells must be C-contiguous."))?;
     let values = py
         .detach(|| {
-            validate_cells(cells, resolution)?;
+            ring::validate_cell_range(cells, resolution, "cells")?;
             let mut values = Vec::with_capacity(cells.len() * 12);
             for &cell in cells {
                 for corner in ring::boundary(cell, resolution) {

@@ -65,6 +65,10 @@ and non-convex geometry is rejected.
 `cover_strip()` turns consecutive pairs from two sampled edges into independent
 convex quadrilaterals.
 
+An empty sequence, a one-dimensional empty array, or a dense
+`(0, vertices, 3)` array represents an empty footprint batch. A `(0, 3)` array
+is unambiguously one footprint with zero vertices, so it is rejected.
+
 Strip samples use the same shorter-great-circle rule. Sampling is therefore
 part of the input contract: upstream code must sample densely enough that each
 consecutive arc represents the physical boundary. Steps approaching 180
@@ -97,11 +101,18 @@ coverage = px.cover_strip(
 
 Candidates are standard RING indices at the requested resolution and have set
 semantics. The native kernel tests their centers directly; it does not first
-materialize complete global coverage. Coverage uses a nominal `1e-14`
-dot-product predicate tolerance. Floating-point uncertainty also depends on
-edge length and the equivalent center-evaluation path, so the constant is not
-a strict absolute-error bound. Only centers numerically indistinguishable from
-a boundary can be strategy-sensitive.
+materialize complete global coverage. Strictly increasing candidate arrays are
+borrowed without copying; other inputs are sorted and deduplicated internally.
+Coverage uses a nominal `1e-14` dot-product predicate tolerance.
+Floating-point uncertainty also depends on edge length and the equivalent
+center-evaluation path, so the constant is not a strict absolute-error bound.
+Only centers numerically indistinguishable from a boundary can be
+strategy-sensitive.
+
+When many footprints revisit candidates, the kernel may cache center vectors
+for the bounding candidate span used by that batch. This temporary cache costs
+24 bytes per candidate in the span and is created only when estimated reuse
+outweighs reconstruction.
 
 Complete scans use one conservative longitude bound for each footprint. This
 is fast for the primary workload of small footprints and short strip segments,

@@ -4,6 +4,7 @@
 //! and corner transforms are implemented locally so the production extension
 //! has no general HEALPix runtime dependency.
 
+use std::borrow::Cow;
 use std::f64::consts::TAU;
 use std::ops::Range;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -25,6 +26,7 @@ const SCAN_PREPARATION_WORK: usize = 1 << 10;
 // Measurements show dispatch pays off only beyond roughly one million actual
 // z-band visits, which plan_candidates computes without another estimate.
 const CANDIDATE_PARALLEL_MIN_VISITS: usize = 1 << 20;
+const ROTATION_RESYNC_STEPS: u64 = 64;
 const INDEX_UNCERTAINTY_ULPS: f64 = 128.0;
 const LONGITUDE_BOUNDS_EPSILON: f64 = 1.0e-14;
 type CachedPool = Mutex<Option<(usize, Arc<rayon::ThreadPool>)>>;
@@ -481,7 +483,9 @@ fn cover_centers(
                 // Resynchronize every 64 steps: accumulated rotation drift
                 // stays below the 1e-14 containment tolerance while avoiding
                 // one sin_cos evaluation per tested center.
-                if offset < last as u64 && (offset - first + 1) & 63 == 0 {
+                if offset < last as u64
+                    && (offset - first + 1).is_multiple_of(ROTATION_RESYNC_STEPS)
+                {
                     let longitude = (offset as f64 + 1.0 + ring.shift) * step;
                     let (sine, cosine) = longitude.sin_cos();
                     x = ring.radial * cosine;
@@ -588,23 +592,38 @@ impl PreparedFootprint {
     }
 }
 
-fn candidate_cells(
-    raw_candidates: Option<&[u64]>,
+pub(crate) fn validate_cell_range(
+    cells: &[u64],
     resolution: u8,
-) -> Result<Option<Vec<u64>>, String> {
+    argument_name: &str,
+) -> Result<(), String> {
+    let cell_count = 12_u64 << (2 * resolution);
+    if cells.iter().any(|&cell| cell >= cell_count) {
+        return Err(format!(
+            "{argument_name} must contain valid RING indices at resolution {resolution}."
+        ));
+    }
+    Ok(())
+}
+
+fn candidate_cells<'a>(
+    raw_candidates: Option<&'a [u64]>,
+    resolution: u8,
+) -> Result<Option<Cow<'a, [u64]>>, String> {
     let Some(raw_candidates) = raw_candidates else {
         return Ok(None);
     };
-    let cell_count = 12_u64 << (2 * resolution);
-    if raw_candidates.iter().any(|&cell| cell >= cell_count) {
-        return Err(format!(
-            "candidate_cells must contain valid RING indices at resolution {resolution}."
-        ));
+    if raw_candidates.windows(2).all(|pair| pair[0] < pair[1]) {
+        if let Some(last) = raw_candidates.last() {
+            validate_cell_range(std::slice::from_ref(last), resolution, "candidate_cells")?;
+        }
+        return Ok(Some(Cow::Borrowed(raw_candidates)));
     }
+    validate_cell_range(raw_candidates, resolution, "candidate_cells")?;
     let mut cells = raw_candidates.to_vec();
     cells.sort_unstable();
     cells.dedup();
-    Ok(Some(cells))
+    Ok(Some(Cow::Owned(cells)))
 }
 
 fn candidate_range(
@@ -625,6 +644,7 @@ fn candidate_range(
 struct CandidatePlan {
     ranges: Vec<Range<usize>>,
     centers: Option<Vec<Vec3>>,
+    center_start: usize,
     total_visits: usize,
 }
 
@@ -643,11 +663,14 @@ fn plan_candidates(
             range
         })
         .collect::<Vec<_>>();
-    // Without a cache each visit reconstructs one center. With a cache every
-    // candidate is reconstructed once, so reuse starts paying for itself when
-    // the summed z-band visits exceed the candidate-set size.
-    let centers = (total_visits > candidates.len()).then(|| {
-        candidates
+    let center_start = ranges.iter().map(|range| range.start).min().unwrap_or(0);
+    let center_end = ranges.iter().map(|range| range.end).max().unwrap_or(0);
+    let center_span = center_end.saturating_sub(center_start);
+    // Without a cache each visit reconstructs one center. Cache only the
+    // bounding envelope visited by the batch, and only when reuse pays for
+    // materializing that envelope once.
+    let centers = (total_visits > center_span && center_span > 0).then(|| {
+        candidates[center_start..center_end]
             .iter()
             .copied()
             .map(|cell| center(cell, resolution))
@@ -656,6 +679,7 @@ fn plan_candidates(
     CandidatePlan {
         ranges,
         centers,
+        center_start,
         total_visits,
     }
 }
@@ -681,7 +705,7 @@ fn compute_candidate_chunk(
                 .cells
                 .extend(candidate_range.filter_map(|candidate_index| {
                     footprints[index]
-                        .contains(centers[candidate_index])
+                        .contains(centers[candidate_index - plan.center_start])
                         .then_some(candidates[candidate_index])
                 }));
         } else {
@@ -749,24 +773,20 @@ fn estimated_cap_cells(raw: &[f64], resolution: u8) -> usize {
     (sphere_fraction * cell_count) as usize
 }
 
-fn scan_parallel_work(
-    vertices: &[f64],
-    offsets: &[u64],
-    resolution: u8,
+fn accumulated_scan_work(
+    item_count: usize,
     threads: Option<usize>,
+    mut estimate_item: impl FnMut(usize) -> usize,
 ) -> usize {
-    if threads == Some(1) || offsets.len() <= 2 {
+    if threads == Some(1) || item_count <= 1 {
         return 0;
     }
-    let item_count = offsets.len() - 1;
     let mut work = item_count.saturating_mul(SCAN_PREPARATION_WORK);
     if work >= SCAN_PARALLEL_MIN_WORK {
         return work;
     }
     for index in 0..item_count {
-        let start = offsets[index] as usize * 3;
-        let end = offsets[index + 1] as usize * 3;
-        work = work.saturating_add(estimated_cap_cells(&vertices[start..end], resolution));
+        work = work.saturating_add(estimate_item(index));
         if work >= SCAN_PARALLEL_MIN_WORK {
             break;
         }
@@ -781,23 +801,9 @@ fn strip_parallel_work(
     resolution: u8,
     threads: Option<usize>,
 ) -> usize {
-    if threads == Some(1) || segment_count <= 1 {
-        return 0;
-    }
-    let mut work = segment_count.saturating_mul(SCAN_PREPARATION_WORK);
-    if work >= SCAN_PARALLEL_MIN_WORK {
-        return work;
-    }
-    for index in 0..segment_count {
-        work = work.saturating_add(estimated_cap_cells(
-            &strip_quad(left, right, index),
-            resolution,
-        ));
-        if work >= SCAN_PARALLEL_MIN_WORK {
-            break;
-        }
-    }
-    work
+    accumulated_scan_work(segment_count, threads, |index| {
+        estimated_cap_cells(&strip_quad(left, right, index), resolution)
+    })
 }
 
 fn explicit_pool(worker_count: usize) -> Result<Arc<rayon::ThreadPool>, String> {
@@ -888,6 +894,33 @@ fn expected_cells_per_footprint(resolution: u8) -> usize {
     1_usize << resolution.saturating_sub(3).min(6)
 }
 
+fn compute_candidate_coverage(
+    item_count: usize,
+    candidates: &[u64],
+    resolution: u8,
+    threads: Option<usize>,
+    prepare: impl Fn(usize) -> Result<PreparedFootprint, String>,
+) -> Result<Coverage, String> {
+    let footprints = (0..item_count)
+        .map(prepare)
+        .collect::<Result<Vec<_>, _>>()?;
+    let plan = plan_candidates(&footprints, candidates, resolution);
+    dispatch_coverage(
+        item_count,
+        plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS,
+        threads,
+        |range| {
+            Ok(compute_candidate_chunk(
+                &footprints,
+                &plan,
+                candidates,
+                range,
+                resolution,
+            ))
+        },
+    )
+}
+
 fn compute_mixed_chunk(
     vertices: &[f64],
     offsets: &[u64],
@@ -927,31 +960,24 @@ fn compute_mixed_coverage(
 
     let polygon_count = offsets.len() - 1;
     if let Some(candidates) = candidates {
-        let footprints = (0..polygon_count)
-            .map(|index| {
+        return compute_candidate_coverage(
+            polygon_count,
+            candidates,
+            resolution,
+            threads,
+            |index| {
                 let start = offsets[index] as usize;
                 let end = offsets[index + 1] as usize;
                 PreparedFootprint::from_raw(&vertices[start * 3..end * 3])
                     .map_err(|error| format!("footprints_xyz[{index}]: {error}"))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let plan = plan_candidates(&footprints, candidates, resolution);
-        return dispatch_coverage(
-            polygon_count,
-            plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS,
-            threads,
-            |range| {
-                Ok(compute_candidate_chunk(
-                    &footprints,
-                    &plan,
-                    candidates,
-                    range,
-                    resolution,
-                ))
             },
         );
     }
-    let parallel_work = scan_parallel_work(vertices, offsets, resolution, threads);
+    let parallel_work = accumulated_scan_work(polygon_count, threads, |index| {
+        let start = offsets[index] as usize * 3;
+        let end = offsets[index + 1] as usize * 3;
+        estimated_cap_cells(&vertices[start..end], resolution)
+    });
     dispatch_coverage(
         polygon_count,
         parallel_work >= SCAN_PARALLEL_MIN_WORK,
@@ -1053,23 +1079,12 @@ pub(crate) fn cover_strip(
     let segment_count = sample_count - 1;
     let candidates = candidate_cells(raw_candidates, resolution)?;
     if let Some(candidates) = candidates.as_deref() {
-        let footprints = (0..segment_count)
-            .map(|index| prepare_strip_footprint(left, right, index))
-            .collect::<Result<Vec<_>, _>>()?;
-        let plan = plan_candidates(&footprints, candidates, resolution);
-        return dispatch_coverage(
+        return compute_candidate_coverage(
             segment_count,
-            plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS,
+            candidates,
+            resolution,
             threads,
-            |range| {
-                Ok(compute_candidate_chunk(
-                    &footprints,
-                    &plan,
-                    candidates,
-                    range,
-                    resolution,
-                ))
-            },
+            |index| prepare_strip_footprint(left, right, index),
         );
     }
     let parallel_work = strip_parallel_work(left, right, segment_count, resolution, threads);
@@ -1083,7 +1098,11 @@ pub(crate) fn cover_strip(
 
 #[cfg(test)]
 mod tests {
-    use super::{integer_sqrt, ring_of_cell, ring_start, ring_to_face_xy};
+    use super::{
+        integer_sqrt, ring_info, ring_of_cell, ring_start, ring_to_face_xy, ROTATION_RESYNC_STEPS,
+        TAU,
+    };
+    use crate::geometry::CONTAINMENT_EPSILON;
 
     #[test]
     fn integer_sqrt_is_exact_around_square_boundaries() {
@@ -1119,5 +1138,55 @@ mod tests {
                 assert!((0..nside as i64).contains(&y));
             }
         }
+    }
+
+    #[test]
+    fn incremental_rotation_stays_inside_the_containment_tolerance() {
+        let mut maximum_drift = 0.0_f64;
+        for resolution in [0_u8, 1, 3, 8, 16, 20, 29] {
+            let nside = 1_u64 << resolution;
+            let mut ring_indices = vec![
+                1,
+                nside,
+                nside + 1,
+                2 * nside,
+                3 * nside,
+                3 * nside + 1,
+                4 * nside - 1,
+            ];
+            ring_indices.retain(|&ring| ring < 4 * nside);
+            ring_indices.sort_unstable();
+            ring_indices.dedup();
+
+            for ring_index in ring_indices {
+                let ring = ring_info(nside, ring_index);
+                let step = TAU / ring.cells as f64;
+                let (step_sine, step_cosine) = step.sin_cos();
+                let rotations = ROTATION_RESYNC_STEPS.min(ring.cells.saturating_sub(1));
+                let last_start = ring.cells - rotations - 1;
+                for start in [0, ring.cells / 5, ring.cells / 2, last_start] {
+                    let start = start.min(last_start);
+                    let longitude = (start as f64 + ring.shift) * step;
+                    let (sine, cosine) = longitude.sin_cos();
+                    let mut x = ring.radial * cosine;
+                    let mut y = ring.radial * sine;
+
+                    for rotation in 1..=rotations {
+                        let next_y = y * step_cosine + x * step_sine;
+                        x = x * step_cosine - y * step_sine;
+                        y = next_y;
+                        let longitude = ((start + rotation) as f64 + ring.shift) * step;
+                        let (exact_sine, exact_cosine) = longitude.sin_cos();
+                        let drift =
+                            (x - ring.radial * exact_cosine).hypot(y - ring.radial * exact_sine);
+                        maximum_drift = maximum_drift.max(drift);
+                    }
+                }
+            }
+        }
+        assert!(
+            maximum_drift <= CONTAINMENT_EPSILON,
+            "incremental center drift {maximum_drift:e} exceeds containment tolerance"
+        );
     }
 }

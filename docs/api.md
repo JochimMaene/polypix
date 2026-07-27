@@ -50,6 +50,11 @@ Cover one convex spherical footprint or a batch using cell-center inclusion.
 - a dense `(footprints, vertices, 3)` numeric array-like;
 - a sequence of `(vertices, 3)` arrays for a ragged batch.
 
+An empty sequence, a one-dimensional empty array, or a dense
+`(0, vertices, 3)` array represents a batch with zero footprints. A
+`(0, 3)` array instead represents one footprint with zero vertices and is
+rejected.
+
 Vectors are finite, nonzero, body-centered `(x, y, z)` coordinates. Polypix
 normalizes their magnitudes. It assigns no datum, ellipsoid, or CRS meaning to
 them.
@@ -63,7 +68,9 @@ them.
 `candidate_cells` optionally restricts the result to a one-dimensional set of
 standard RING indices at the requested resolution. Duplicate candidates are
 ignored. An empty candidate set returns empty segments without dropping input
-items. Center inclusion uses a nominal `1e-14` dot-product boundary tolerance.
+items. Strictly increasing candidate arrays use a borrowed fast path; other
+inputs are sorted and deduplicated internally. Center inclusion uses a nominal
+`1e-14` dot-product boundary tolerance.
 This is a predicate threshold, not a strict absolute-error guarantee:
 floating-point uncertainty also depends on edge length and on the equivalent
 center-evaluation path. Only centers numerically indistinguishable from a

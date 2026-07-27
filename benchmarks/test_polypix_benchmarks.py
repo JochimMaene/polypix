@@ -127,6 +127,16 @@ def large_sparse_resolution_12_cells() -> np.ndarray:
     return np.arange(65536, dtype=np.uint64) * np.uint64(pixel_count // 65536)
 
 
+@pytest.fixture(scope="module")
+def multi_million_sorted_resolution_12_cells() -> np.ndarray:
+    resolution = 12
+    pixel_count = 12 * 4**resolution
+    candidate_count = 2_000_000
+    return np.arange(candidate_count, dtype=np.uint64) * np.uint64(
+        pixel_count // candidate_count
+    )
+
+
 @pytest.mark.parametrize(
     "resolution", [4, 6, 7], ids=lambda value: f"resolution_{value}"
 )
@@ -288,6 +298,22 @@ def test_cover_single_with_large_sparse_candidate_set(
     )
 
     assert coverage.offsets.shape == (2,)
+
+
+def test_cover_with_multi_million_sorted_candidates(
+    benchmark,
+    large_footprints: np.ndarray,
+    multi_million_sorted_resolution_12_cells: np.ndarray,
+) -> None:
+    coverage = benchmark(
+        px.cover_footprint,
+        large_footprints[:64],
+        12,
+        candidate_cells=multi_million_sorted_resolution_12_cells,
+        threads=1,
+    )
+
+    assert coverage.offsets.shape == (65,)
 
 
 def test_cover_strip(benchmark, strip_edges: tuple[np.ndarray, np.ndarray]) -> None:

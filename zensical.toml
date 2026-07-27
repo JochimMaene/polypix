@@ -14,7 +14,6 @@ nav = [
   { "Development" = "development.md" },
   { "Architecture decisions" = [
     { "Owned HEALPix kernel" = "decisions/owned-healpix-kernel.md" },
-    { "Rejected permissive backends" = "decisions/permissive-healpix-kernel.md" },
   ] },
 ]
 

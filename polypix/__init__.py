@@ -177,11 +177,9 @@ def _as_footprints(
         return _require_dense_footprints(values)
     if len(values) == 0:
         return np.empty((0, 3), dtype=np.float64), np.zeros(1, dtype=np.uint64)
-
-    try:
-        return _require_dense_footprints(values)
-    except ValueError:
+    if np.asarray(values[0]).ndim == 2:
         return _ragged_footprints(values)
+    return _require_dense_footprints(values)
 
 
 def _coverage(payload: tuple[np.ndarray, np.ndarray], resolution: int) -> Coverage:

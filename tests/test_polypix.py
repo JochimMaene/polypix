@@ -915,8 +915,12 @@ class PolypixTests(unittest.TestCase):
 
     def test_cover_rejects_invalid_array_shape(self) -> None:
         footprint = vectors([(-5.0, -5.0), (12.0, -4.0), (10.0, 9.0), (-6.0, 7.0)])
-        with self.assertRaisesRegex(ValueError, "shape"):
-            px.cover_footprint(footprint[:, :2], resolution=2)
+        for invalid in (footprint[:, :2], footprint[:, :2].tolist()):
+            with self.subTest(input_type=type(invalid).__name__):
+                with self.assertRaisesRegex(
+                    ValueError, r"^footprints_xyz must have shape"
+                ):
+                    px.cover_footprint(invalid, resolution=2)
 
     def test_cover_normalizes_arbitrary_vectors(self) -> None:
         footprint = vectors([(-5.0, -5.0), (12.0, -4.0), (10.0, 9.0), (-6.0, 7.0)])
