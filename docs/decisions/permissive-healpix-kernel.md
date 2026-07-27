@@ -139,6 +139,14 @@ timing includes the public Python call. The current default-parallel
 implementation completed the 4,096-item workloads in 18,517 and 29,810
 microseconds, so an unthreaded CDS integration would fail the product goal.
 
+The table does **not** show that CDS or Rust is generally faster than
+`healpix_cxx` or C++. Results change with resolution: CDS led the resolution-6
+spike, while `healpix_cxx` led the resolution-8 spike. The production decision
+is about the complete Polypix design—licensing, packaging, correctness, outer
+batch parallelism, and end-to-end throughput—not an inherent language or
+kernel-speed advantage. A focused permissive C++ or Polypix-owned kernel remains
+a valid replacement if it wins the same public-call scorecard materially.
+
 The evidence supports integration, not a performance-leadership claim:
 
 - CDS is competitive single-threaded on this workload.
@@ -147,6 +155,27 @@ The evidence supports integration, not a performance-leadership claim:
   preserve segment order, and benchmark the completed public call.
 - Candidate-cell coverage should bypass BMOC construction and test the
   precomputed candidate centers directly against each footprint.
+
+### Symmetric public-call comparison
+
+After integration, `benchmarks/legacy_cpp_baseline.py` was run unchanged against
+released v0.2.1 at commit `20d2df6` and Rust/CDS at commit `a746b1a`. These
+figures are medians of seven complete public calls on the same Intel i7-1165G7
+WSL2 host. Every shared workload produced the same normalized membership.
+
+| Standard workload | v0.2.1 C++ auto | Rust/CDS auto | Rust/CDS speedup |
+| --- | ---: | ---: | ---: |
+| 4,096 dense quads, resolution 6 | 18.956 ms | 7.908 ms | 2.40× |
+| 4,096 dense quads, resolution 9 | 34.422 ms | 42.318 ms | 0.81× |
+| 4,096 strip intervals, resolution 9 | 27.012 ms | 22.225 ms | 1.22× |
+| 512 footprints × 8,192 candidates, resolution 12 | 7.452 ms | 3.517 ms | 2.12× |
+| one footprint, resolution 9 | 0.050 ms | 0.092 ms | 0.54× |
+
+With both implementations restricted to one thread, the respective Rust/CDS
+speedups were 2.36×, 0.82×, 1.03×, 1.79×, and 0.41×. This confirms a workload
+and resolution-dependent result. The integrated design leads several primary
+batch paths, while C++ remains faster at dense resolution 9 and for single-call
+latency on this host.
 
 The crate warns that `target-cpu=native` BMI2 selection can regress badly on
 some AMD Ryzen processors. Published portable wheels should not use

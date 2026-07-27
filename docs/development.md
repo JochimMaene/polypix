@@ -72,6 +72,28 @@ performance with optional competitor installations:
 python -m benchmarks.scorecard --output scorecard.json
 ```
 
+### Released C++ baseline
+
+The v0.2.1 `healpix_cxx` implementation remains reproducible at commit
+`20d2df6`. The compatibility driver below runs the same fixed fixtures and
+normalizes v0.2.1's packed tokens to standard fixed-resolution NESTED indices:
+
+```bash
+git worktree add --detach /tmp/polypix-v021 20d2df6
+cd /tmp/polypix-v021
+pixi run -e test python /path/to/current/polypix/benchmarks/legacy_cpp_baseline.py \
+  --output /tmp/polypix-v021.json
+cd /path/to/current/polypix
+pixi run -e test python -m benchmarks.legacy_cpp_baseline \
+  --output /tmp/polypix-current.json
+git worktree remove /tmp/polypix-v021
+```
+
+Compare only records with identical membership digests. The driver measures
+complete public calls, but the implementations still differ in validation and
+result contracts; report the exact commit, machine, thread mode, and workload
+instead of presenting the result as a general Rust-versus-C++ claim.
+
 CodSpeed reports performance regressions through
 `.github/workflows/codspeed.yml` on pull requests and pushes to `main`.
 
