@@ -5,169 +5,190 @@ on:
   pull_request:
     paths:
       - ".github/workflows/release.yml"
-      - "ci/**"
-      - "CMakeLists.txt"
-      - "pixi.lock"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "LICENSE"
+      - "THIRD_PARTY_NOTICES.md"
       - "polypix/**"
       - "pyproject.toml"
-      - "src/polypix/**"
+      - "rust/**"
       - "tests/**"
   release:
     types: [published]
 
+permissions:
+  contents: read
+
 jobs:
   build_sdist:
-    name: Build sdist
+    name: Build source distribution
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Build sdist
-        run: pipx run build --sdist
+      - name: Build source distribution
+        uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
 
       - name: Check metadata
         run: pipx run twine check dist/*
 
-      - name: Upload sdist
+      - name: Upload source distribution
         uses: actions/upload-artifact@v4
         with:
           name: release-sdist
           path: dist/*.tar.gz
+          if-no-files-found: error
           retention-days: 30
 
   build_wheels:
-    name: Build wheel on ${{ matrix.os }} ${{ matrix.arch }}
+    name: Build ${{ matrix.label }} wheels
     if: github.event_name != 'pull_request'
     runs-on: ${{ matrix.os }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macosx_deployment_target }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            arch: x86_64
-          - os: macos-15-intel
-            arch: x86_64
+          - label: Linux x86-64
+            artifact: linux-x86_64
+            os: ubuntu-latest
+            target: x86_64
+            manylinux: "2014"
+            macosx_deployment_target: ""
+          - label: Linux ARM64
+            artifact: linux-aarch64
+            os: ubuntu-24.04-arm
+            target: aarch64
+            manylinux: "2014"
+            macosx_deployment_target: ""
+          - label: macOS x86-64
+            artifact: macos-x86_64
+            os: macos-15-intel
+            target: x86_64
+            manylinux: "off"
             macosx_deployment_target: "11.0"
-          - os: macos-14
-            arch: arm64
+          - label: macOS ARM64
+            artifact: macos-aarch64
+            os: macos-14
+            target: aarch64
+            manylinux: "off"
             macosx_deployment_target: "11.0"
+          - label: Windows x86-64
+            artifact: windows-x86_64
+            os: windows-latest
+            target: x64
+            manylinux: "off"
+            macosx_deployment_target: ""
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Install locked wheel dependencies
-        uses: prefix-dev/setup-pixi@v0.10.0
+      - name: Select test Python
+        uses: actions/setup-python@v5
         with:
-          pixi-version: v0.70.1
-          pixi-bin-path: ${{ runner.temp }}/pixi-bin/pixi
-          manifest-path: pyproject.toml
-          environments: ${{ runner.os != 'Linux' && 'wheel-deps' || '' }}
-          run-install: ${{ runner.os != 'Linux' }}
-          locked: ${{ runner.os != 'Linux' }}
-          cache: ${{ runner.os != 'Linux' }}
+          python-version: "3.12"
 
       - name: Build wheels
-        uses: pypa/cibuildwheel@v3.4.0
-        env:
-          CIBW_ARCHS: ${{ matrix.arch }}
-          CIBW_BUILD: "cp312-* cp313-* cp314-*"
-          CIBW_BEFORE_ALL_LINUX: >-
-            /host${{ runner.temp }}/pixi-bin/pixi install
-            --manifest-path /project/pyproject.toml
-            --environment wheel-deps
-            --locked
-          CIBW_ENVIRONMENT_LINUX:
-            POLYPIX_DEPS_PREFIX='/project/.pixi/envs/wheel-deps'
-            CMAKE_PREFIX_PATH='/project/.pixi/envs/wheel-deps'
-            PKG_CONFIG_PATH='/project/.pixi/envs/wheel-deps/lib/pkgconfig'
-            PATH="/project/.pixi/envs/wheel-deps/bin:$PATH"
-            LDFLAGS='-static-libstdc++'
-          CIBW_ENVIRONMENT_MACOS:
-            POLYPIX_DEPS_PREFIX='${{ github.workspace }}/.pixi/envs/wheel-deps'
-            CMAKE_PREFIX_PATH='${{ github.workspace }}/.pixi/envs/wheel-deps'
-            PKG_CONFIG_PATH='${{ github.workspace }}/.pixi/envs/wheel-deps/lib/pkgconfig'
-            PATH="${{ github.workspace }}/.pixi/envs/wheel-deps/bin:$PATH"
-            MACOSX_DEPLOYMENT_TARGET='${{ matrix.macosx_deployment_target }}'
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --out dist --interpreter python
+          sccache: true
+
+      - name: Install built wheel
+        working-directory: ${{ runner.temp }}
+        run: |
+          python -m pip install numpy pytest
+          python -m pip install --no-index --no-deps --find-links "${{ github.workspace }}/dist" polypix
+
+      - name: Test installed wheel
+        working-directory: ${{ runner.temp }}
+        run: python -m pytest -q "${{ github.workspace }}/tests"
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: release-${{ matrix.os }}-${{ matrix.arch }}
-          path: wheelhouse/*.whl
+          name: release-${{ matrix.artifact }}
+          path: dist/*.whl
+          if-no-files-found: error
           retention-days: 30
 
   build_wheels_pr_smoke:
-    name: PR wheel smoke on ${{ matrix.os }} ${{ matrix.arch }}
+    name: PR wheel smoke on ${{ matrix.label }}
     if: github.event_name == 'pull_request'
     runs-on: ${{ matrix.os }}
+    env:
+      MACOSX_DEPLOYMENT_TARGET: ${{ matrix.macosx_deployment_target }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            arch: x86_64
-          - os: macos-14
-            arch: arm64
+          - label: Linux x86-64
+            artifact: linux-x86_64
+            os: ubuntu-latest
+            target: x86_64
+            manylinux: "2014"
+            macosx_deployment_target: ""
+          - label: macOS ARM64
+            artifact: macos-aarch64
+            os: macos-14
+            target: aarch64
+            manylinux: "off"
             macosx_deployment_target: "11.0"
+          - label: Windows x86-64
+            artifact: windows-x86_64
+            os: windows-latest
+            target: x64
+            manylinux: "off"
+            macosx_deployment_target: ""
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Select smoke-test Python
+        uses: actions/setup-python@v5
         with:
-          fetch-depth: 0
+          python-version: "3.12"
 
-      - name: Install locked wheel dependencies
-        uses: prefix-dev/setup-pixi@v0.10.0
+      - name: Build smoke wheel
+        uses: PyO3/maturin-action@v1
         with:
-          pixi-version: v0.70.1
-          pixi-bin-path: ${{ runner.temp }}/pixi-bin/pixi
-          manifest-path: pyproject.toml
-          environments: ${{ runner.os != 'Linux' && 'wheel-deps' || '' }}
-          run-install: ${{ runner.os != 'Linux' }}
-          locked: ${{ runner.os != 'Linux' }}
-          cache: ${{ runner.os != 'Linux' }}
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          args: --release --out dist --interpreter python
+          sccache: true
 
-      - name: Build smoke wheels
-        uses: pypa/cibuildwheel@v3.4.0
-        env:
-          CIBW_ARCHS: ${{ matrix.arch }}
-          CIBW_BUILD: "cp312-* cp314-*"
-          CIBW_BEFORE_ALL_LINUX: >-
-            /host${{ runner.temp }}/pixi-bin/pixi install
-            --manifest-path /project/pyproject.toml
-            --environment wheel-deps
-            --locked
-          CIBW_ENVIRONMENT_LINUX:
-            POLYPIX_DEPS_PREFIX='/project/.pixi/envs/wheel-deps'
-            CMAKE_PREFIX_PATH='/project/.pixi/envs/wheel-deps'
-            PKG_CONFIG_PATH='/project/.pixi/envs/wheel-deps/lib/pkgconfig'
-            PATH="/project/.pixi/envs/wheel-deps/bin:$PATH"
-            LDFLAGS='-static-libstdc++'
-          CIBW_ENVIRONMENT_MACOS:
-            POLYPIX_DEPS_PREFIX='${{ github.workspace }}/.pixi/envs/wheel-deps'
-            CMAKE_PREFIX_PATH='${{ github.workspace }}/.pixi/envs/wheel-deps'
-            PKG_CONFIG_PATH='${{ github.workspace }}/.pixi/envs/wheel-deps/lib/pkgconfig'
-            PATH="${{ github.workspace }}/.pixi/envs/wheel-deps/bin:$PATH"
-            MACOSX_DEPLOYMENT_TARGET='${{ matrix.macosx_deployment_target }}'
+      - name: Install smoke wheel
+        working-directory: ${{ runner.temp }}
+        run: |
+          python -m pip install numpy pytest
+          python -m pip install --no-index --no-deps --find-links "${{ github.workspace }}/dist" polypix
 
-      - name: Upload smoke wheels
+      - name: Test installed wheel
+        working-directory: ${{ runner.temp }}
+        run: python -m pytest -q "${{ github.workspace }}/tests"
+
+      - name: Upload smoke wheel
         uses: actions/upload-artifact@v4
         with:
-          name: smoke-${{ matrix.os }}-${{ matrix.arch }}
-          path: wheelhouse/*.whl
+          name: smoke-${{ matrix.artifact }}
+          path: dist/*.whl
+          if-no-files-found: error
           retention-days: 7
 
-  upload_all:
+  publish:
     name: Publish to PyPI
     needs: [build_sdist, build_wheels]
+    if: github.event_name == 'release' && github.event.action == 'published'
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
       id-token: write
-    if: github.event_name == 'release' && github.event.action == 'published'
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4

@@ -20,7 +20,9 @@ def _load_footprints(path: Path) -> np.ndarray:
     if isinstance(payload, np.ndarray):
         footprints = np.ascontiguousarray(np.asarray(payload, dtype=np.float64))
         if footprints.ndim != 3 or footprints.shape[-1] != 3:
-            raise ValueError("Dense footprint files must have shape (footprints, vertices, 3).")
+            raise ValueError(
+                "Dense footprint files must have shape (footprints, vertices, 3)."
+            )
         return footprints
     raise ValueError(f"Unsupported footprint file: {path}")
 
@@ -46,11 +48,13 @@ def _benchmark(
         timings.append(time.perf_counter() - started)
 
     mean_seconds = statistics.fmean(timings)
-    return footprint_count / mean_seconds, mean_seconds, result.cell_ids.size
+    return footprint_count / mean_seconds, mean_seconds, result.cells.size
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Benchmark Polypix on a footprint batch.")
+    parser = argparse.ArgumentParser(
+        description="Benchmark Polypix on a footprint batch."
+    )
     parser.add_argument("--footprints-file", required=True)
     parser.add_argument("--resolution", type=int, nargs="+", required=True)
     parser.add_argument("--warmup", type=int, default=1)

@@ -32,16 +32,20 @@ def footprints() -> np.ndarray:
 
 
 @pytest.fixture(scope="module")
-def swath_edges() -> tuple[np.ndarray, np.ndarray]:
+def strip_edges() -> tuple[np.ndarray, np.ndarray]:
     latitudes = np.linspace(-40.0, 40.0, 501)
-    left = np.asarray([_lonlat_to_xyz(-5.0, float(lat)) for lat in latitudes], dtype=np.float64)
-    right = np.asarray([_lonlat_to_xyz(5.0, float(lat)) for lat in latitudes], dtype=np.float64)
+    left = np.asarray(
+        [_lonlat_to_xyz(-5.0, float(lat)) for lat in latitudes], dtype=np.float64
+    )
+    right = np.asarray(
+        [_lonlat_to_xyz(5.0, float(lat)) for lat in latitudes], dtype=np.float64
+    )
     return left, right
 
 
 @pytest.fixture(scope="module")
-def cell_ids(footprints: np.ndarray) -> np.ndarray:
-    return px.cover_footprint(footprints, resolution=7).cell_ids
+def cells(footprints: np.ndarray) -> np.ndarray:
+    return px.cover_footprint(footprints, resolution=7, threads=1).cells
 
 
 @pytest.fixture(scope="module")
@@ -49,52 +53,57 @@ def sparse_resolution_12_cells() -> np.ndarray:
     resolution = 12
     pixel_count = 12 * (4**resolution)
     nested_indices = np.arange(1024, dtype=np.uint64) * np.uint64(pixel_count // 1024)
-    return nested_indices | np.uint64(1 << (4 + 2 * resolution))
+    return nested_indices
 
 
-@pytest.mark.parametrize("resolution", [4, 6, 7], ids=lambda value: f"resolution_{value}")
-def test_cover_footprint_batch(benchmark, footprints: np.ndarray, resolution: int) -> None:
-    coverage = benchmark(px.cover_footprint, footprints, resolution)
+@pytest.mark.parametrize(
+    "resolution", [4, 6, 7], ids=lambda value: f"resolution_{value}"
+)
+def test_cover_footprint_batch(
+    benchmark, footprints: np.ndarray, resolution: int
+) -> None:
+    coverage = benchmark(px.cover_footprint, footprints, resolution, threads=1)
 
     assert coverage.offsets.shape == (footprints.shape[0] + 1,)
-    assert coverage.cell_ids.dtype == np.uint64
+    assert coverage.cells.dtype == np.uint64
 
 
-def test_cover_swath(benchmark, swath_edges: tuple[np.ndarray, np.ndarray]) -> None:
-    left, right = swath_edges
-    coverage = benchmark(px.cover_swath, left, right, 7)
+def test_cover_strip(benchmark, strip_edges: tuple[np.ndarray, np.ndarray]) -> None:
+    left, right = strip_edges
+    coverage = benchmark(px.cover_strip, left, right, 7, threads=1)
 
     assert coverage.offsets.shape == (left.shape[0],)
-    assert coverage.cell_ids.dtype == np.uint64
+    assert coverage.cells.dtype == np.uint64
 
 
-def test_cover_swath_with_sparse_high_resolution_filter(
+def test_cover_strip_with_sparse_high_resolution_candidates(
     benchmark,
-    swath_edges: tuple[np.ndarray, np.ndarray],
+    strip_edges: tuple[np.ndarray, np.ndarray],
     sparse_resolution_12_cells: np.ndarray,
 ) -> None:
-    left, right = swath_edges
+    left, right = strip_edges
     coverage = benchmark(
-        px.cover_swath,
+        px.cover_strip,
         left,
         right,
         12,
-        allowed_cell_ids=sparse_resolution_12_cells,
+        candidate_cells=sparse_resolution_12_cells,
+        threads=1,
     )
 
     assert coverage.offsets.shape == (left.shape[0],)
-    assert coverage.cell_ids.dtype == np.uint64
+    assert coverage.cells.dtype == np.uint64
 
 
-def test_centers(benchmark, cell_ids: np.ndarray) -> None:
-    centers = benchmark(px.centers, cell_ids)
+def test_centers(benchmark, cells: np.ndarray) -> None:
+    centers = benchmark(px.centers, cells, 7)
 
-    assert centers.shape == (cell_ids.size, 2)
+    assert centers.shape == (cells.size, 3)
     assert centers.dtype == np.float64
 
 
-def test_boundaries(benchmark, cell_ids: np.ndarray) -> None:
-    boundaries = benchmark(px.boundaries, cell_ids[:256])
+def test_boundaries(benchmark, cells: np.ndarray) -> None:
+    boundaries = benchmark(px.boundaries, cells[:256], 7)
 
-    assert boundaries.shape == (min(cell_ids.size, 256), 4, 2)
+    assert boundaries.shape == (min(cells.size, 256), 4, 3)
     assert boundaries.dtype == np.float64

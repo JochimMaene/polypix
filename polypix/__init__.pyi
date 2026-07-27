@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, Sequence, overload
+from typing import Any, Sequence
 
 import numpy as np
 import numpy.typing as npt
@@ -8,29 +8,34 @@ __version__: str
 
 @dataclass(frozen=True)
 class Coverage:
-    cell_ids: npt.NDArray[np.uint64]
+    cells: npt.NDArray[np.uint64]
     offsets: npt.NDArray[np.uint64]
+    resolution: int
     @property
     def counts(self) -> npt.NDArray[np.intp]: ...
 
 def cover_footprint(
-    footprints_xyz: Sequence[Sequence[float]] | Sequence[Sequence[Sequence[float]]] | npt.NDArray[np.float64],
+    footprints_xyz: Sequence[Sequence[float]]
+    | Sequence[Sequence[Sequence[float]]]
+    | npt.ArrayLike,
     resolution: int,
     *,
-    allowed_cell_ids: Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
+    candidate_cells: Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
+    threads: int | None = None,
 ) -> Coverage: ...
-
-def cover_swath(
-    left_edge_xyz: Sequence[Sequence[float]] | npt.NDArray[np.float64],
-    right_edge_xyz: Sequence[Sequence[float]] | npt.NDArray[np.float64],
+def cover_strip(
+    left_edge_xyz: Sequence[Sequence[float]] | npt.ArrayLike,
+    right_edge_xyz: Sequence[Sequence[float]] | npt.ArrayLike,
     resolution: int,
     *,
-    allowed_cell_ids: Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
+    candidate_cells: Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
+    threads: int | None = None,
 ) -> Coverage: ...
-
-@overload
-def centers(cell_ids: int) -> tuple[float, float]: ...
-@overload
-def centers(cell_ids: Sequence[int] | npt.NDArray[np.uint64]) -> npt.NDArray[np.float64]: ...
-
-def boundaries(cell_ids: int | Sequence[int] | npt.NDArray[np.uint64]) -> npt.NDArray[np.float64]: ...
+def centers(
+    cells: int | Sequence[int] | npt.NDArray[np.integer[Any]],
+    resolution: int,
+) -> npt.NDArray[np.float64]: ...
+def boundaries(
+    cells: int | Sequence[int] | npt.NDArray[np.integer[Any]],
+    resolution: int,
+) -> npt.NDArray[np.float64]: ...

@@ -7,6 +7,7 @@ docs_dir = "docs"
 site_dir = "site"
 nav = [
   { "Overview" = "index.md" },
+  { "Project Goal" = "project-goal.md" },
   { "Install" = "install.md" },
   { "Concepts" = "concepts.md" },
   { "API" = "api.md" },

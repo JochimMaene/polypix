@@ -1,64 +1,73 @@
 # API Reference
 
-Import Polypix as:
-
 ```python
 import polypix as px
 ```
 
-The public API is intentionally small:
-
-- `Coverage`
-- `cover_footprint`
-- `cover_swath`
-- `centers`
-- `boundaries`
+The complete public API is `Coverage`, `cover_footprint`, `cover_strip`,
+`centers`, and `boundaries`.
 
 ## Coverage
 
-```python
-px.Coverage(cell_ids, offsets)
-```
-
-Coverage results are returned by `cover_footprint()` and `cover_swath()`.
-
-Attributes:
-
-- `cell_ids`: a one-dimensional `np.ndarray` with dtype `uint64`.
-- `offsets`: a one-dimensional `np.ndarray` with dtype `uint64`.
-- `counts`: a derived one-dimensional `np.ndarray` with dtype `intp`.
-
-For `N` input footprints, `offsets` has length `N + 1`. The covered cells for
-footprint `i` are:
+Every coverage call returns:
 
 ```python
-coverage.cell_ids[coverage.offsets[i] : coverage.offsets[i + 1]]
+px.Coverage(cells, offsets, resolution)
 ```
 
-For a single footprint, `offsets` is `[0, len(cell_ids)]`.
+- `cells`: flat one-dimensional `uint64` array of standard HEALPix NESTED
+  indices.
+- `offsets`: `uint64` segment boundaries, with length `item_count + 1`.
+- `resolution`: the common HEALPix resolution for every returned cell.
+- `counts`: derived `intp` array equal to `np.diff(offsets)`.
+
+Cells for input item `i` are:
+
+```python
+coverage.cells[coverage.offsets[i] : coverage.offsets[i + 1]]
+```
+
+Segments contain no duplicate cells and preserve input item order. Their
+internal deterministic traversal order is intentionally not an API promise.
 
 ## cover_footprint
 
 ```python
-px.cover_footprint(footprints_xyz, resolution, *, allowed_cell_ids=None)
+px.cover_footprint(
+    footprints_xyz,
+    resolution,
+    *,
+    candidate_cells=None,
+    threads=None,
+)
 ```
 
-Returns packed Polypix cell IDs for one convex spherical footprint or a dense
-batch of footprints. Footprints are normalized `(x, y, z)` unit vectors in a
-common frame.
+Cover one convex spherical footprint or a batch using cell-center inclusion.
 
-Parameters:
+`footprints_xyz` accepts:
 
-- `footprints_xyz`: unit-vector vertices with shape `(vertices, 3)` or
-  `(footprints, vertices, 3)`.
-- `resolution`: integer HEALPix resolution from 0 through 29.
-- `allowed_cell_ids`: optional one-dimensional integer array-like. When
-  supplied, only these cells can appear in the result. Every ID must belong to
-  `resolution`.
+- one `(vertices, 3)` numeric array-like;
+- a dense `(footprints, vertices, 3)` numeric array-like;
+- a sequence of `(vertices, 3)` arrays for a ragged batch.
 
-Returns:
+Vectors are finite, nonzero, body-centered `(x, y, z)` coordinates. Polypix
+normalizes their magnitudes. It assigns no datum, ellipsoid, or CRS meaning to
+them.
 
-- `Coverage`.
+`resolution` is an integer from 0 through 29. The returned values satisfy:
+
+```text
+0 <= cell < 12 * 4 ** resolution
+```
+
+`candidate_cells` optionally restricts the result to a one-dimensional set of
+standard NESTED indices at the requested resolution. Duplicate candidates are
+ignored. An empty candidate set returns empty segments without dropping input
+items.
+
+`threads=None` uses the automatic native policy. `threads=1` disables internal
+parallelism; a larger positive integer requests that many workers. Threading
+does not change membership, segment order, or cell order.
 
 Example:
 
@@ -89,163 +98,57 @@ footprint = np.asarray(
 coverage = px.cover_footprint(footprint, resolution=8)
 ```
 
-To restrict coverage to an existing set of cells:
+## cover_strip
 
 ```python
-coverage = px.cover_footprint(
-    footprint,
-    resolution=8,
-    allowed_cell_ids=aoi_cell_ids,
-)
-```
-
-`allowed_cell_ids` has set semantics: duplicates are ignored, and results keep
-the normal ascending NESTED order rather than the input filter order.
-
-Batch example:
-
-```python
-footprint_a = np.asarray(
-    [
-        lonlat_to_xyz(-5.0, -5.0),
-        lonlat_to_xyz(12.0, -4.0),
-        lonlat_to_xyz(10.0, 9.0),
-        lonlat_to_xyz(-6.0, 7.0),
-    ],
-    dtype=np.float64,
-)
-footprint_b = np.asarray(
-    [
-        lonlat_to_xyz(20.0, -10.0),
-        lonlat_to_xyz(33.0, -10.0),
-        lonlat_to_xyz(33.0, 0.0),
-        lonlat_to_xyz(20.0, 0.0),
-    ],
-    dtype=np.float64,
-)
-
-coverage = px.cover_footprint(np.stack([footprint_a, footprint_b]), resolution=8)
-cells_by_footprint = [
-    coverage.cell_ids[start:stop]
-    for start, stop in zip(coverage.offsets[:-1], coverage.offsets[1:])
-]
-```
-
-## cover_swath
-
-```python
-px.cover_swath(
+px.cover_strip(
     left_edge_xyz,
     right_edge_xyz,
     resolution,
     *,
-    allowed_cell_ids=None,
+    candidate_cells=None,
+    threads=None,
 )
 ```
 
-Returns packed Polypix cell IDs for consecutive swath intervals.
-
-Parameters:
-
-- `left_edge_xyz`: unit-vector left edge samples with shape `(samples, 3)`.
-- `right_edge_xyz`: unit-vector right edge samples with shape `(samples, 3)`.
-- `resolution`: integer HEALPix resolution from 0 through 29.
-- `allowed_cell_ids`: optional one-dimensional integer array-like restricting
-  each swath interval to cells at `resolution`.
-
-Returns:
-
-- `Coverage`.
-
-`left_edge_xyz` and `right_edge_xyz` must contain the same number of samples,
-and at least two samples. Each consecutive interval is covered as one
+`left_edge_xyz` and `right_edge_xyz` are `(samples, 3)` vector arrays with the
+same length and at least two samples. Each consecutive pair forms one convex
 quadrilateral:
 
 ```text
 [left[i], right[i], right[i + 1], left[i + 1]]
 ```
 
-Example:
-
-```python
-coverage = px.cover_swath(left_edge_xyz, right_edge_xyz, resolution=8)
-cells_by_interval = [
-    coverage.cell_ids[start:stop]
-    for start, stop in zip(coverage.offsets[:-1], coverage.offsets[1:])
-]
-```
-
-The native kernel tests only the allowed cell centers for every interval; it
-does not construct the unfiltered swath coverage first.
+For `N` paired samples, the result therefore contains `N - 1` segments.
+Polypix does not merge those segments. `candidate_cells` and `threads` have the
+same meaning as in `cover_footprint()`.
 
 ## centers
 
 ```python
-px.centers(cell_ids)
+px.centers(cells, resolution)
 ```
 
-Returns HEALPix cell centers as `(longitude, latitude)` in degrees.
-
-Parameters:
-
-- `cell_ids`: a scalar packed cell ID or a one-dimensional sequence of packed
-  cell IDs.
-
-Returns:
-
-- for a scalar input, a `(longitude, latitude)` tuple;
-- for a one-dimensional input, an array with shape `(n, 2)` and dtype
-  `float64`.
-
-Example:
-
-```python
-lon, lat = px.centers(int(coverage.cell_ids[0]))
-center_lonlat = px.centers(coverage.cell_ids)
-```
-
-The input may contain cells from different resolutions.
+Returns normalized body-centered center vectors with shape `(n, 3)` and dtype
+`float64`. A scalar cell is treated as a one-cell input and returns shape
+`(1, 3)`. Empty input returns shape `(0, 3)`.
 
 ## boundaries
 
 ```python
-px.boundaries(cell_ids)
+px.boundaries(cells, resolution)
 ```
 
-Returns HEALPix cell boundaries as longitude/latitude coordinates in degrees.
+Returns the four normalized HEALPix corner vectors per cell with shape
+`(n, 4, 3)` and dtype `float64`. A scalar cell retains its leading cell axis
+and returns shape `(1, 4, 3)`. The first corner is not repeated.
 
-Parameters:
+## Geometry Contract
 
-- `cell_ids`: a scalar packed cell ID or a one-dimensional sequence of packed
-  cell IDs.
+Footprints must be convex spherical polygons contained within an unambiguous
+hemisphere. Edges follow shorter great-circle arcs. Either orientation and one
+repeated closing vertex are accepted. A cell center on an edge is included.
 
-Returns:
-
-- for a scalar input, an array with shape `(4, 2)`;
-- for a one-dimensional input, an array with shape `(n, 4, 2)`.
-
-Example:
-
-```python
-outline = px.boundaries(int(coverage.cell_ids[0]))
-outlines = px.boundaries(coverage.cell_ids[:10])
-```
-
-The four returned vertices are the HEALPix cell corners. The boundary is not
-closed by repeating the first vertex.
-
-## Exceptions And Validation
-
-Polypix validates Python array shape before entering the native coverage code.
-The native code validates spherical geometry.
-
-Common validation errors include:
-
-- `resolution` is not an integer or is outside `0..29`;
-- footprint arrays do not have shape `(vertices, 3)` or `(footprints, vertices, 3)`;
-- swath edge arrays do not have shape `(samples, 3)`;
-- swath edge arrays have different lengths or fewer than two samples;
-- unit vectors are not finite or not normalized;
-- a footprint has fewer than three unique vertices;
-- a footprint has duplicate vertices, degenerate edges, or is non-convex;
-- packed cell IDs passed to `centers()` or `boundaries()` are invalid.
+Polypix rejects footprints with fewer than three unique vertices, duplicate or
+antipodal vertices, degenerate edges, non-finite coordinates, self
+intersections, or non-convex geometry.

@@ -18,18 +18,22 @@ Published wheels support:
 
 | Platform | Architecture | Python |
 | --- | --- | --- |
-| Linux | x86_64 | 3.12 and newer |
-| macOS 11+ | x86_64 | 3.12 and newer |
-| macOS 11+ | arm64 | 3.12 and newer |
+| Linux | x86-64 | CPython 3.12 and newer |
+| Linux | ARM64 | CPython 3.12 and newer |
+| macOS 11+ | x86-64 | CPython 3.12 and newer |
+| macOS 11+ | ARM64 | CPython 3.12 and newer |
+| Windows | x86-64 | CPython 3.12 and newer |
 
-Windows wheels are not published because `healpix_cxx` is not currently
-available as a conda-forge `win-64` package.
+The wheel contains the native coverage kernel. NumPy is the only runtime
+dependency: installing a wheel does not require Rust, a C++ compiler, a system
+HEALPix library, or CFITSIO.
 
 ## Source Builds
 
-Most users should install a wheel from PyPI. A source build requires a C++17
-toolchain and the native HEALPix C++ dependency to be available in the build
-environment.
+Most users should install a wheel from PyPI. A source build requires a stable
+Rust toolchain and a supported CPython installation. The Maturin build backend
+fetches and compiles the Rust crate dependencies; no system HEALPix library is
+required.
 
 The repository's supported source-build environment is Pixi:
 
@@ -37,8 +41,8 @@ The repository's supported source-build environment is Pixi:
 pixi run test
 ```
 
-This creates a conda-forge environment with Python, NumPy, CMake, Ninja,
-nanobind, `healpix_cxx`, and pytest, then installs Polypix in editable mode.
+This creates an environment with Python, NumPy, Rust, Maturin, and pytest, then
+installs Polypix in editable mode.
 
 ## Local Wheels
 
@@ -49,8 +53,7 @@ pixi run wheel
 ```
 
 That wheel is intended for local smoke testing. Release wheels are built by the
-GitHub Actions release workflow with `cibuildwheel` and repaired with
-`auditwheel` on Linux or `delocate` on macOS.
+GitHub Actions release workflow with Maturin for every supported platform.
 
 For contributor workflows such as documentation authoring, packaging, and
 release steps, see [Development](development.md).
