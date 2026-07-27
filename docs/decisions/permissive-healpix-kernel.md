@@ -231,6 +231,10 @@ fails the production acceptance gates. Reconsider only if the integrated CDS
 path cannot meet correctness, performance, wheel, or dependency-burden
 requirements.
 
+The post-integration evidence triggered that reconsideration. See
+[`owned-healpix-kernel.md`](owned-healpix-kernel.md) for the approved bounded
+spike and its admission gates. CDS remains the production kernel meanwhile.
+
 ## Production Acceptance Gates
 
 The integration is accepted for publication when:
