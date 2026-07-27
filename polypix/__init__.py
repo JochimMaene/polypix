@@ -3,22 +3,29 @@ from __future__ import annotations
 import operator
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 
-from ._core import __version__, _boundary_many, _center, _cover, _cover_strip
+from ._core import (
+    _MAX_RESOLUTION,
+    __version__,
+    _boundary_many,
+    _center,
+    _cover,
+    _cover_strip,
+)
 
-_MAX_RESOLUTION = 29
 
-
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Coverage:
-    cells: np.ndarray
-    offsets: np.ndarray
+    cells: npt.NDArray[np.uint64]
+    offsets: npt.NDArray[np.uint64]
     resolution: int
 
     @property
-    def counts(self) -> np.ndarray:
+    def counts(self) -> npt.NDArray[np.intp]:
         return np.diff(self.offsets).astype(np.intp, copy=False)
 
 
@@ -88,6 +95,12 @@ def _as_uint64_vector(
 
 
 def _as_float_array(values: object, name: str) -> np.ndarray:
+    if (
+        isinstance(values, np.ndarray)
+        and values.dtype == np.float64
+        and values.flags.c_contiguous
+    ):
+        return values
     array = np.asarray(values)
     if np.issubdtype(array.dtype, np.complexfloating):
         raise TypeError(f"{name} must contain real numbers, not complex values.")
@@ -106,6 +119,8 @@ def _as_float_matrix(values: object, width: int, name: str) -> np.ndarray:
 
 
 def _dense_footprints(array: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
+    if array.ndim == 1 and array.size == 0:
+        return np.empty((0, 3), dtype=np.float64), np.zeros(1, dtype=np.uint64)
     if array.ndim == 2 and array.shape[1] == 3:
         return array, np.asarray([0, array.shape[0]], dtype=np.uint64)
     if array.ndim == 3 and array.shape[2] == 3:
@@ -122,9 +137,7 @@ def _dense_footprints(array: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None
 
 
 def _as_footprints(
-    values: Sequence[Sequence[float]]
-    | Sequence[Sequence[Sequence[float]]]
-    | np.ndarray,
+    values: object,
 ) -> tuple[np.ndarray, np.ndarray]:
     if isinstance(values, np.ndarray):
         if values.dtype == np.dtype("O"):
@@ -133,12 +146,12 @@ def _as_footprints(
     elif isinstance(values, Sequence) and len(values) > 0:
         first = np.asarray(values[0])
         dense_array = (
-            None
-            if first.ndim == 2
-            else _as_float_array(values, "footprints_xyz")
+            None if first.ndim == 2 else _as_float_array(values, "footprints_xyz")
         )
+    elif isinstance(values, Sequence):
+        return np.empty((0, 3), dtype=np.float64), np.zeros(1, dtype=np.uint64)
     else:
-        dense_array = None
+        dense_array = _as_float_array(values, "footprints_xyz")
 
     if dense_array is not None:
         dense = _dense_footprints(dense_array)
@@ -180,13 +193,6 @@ def _as_footprints(
     return vertices, offsets
 
 
-def _as_ring_cells(
-    values: int | Sequence[int] | np.ndarray,
-    name: str,
-) -> np.ndarray:
-    return _as_uint64_vector(values, name)
-
-
 def _coverage(payload: tuple[np.ndarray, np.ndarray], resolution: int) -> Coverage:
     cells, offsets = payload
     return Coverage(
@@ -207,7 +213,7 @@ def _cover_xyz(
     candidates = (
         None
         if candidate_cells is None
-        else _as_ring_cells(candidate_cells, "candidate_cells")
+        else _as_uint64_vector(candidate_cells, "candidate_cells")
     )
     return _coverage(
         _cover(vertices, offsets, resolution, candidates, requested_threads),
@@ -218,10 +224,10 @@ def _cover_xyz(
 def cover_footprint(
     footprints_xyz: Sequence[Sequence[float]]
     | Sequence[Sequence[Sequence[float]]]
-    | np.ndarray,
+    | npt.ArrayLike,
     resolution: int,
     *,
-    candidate_cells: Sequence[int] | np.ndarray | None = None,
+    candidate_cells: Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
     threads: int | None = None,
 ) -> Coverage:
     resolved = _as_resolution(resolution)
@@ -230,11 +236,11 @@ def cover_footprint(
 
 
 def cover_strip(
-    left_edge_xyz: Sequence[Sequence[float]] | np.ndarray,
-    right_edge_xyz: Sequence[Sequence[float]] | np.ndarray,
+    left_edge_xyz: Sequence[Sequence[float]] | npt.ArrayLike,
+    right_edge_xyz: Sequence[Sequence[float]] | npt.ArrayLike,
     resolution: int,
     *,
-    candidate_cells: Sequence[int] | np.ndarray | None = None,
+    candidate_cells: Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
     threads: int | None = None,
 ) -> Coverage:
     resolved = _as_resolution(resolution)
@@ -251,7 +257,7 @@ def cover_strip(
     candidates = (
         None
         if candidate_cells is None
-        else _as_ring_cells(candidate_cells, "candidate_cells")
+        else _as_uint64_vector(candidate_cells, "candidate_cells")
     )
     return _coverage(
         _cover_strip(left, right, resolved, candidates, requested_threads),
@@ -260,20 +266,20 @@ def cover_strip(
 
 
 def centers(
-    cells: int | Sequence[int] | np.ndarray,
+    cells: int | Sequence[int] | npt.NDArray[np.integer[Any]],
     resolution: int,
-) -> np.ndarray:
+) -> npt.NDArray[np.float64]:
     resolved = _as_resolution(resolution)
-    ring = _as_ring_cells(cells, "cells")
+    ring = _as_uint64_vector(cells, "cells")
     return _center(ring, resolved)
 
 
 def boundaries(
-    cells: int | Sequence[int] | np.ndarray,
+    cells: int | Sequence[int] | npt.NDArray[np.integer[Any]],
     resolution: int,
-) -> np.ndarray:
+) -> npt.NDArray[np.float64]:
     resolved = _as_resolution(resolution)
-    ring = _as_ring_cells(cells, "cells")
+    ring = _as_uint64_vector(cells, "cells")
     return _boundary_many(ring, resolved)
 
 

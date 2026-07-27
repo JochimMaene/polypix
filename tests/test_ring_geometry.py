@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import math
+import unittest
 
 import numpy as np
 
 import polypix as px
-
 
 # Independent fixtures generated with astropy-healpix 2.0.1 in RING order.
 RESOLUTION_0_CENTERS = np.asarray(
@@ -142,43 +142,85 @@ def _geometry_signature(values: np.ndarray) -> np.ndarray:
     )
 
 
-def test_ring_centers_match_independent_base_resolution_fixture() -> None:
-    actual = px.centers(np.arange(12, dtype=np.uint64), resolution=0)
-
-    np.testing.assert_allclose(actual, RESOLUTION_0_CENTERS, rtol=0.0, atol=2e-15)
-
-
-def test_ring_boundaries_match_independent_polar_and_equatorial_fixtures() -> None:
-    actual = px.boundaries(RESOLUTION_1_BOUNDARY_CELLS, resolution=1)
-
-    np.testing.assert_allclose(actual, RESOLUTION_1_BOUNDARIES, rtol=0.0, atol=3e-15)
-
-
-def test_ring_centers_keep_polar_precision_at_resolution_29() -> None:
-    actual = px.centers(RESOLUTION_29_CELLS, resolution=29)
-
-    np.testing.assert_allclose(actual, RESOLUTION_29_CENTERS, rtol=0.0, atol=4e-15)
-
-
-def test_ring_geometry_matches_broad_healpix_cpp_audit() -> None:
-    for resolution, (center_signature, boundary_signature) in (
-        HEALPY_AUDIT_SIGNATURES.items()
-    ):
-        pixel_count = 12 * 4**resolution
-        cells = np.asarray(
-            [index * (pixel_count - 1) // 256 for index in range(257)],
-            dtype=np.uint64,
-        )
+class RingGeometryTests(unittest.TestCase):
+    def test_ring_centers_match_independent_base_resolution_fixture(self) -> None:
+        actual = px.centers(np.arange(12, dtype=np.uint64), resolution=0)
 
         np.testing.assert_allclose(
-            _geometry_signature(px.centers(cells, resolution)),
+            actual,
+            RESOLUTION_0_CENTERS,
+            rtol=0.0,
+            atol=2e-15,
+        )
+
+    def test_ring_boundaries_match_independent_fixtures(self) -> None:
+        actual = px.boundaries(RESOLUTION_1_BOUNDARY_CELLS, resolution=1)
+
+        np.testing.assert_allclose(
+            actual,
+            RESOLUTION_1_BOUNDARIES,
+            rtol=0.0,
+            atol=3e-15,
+        )
+
+    def test_ring_centers_keep_polar_precision_at_resolution_29(self) -> None:
+        actual = px.centers(RESOLUTION_29_CELLS, resolution=29)
+
+        np.testing.assert_allclose(
+            actual,
+            RESOLUTION_29_CENTERS,
+            rtol=0.0,
+            atol=4e-15,
+        )
+
+    def test_ring_geometry_matches_broad_healpix_cpp_audit(self) -> None:
+        for resolution, (
             center_signature,
-            rtol=0.0,
-            atol=1e-15,
-        )
-        np.testing.assert_allclose(
-            _geometry_signature(px.boundaries(cells, resolution)),
             boundary_signature,
-            rtol=0.0,
-            atol=1e-15,
-        )
+        ) in HEALPY_AUDIT_SIGNATURES.items():
+            pixel_count = 12 * 4**resolution
+            cells = np.asarray(
+                [index * (pixel_count - 1) // 256 for index in range(257)],
+                dtype=np.uint64,
+            )
+
+            np.testing.assert_allclose(
+                _geometry_signature(px.centers(cells, resolution)),
+                center_signature,
+                rtol=0.0,
+                atol=1e-15,
+            )
+            np.testing.assert_allclose(
+                _geometry_signature(px.boundaries(cells, resolution)),
+                boundary_signature,
+                rtol=0.0,
+                atol=1e-15,
+            )
+
+    def test_exhaustive_low_resolution_boundary_topology(self) -> None:
+        for resolution in range(5):
+            cell_count = 12 * 4**resolution
+            cells = np.arange(cell_count, dtype=np.uint64)
+            centers = px.centers(cells, resolution)
+            boundaries = px.boundaries(cells, resolution)
+
+            np.testing.assert_allclose(
+                np.linalg.norm(boundaries, axis=2),
+                1.0,
+                rtol=0.0,
+                atol=3e-16,
+            )
+            normals = np.cross(boundaries, np.roll(boundaries, -1, axis=1))
+            orientation = np.einsum("nvc,nc->n", normals, centers)
+            sides = np.einsum("nvc,nc->nv", normals, centers)
+            self.assertTrue(
+                np.all(sides * np.sign(orientation)[:, np.newaxis] >= -1e-15)
+            )
+
+            _, sharing = np.unique(
+                np.round(boundaries.reshape(-1, 3), decimals=13),
+                axis=0,
+                return_counts=True,
+            )
+            self.assertEqual(sharing.size, cell_count + 2)
+            self.assertEqual(set(sharing.tolist()), {3, 4})

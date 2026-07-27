@@ -5,7 +5,7 @@
 ```text
 polypix/
   __init__.py        Python API and input validation
-  __init__.pyi       public typing stub
+  _core.pyi          private compiled-extension typing stub
   py.typed            PEP 561 marker
 rust/
   lib.rs              PyO3 module and shared validation
@@ -15,6 +15,8 @@ tests/
   test_ring_geometry.py  independent HEALPix geometry fixtures
 benchmarks/
   test_polypix_benchmarks.py  CodSpeed public-call regression benchmarks
+tools/
+  generate_ring_geometry_fixtures.py  external-oracle fixture generator
 docs/
   *.md                Zensical documentation pages
 ```
@@ -72,6 +74,15 @@ Cross-library benchmarks and their optional dependencies intentionally live in
 a separate comparison repository. This repository keeps only focused CodSpeed
 regression benchmarks and product correctness tests.
 
+The broad independent boundary fixtures can be regenerated in a temporary
+environment containing `healpy`:
+
+```bash
+python tools/generate_ring_geometry_fixtures.py
+```
+
+`healpy` remains an external oracle, not a development or runtime dependency.
+
 CodSpeed reports performance regressions through
 `.github/workflows/codspeed.yml` on pull requests and pushes to `main`.
 
@@ -127,6 +138,5 @@ Keep the Python layer thin:
 When adding public functions, update:
 
 - `polypix/__init__.py`;
-- `polypix/__init__.pyi`;
 - `docs/api.md`;
 - tests and benchmarks where applicable.

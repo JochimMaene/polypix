@@ -37,7 +37,8 @@ interpretation belongs upstream or downstream.
 
 A footprint is a convex spherical polygon:
 
-- it is contained within an unambiguous hemisphere;
+- it is contained within an open hemisphere, so a hemisphere or larger region
+  cannot be represented;
 - each edge follows the shorter great-circle arc;
 - the covered region is closed, so a cell center on an edge is included;
 - either vertex orientation is accepted;
@@ -45,11 +46,19 @@ A footprint is a convex spherical polygon:
 - degenerate, antipodal, self-intersecting, and non-convex geometry is rejected.
 
 Validation is mandatory. There is no unsafe or validation-free mode.
+Validation rejects detectable ambiguity such as antipodal edges and
+exact-hemisphere boundaries. It cannot infer an unexpressed intention to use
+the longer arc or the other side of an otherwise valid minor-arc boundary.
 
 `cover_strip()` accepts two equally sampled boundary curves. Each consecutive
 sample pair forms one convex quadrilateral. For `N` paired samples, the result
 contains `N - 1` segments. Polypix does not implicitly merge or deduplicate the
 complete strip.
+
+The paired curves must be sampled densely enough that each shorter great-circle
+arc between consecutive samples represents the intended physical boundary.
+Polypix rejects exactly ambiguous geometry but cannot detect an undersampled
+trajectory whose minor arcs are mathematically valid.
 
 ### Coverage Rule
 
@@ -169,8 +178,9 @@ Optimizations for obscure cases do not justify public complexity or regressions
 in the primary path.
 
 Large batches are parallelized inside the native kernel when measurements show
-a benefit. `threads=None` selects an automatic policy and `threads=1` disables
-internal parallelism. Polypix releases the GIL, exposes no scheduler or chunk
+a benefit. `threads=None` selects an automatic policy, `threads=1` disables
+internal parallelism, and larger values are maximums rather than raw
+thread-spawn requests. Polypix releases the GIL, exposes no scheduler or chunk
 controls, and returns identical membership and ordering regardless of thread
 count.
 

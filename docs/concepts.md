@@ -42,9 +42,17 @@ A cell is covered when its center lies inside a footprint or on its boundary.
 This is a representative center sample, not conservative intersection,
 full-containment, or fractional-area coverage.
 
-Inputs are convex spherical polygons whose edges follow shorter great-circle
-arcs. Longitude wraparound and poles do not need special treatment because the
-kernel operates on three-dimensional vectors.
+Inputs are convex spherical polygons contained in an open hemisphere. Every
+pair of adjacent vertices is joined by the unique shorter great-circle arc.
+Those rules determine the represented region: for example, longitudes
+`-179°` and `179°` are two degrees apart across the antimeridian, not 358
+degrees apart. A hemisphere or larger region cannot be represented. Polypix
+rejects detectable ambiguity such as antipodal adjacent vertices or an
+exact-hemisphere boundary, but it cannot infer that a caller intended the
+other side of an otherwise valid minor-arc polygon.
+
+Longitude wraparound and poles need no special coordinate treatment because
+the kernel operates on three-dimensional vectors.
 
 Either vertex orientation and one repeated closing vertex are accepted.
 Degenerate, duplicate, antipodal, self-intersecting, and non-convex geometry is
@@ -55,6 +63,14 @@ rejected.
 `cover_footprint()` accepts one footprint, a dense batch, or a ragged sequence.
 `cover_strip()` turns consecutive pairs from two sampled edges into independent
 convex quadrilaterals.
+
+Strip samples use the same shorter-great-circle rule. Sampling is therefore
+part of the input contract: upstream code must sample densely enough that each
+consecutive arc represents the physical boundary. Steps approaching 180
+degrees bow strongly on the sphere, a step beyond 180 degrees selects the
+opposite shorter arc, and an exactly ambiguous segment is rejected. Polypix
+cannot distinguish intentional minor-arc geometry from an undersampled
+trajectory.
 
 Both return one `Coverage` with flat cells and offsets:
 
@@ -92,5 +108,6 @@ sequential = px.cover_footprint(batch, resolution=9, threads=1)
 automatic = px.cover_footprint(batch, resolution=9)
 ```
 
-`threads=None` selects the automatic policy. A positive integer selects a
-per-call worker count. Results are identical across thread settings.
+`threads=None` selects the automatic policy. A positive integer sets the
+reusable worker-pool maximum, capped by the host. Calls with less independent
+work leave surplus workers idle. Results are identical across thread settings.

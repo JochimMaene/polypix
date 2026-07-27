@@ -66,8 +66,10 @@ ignored. An empty candidate set returns empty segments without dropping input
 items.
 
 `threads=None` uses the automatic native policy. `threads=1` disables internal
-parallelism; a larger positive integer requests that many workers. Threading
-does not change membership, segment order, or cell order.
+parallelism; a larger positive integer sets the reusable worker-pool maximum.
+The pool is capped by the host's available parallelism; calls with fewer
+independent items simply leave surplus workers idle. Threading does not change
+membership, segment order, or cell order.
 
 Example:
 
@@ -145,10 +147,20 @@ and returns shape `(1, 4, 3)`. The first corner is not repeated.
 
 ## Geometry Contract
 
-Footprints must be convex spherical polygons contained within an unambiguous
-hemisphere. Edges follow shorter great-circle arcs. Either orientation and one
-repeated closing vertex are accepted. A cell center on an edge is included.
+Footprints must be convex spherical polygons contained in an open hemisphere.
+Adjacent vertices are joined by the unique shorter great-circle arc. This
+minor-arc interpretation determines the region across longitude wraparound and
+means that a hemisphere or larger region cannot be represented. Polypix
+rejects detectable ambiguity, including antipodal edges and exact-hemisphere
+boundaries, but cannot infer that otherwise valid vertices were intended to
+describe the other side of the sphere. Either orientation and one repeated
+closing vertex are accepted. A cell center on an edge is included.
 
 Polypix rejects footprints with fewer than three unique vertices, duplicate or
 antipodal vertices, degenerate edges, non-finite coordinates, self
 intersections, or non-convex geometry.
+
+For `cover_strip()`, consecutive samples on each edge are joined by the same
+minor arcs. Callers must sample physical swaths densely enough that these arcs
+are the intended boundary. Near-180-degree steps can bow toward a pole, and a
+step beyond 180 degrees selects the opposite shorter arc.

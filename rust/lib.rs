@@ -9,6 +9,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 mod ring;
 
 const MAX_RESOLUTION: u8 = 29;
+// The automatic policy is intentionally conservative: measurements on the
+// primary small-footprint batches show dispatch overhead dominates below both
+// 1,024 independent items and roughly one million estimated cell tests.
 const AUTO_PARALLEL_MIN_ITEMS: usize = 1024;
 const AUTO_PARALLEL_MIN_WORK: usize = 1 << 20;
 const ZERO_NORM_EPSILON: f64 = 1.0e-15;
@@ -62,7 +65,9 @@ fn normalize(vector: Vec3, input_name: &str) -> Result<Vec3, String> {
         ));
     }
     let scaled = [vector[0] / scale, vector[1] / scale, vector[2] / scale];
-    let inverse_length = norm(scaled).recip();
+    let inverse_length = (scaled[0] * scaled[0] + scaled[1] * scaled[1] + scaled[2] * scaled[2])
+        .sqrt()
+        .recip();
     Ok([
         scaled[0] * inverse_length,
         scaled[1] * inverse_length,
@@ -76,16 +81,30 @@ fn nearly_equal(left: Vec3, right: Vec3) -> bool {
         && (left[2] - right[2]).abs() < 1.0e-12
 }
 
+fn normalized_edge(left: Vec3, right: Vec3) -> Result<Vec3, String> {
+    let edge_normal = cross(left, right);
+    let edge_length = norm(edge_normal);
+    if edge_length <= ZERO_NORM_EPSILON {
+        return Err("Footprint contains degenerate or antipodal edges.".to_owned());
+    }
+    Ok([
+        edge_normal[0] / edge_length,
+        edge_normal[1] / edge_length,
+        edge_normal[2] / edge_length,
+    ])
+}
+
 fn validate_polygon(vertices: &mut [Vec3], edge_normals: &mut [Vec3]) -> Result<(), String> {
     debug_assert_eq!(vertices.len(), edge_normals.len());
     for left in 0..vertices.len() {
-        let right = (left + 1) % vertices.len();
-        if nearly_equal(vertices[left], vertices[right]) {
-            return Err("Footprint contains duplicate consecutive vertices.".to_owned());
-        }
         for other in (left + 1)..vertices.len() {
             if nearly_equal(vertices[left], vertices[other]) {
-                return Err("Footprint contains duplicate vertices.".to_owned());
+                let consecutive = other == left + 1 || (left == 0 && other + 1 == vertices.len());
+                return Err(if consecutive {
+                    "Footprint contains duplicate consecutive vertices.".to_owned()
+                } else {
+                    "Footprint contains duplicate vertices.".to_owned()
+                });
             }
         }
     }
@@ -106,29 +125,29 @@ fn validate_polygon(vertices: &mut [Vec3], edge_normals: &mut [Vec3]) -> Result<
     }
     interior = normalize(interior, "footprints_xyz")?;
 
-    let orientation = vertices
-        .iter()
-        .zip(vertices.iter().cycle().skip(1))
-        .map(|(&left, &right)| dot(cross(left, right), interior))
-        .sum::<f64>();
+    let mut orientation = 0.0;
+    for index in 0..vertices.len() {
+        let edge_normal = normalized_edge(vertices[index], vertices[(index + 1) % vertices.len()])?;
+        edge_normals[index] = edge_normal;
+        orientation += dot(edge_normal, interior);
+    }
     if orientation.abs() <= CONTAINMENT_EPSILON {
         return Err("Footprint is degenerate or numerically ambiguous.".to_owned());
     }
     if orientation < 0.0 {
         vertices.reverse();
+        for index in 0..vertices.len() {
+            edge_normals[index] =
+                normalized_edge(vertices[index], vertices[(index + 1) % vertices.len()])?;
+        }
     }
 
-    for index in 0..vertices.len() {
-        let current = vertices[index];
-        let next = vertices[(index + 1) % vertices.len()];
-        let edge_normal = cross(current, next);
-        let edge_length = norm(edge_normal);
-        if edge_length <= ZERO_NORM_EPSILON {
-            return Err("Footprint contains degenerate or antipodal edges.".to_owned());
-        }
-
+    for (index, &edge_normal) in edge_normals.iter().enumerate() {
         let mut found_strict_interior = false;
-        for &vertex in vertices.iter() {
+        for (vertex_index, &vertex) in vertices.iter().enumerate() {
+            if vertex_index == index || vertex_index == (index + 1) % vertices.len() {
+                continue;
+            }
             let side = dot(edge_normal, vertex);
             if side < -CONTAINMENT_EPSILON {
                 return Err("Footprint must be convex and non-self-intersecting.".to_owned());
@@ -138,11 +157,6 @@ fn validate_polygon(vertices: &mut [Vec3], edge_normals: &mut [Vec3]) -> Result<
         if !found_strict_interior {
             return Err("Footprint is degenerate.".to_owned());
         }
-        edge_normals[index] = [
-            edge_normal[0] / edge_length,
-            edge_normal[1] / edge_length,
-            edge_normal[2] / edge_length,
-        ];
     }
     Ok(())
 }
@@ -192,6 +206,9 @@ fn automatic_parallel(item_count: usize, resolution: u8, candidate_count: Option
 }
 
 fn explicit_pool(worker_count: usize) -> Result<Arc<rayon::ThreadPool>, String> {
+    // Explicit thread counts normally stay stable across repeated calls. Keep
+    // one pool to cover that primary workload without growing an unbounded
+    // cache for unusual alternating requests.
     static POOL: OnceLock<CachedPool> = OnceLock::new();
     let cache = POOL.get_or_init(|| Mutex::new(None));
     let mut cached = cache
@@ -318,19 +335,20 @@ fn _center<'py>(
         .as_slice()
         .map_err(|_| PyValueError::new_err("cells must be C-contiguous."))?;
     let cell_count = 12_u64 << (2 * resolution);
-    if cells.iter().any(|&cell| cell >= cell_count) {
-        return Err(PyValueError::new_err(format!(
-            "cells must contain valid RING indices at resolution {resolution}."
-        )));
-    }
-
-    let values = py.detach(|| {
-        cells
-            .iter()
-            .copied()
-            .flat_map(|cell| ring::center(cell, resolution))
-            .collect::<Vec<_>>()
-    });
+    let values = py
+        .detach(|| {
+            let mut values = Vec::with_capacity(cells.len() * 3);
+            for &cell in cells {
+                if cell >= cell_count {
+                    return Err(format!(
+                        "cells must contain valid RING indices at resolution {resolution}."
+                    ));
+                }
+                values.extend(ring::center(cell, resolution));
+            }
+            Ok(values)
+        })
+        .map_err(PyValueError::new_err)?;
     Ok(Array2::from_shape_vec((cells.len(), 3), values)
         .expect("shape matches center count")
         .into_pyarray(py))
@@ -347,21 +365,22 @@ fn _boundary_many<'py>(
         .as_slice()
         .map_err(|_| PyValueError::new_err("cells must be C-contiguous."))?;
     let cell_count = 12_u64 << (2 * resolution);
-    if cells.iter().any(|&cell| cell >= cell_count) {
-        return Err(PyValueError::new_err(format!(
-            "cells must contain valid RING indices at resolution {resolution}."
-        )));
-    }
-
-    let values = py.detach(|| {
-        let mut values = Vec::with_capacity(cells.len() * 12);
-        for &cell in cells {
-            for corner in ring::boundary(cell, resolution) {
-                values.extend(corner);
+    let values = py
+        .detach(|| {
+            let mut values = Vec::with_capacity(cells.len() * 12);
+            for &cell in cells {
+                if cell >= cell_count {
+                    return Err(format!(
+                        "cells must contain valid RING indices at resolution {resolution}."
+                    ));
+                }
+                for corner in ring::boundary(cell, resolution) {
+                    values.extend(corner);
+                }
             }
-        }
-        values
-    });
+            Ok(values)
+        })
+        .map_err(PyValueError::new_err)?;
     Ok(Array3::from_shape_vec((cells.len(), 4, 3), values)
         .expect("shape matches boundary count")
         .into_pyarray(py))
@@ -370,6 +389,7 @@ fn _boundary_many<'py>(
 #[pymodule]
 fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    module.add("_MAX_RESOLUTION", MAX_RESOLUTION)?;
     module.add_function(wrap_pyfunction!(_cover, module)?)?;
     module.add_function(wrap_pyfunction!(_cover_strip, module)?)?;
     module.add_function(wrap_pyfunction!(_center, module)?)?;

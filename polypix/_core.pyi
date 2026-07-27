@@ -2,6 +2,7 @@ import numpy as np
 import numpy.typing as npt
 
 __version__: str
+_MAX_RESOLUTION: int
 
 def _cover(
     vertices_xyz: npt.NDArray[np.float64],

@@ -117,6 +117,18 @@ algorithm selector or NESTED compatibility layer.
 Ownership alone is not the optimization: the improvement comes from deleting
 the overlap/BMOC pipeline in favor of direct center work.
 
+## Implementation Provenance
+
+The RING-to-face decoder was independently derived from the published HEALPix
+RING numbering equations and twelve-face layout. It was not adapted from the
+GPL-licensed HEALPix C++ `ring2xyf` implementation. The official implementation
+was used only as an external numerical oracle after Polypix's decoder existed.
+
+The subsequent face-coordinate transform is a small adaptation of
+Astrometry.net's BSD-3-Clause HEALPix mapping and is identified in the source
+and `THIRD_PARTY_NOTICES.md`. Keeping these origins explicit is part of the
+Apache-2.0 release evidence.
+
 ## Numerical Audit
 
 The production geometry was compared directly with the official HEALPix C++
@@ -146,29 +158,10 @@ indices at each of resolutions 0, 1, 3, 8, 16, and 29 and checks three
 deterministic projections of their centers and corners. Targeted fixtures
 retain near-machine-precision checks, while a separate scalar implementation
 checks every center through resolution 6. The broad reference values can be
-regenerated with:
+regenerated with the checked-in oracle script:
 
-```python
-cells = np.array(
-    [i * (12 * 4**resolution - 1) // 256 for i in range(257)],
-    dtype=np.int64,
-)
-centers = np.stack(
-    healpy.pix2vec(2**resolution, cells, nest=False),
-    axis=-1,
-)
-corners = np.moveaxis(
-    healpy.boundaries(2**resolution, cells, step=1, nest=False),
-    1,
-    2,
-)
-signature = [
-    math.fsum(
-        float(value) * math.sin((index + 1) * frequency)
-        for index, value in enumerate(values.ravel())
-    ) / values.size
-    for frequency in (0.6180339887498948, 1.4142135623730951, 2.718281828459045)
-]
+```bash
+python tools/generate_ring_geometry_fixtures.py
 ```
 
 The remaining CDS projection precautions—signed-zero preservation, inverse

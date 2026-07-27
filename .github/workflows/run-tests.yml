@@ -60,6 +60,7 @@ jobs:
         run: |
           pixi run --environment test cargo fmt --all -- --check
           pixi run --environment test cargo clippy --all-targets --locked -- -D warnings
+          pixi run --environment test lint
 
       - name: Select Python on Windows
         if: runner.os == 'Windows'
@@ -96,6 +97,25 @@ jobs:
         run: |
           python -m pip install "maturin>=1.10,<2" "numpy==1.26.*" "pytest>=8"
           python -m pip install --no-build-isolation --no-deps .
+
+      - name: Run test suite outside the source checkout
+        working-directory: ${{ runner.temp }}
+        run: python -m pytest -q "$GITHUB_WORKSPACE/tests"
+
+  latest-python:
+    name: Python 3.14
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Polypix with test dependencies
+        run: python -m pip install ".[test]"
 
       - name: Run test suite outside the source checkout
         working-directory: ${{ runner.temp }}

@@ -9,6 +9,18 @@ import numpy as np
 import polypix as px
 
 
+class ArrayOnly:
+    def __init__(self, values: np.ndarray) -> None:
+        self.values = values
+
+    def __array__(
+        self,
+        dtype: np.dtype | None = None,
+        copy: bool | None = None,
+    ) -> np.ndarray:
+        return np.asarray(self.values, dtype=dtype)
+
+
 def lonlat_to_vec(lon_deg: float, lat_deg: float) -> np.ndarray:
     lon = math.radians(lon_deg)
     lat = math.radians(lat_deg)
@@ -23,40 +35,6 @@ def vectors(vertices_lonlat: list[tuple[float, float]]) -> np.ndarray:
     return np.asarray(
         [lonlat_to_vec(lon, lat) for lon, lat in vertices_lonlat],
         dtype=np.float64,
-    )
-
-
-def orient_convex(vertices_lonlat: list[tuple[float, float]]) -> list[np.ndarray]:
-    polygon = [lonlat_to_vec(lon, lat) for lon, lat in vertices_lonlat]
-    if np.allclose(polygon[0], polygon[-1]):
-        polygon = polygon[:-1]
-    interior = np.sum(polygon, axis=0)
-    interior /= np.linalg.norm(interior)
-    orientation = sum(
-        float(
-            np.dot(
-                np.cross(current, polygon[(index + 1) % len(polygon)]),
-                interior,
-            )
-        )
-        for index, current in enumerate(polygon)
-    )
-    if orientation < 0:
-        polygon.reverse()
-    return polygon
-
-
-def contains_convex(polygon: list[np.ndarray], point: np.ndarray) -> bool:
-    epsilon = 1e-14
-    return all(
-        float(
-            np.dot(
-                np.cross(current, polygon[(index + 1) % len(polygon)]),
-                point,
-            )
-        )
-        >= -epsilon
-        for index, current in enumerate(polygon)
     )
 
 
@@ -99,15 +77,49 @@ def brute_force_cover(
     vertices_lonlat: list[tuple[float, float]],
     resolution: int,
 ) -> np.ndarray:
-    polygon = orient_convex(vertices_lonlat)
+    return independent_cover_xyz(vectors(vertices_lonlat), resolution)
+
+
+def independent_cover_xyz(vertices_xyz: np.ndarray, resolution: int) -> np.ndarray:
+    """Brute-force coverage using independent RING centers and vectorized planes."""
+    polygon = np.asarray(vertices_xyz, dtype=np.float64)
+    polygon = polygon / np.linalg.norm(polygon, axis=1)[:, np.newaxis]
+    if np.allclose(polygon[0], polygon[-1], rtol=0.0, atol=1e-12):
+        polygon = polygon[:-1]
+    interior = np.sum(polygon, axis=0)
+    interior /= np.linalg.norm(interior)
+    normals = np.cross(polygon, np.roll(polygon, -1, axis=0))
+    normals /= np.linalg.norm(normals, axis=1)[:, np.newaxis]
+    if float(np.sum(normals @ interior)) < 0.0:
+        polygon = polygon[::-1]
+        normals = np.cross(polygon, np.roll(polygon, -1, axis=0))
+        normals /= np.linalg.norm(normals, axis=1)[:, np.newaxis]
+
     cells = np.arange(12 * (4**resolution), dtype=np.uint64)
     cell_centers = reference_ring_centers(resolution)
-    return cells[
-        np.asarray(
-            [contains_convex(polygon, center) for center in cell_centers],
-            dtype=np.bool_,
-        )
-    ]
+    return cells[np.all(cell_centers @ normals.T >= -1e-14, axis=1)]
+
+
+def regular_spherical_polygon(
+    axis: np.ndarray,
+    radius: float,
+    vertex_count: int,
+) -> np.ndarray:
+    axis = np.asarray(axis, dtype=np.float64)
+    axis /= np.linalg.norm(axis)
+    seed = (
+        np.asarray([1.0, 0.0, 0.0])
+        if abs(axis[2]) > 0.9
+        else np.asarray([0.0, 0.0, 1.0])
+    )
+    tangent_x = np.cross(seed, axis)
+    tangent_x /= np.linalg.norm(tangent_x)
+    tangent_y = np.cross(axis, tangent_x)
+    angles = np.arange(vertex_count) * (2.0 * math.pi / vertex_count)
+    return math.cos(radius) * axis + math.sin(radius) * (
+        np.cos(angles)[:, np.newaxis] * tangent_x
+        + np.sin(angles)[:, np.newaxis] * tangent_y
+    )
 
 
 def split_coverage(coverage: px.Coverage) -> list[np.ndarray]:
@@ -210,6 +222,19 @@ class PolypixTests(unittest.TestCase):
         dense_coverage = px.cover_footprint(dense, resolution=2)
         self.assertSegmentsEqual(dense_coverage, [expected[0], expected[0]])
 
+        ragged_quads = px.cover_footprint(list(dense), resolution=2)
+        np.testing.assert_array_equal(ragged_quads.cells, dense_coverage.cells)
+        np.testing.assert_array_equal(ragged_quads.offsets, dense_coverage.offsets)
+
+    def test_cover_accepts_array_protocol_inputs(self) -> None:
+        polygon = vectors([(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)])
+        for values in (polygon, np.stack((polygon, polygon))):
+            with self.subTest(ndim=values.ndim):
+                expected = px.cover_footprint(values, resolution=3)
+                actual = px.cover_footprint(ArrayOnly(values), resolution=3)
+                np.testing.assert_array_equal(actual.cells, expected.cells)
+                np.testing.assert_array_equal(actual.offsets, expected.offsets)
+
     def test_repeated_closing_vertex_is_representation_independent(self) -> None:
         triangle = vectors([(-5.0, -5.0), (5.0, -5.0), (0.0, 5.0)])
         closed = np.vstack((triangle, triangle[0]))
@@ -251,6 +276,62 @@ class PolypixTests(unittest.TestCase):
 
         np.testing.assert_array_equal(actual.offsets, expected.offsets)
         np.testing.assert_array_equal(actual.cells, expected.cells)
+
+    def test_cover_strip_matches_independent_oracle(self) -> None:
+        left = np.asarray(
+            [lonlat_to_vec(-14.0, latitude) for latitude in (-40.0, -5.0, 35.0)]
+        )
+        right = np.asarray(
+            [lonlat_to_vec(11.0, latitude) for latitude in (-40.0, -5.0, 35.0)]
+        )
+
+        actual = px.cover_strip(left, right, resolution=5, threads=1)
+        expected = [
+            independent_cover_xyz(
+                np.asarray(
+                    [left[index], right[index], right[index + 1], left[index + 1]]
+                ),
+                resolution=5,
+            )
+            for index in range(2)
+        ]
+        self.assertSegmentsEqual(actual, expected)
+
+    def test_cover_strip_accepts_a_pinch_on_either_edge(self) -> None:
+        pivot = lonlat_to_vec(0.0, 0.0)
+        left = np.asarray([pivot, pivot])
+        right = np.asarray([lonlat_to_vec(-8.0, 6.0), lonlat_to_vec(8.0, 6.0)])
+
+        left_pinched = px.cover_strip(left, right, resolution=3)
+        right_pinched = px.cover_strip(right, left, resolution=3)
+
+        np.testing.assert_array_equal(right_pinched.cells, left_pinched.cells)
+        np.testing.assert_array_equal(right_pinched.offsets, left_pinched.offsets)
+
+    def test_cover_strip_uses_minor_arcs_between_samples(self) -> None:
+        def edges(step: float) -> tuple[np.ndarray, np.ndarray]:
+            return (
+                np.asarray([lonlat_to_vec(0.0, -5.0), lonlat_to_vec(step, -5.0)]),
+                np.asarray([lonlat_to_vec(0.0, 5.0), lonlat_to_vec(step, 5.0)]),
+            )
+
+        for step, expected_count, expected_y_sign in (
+            (179.0, 354, 1.0),
+            (181.0, 352, -1.0),
+        ):
+            with self.subTest(step=step):
+                left, right = edges(step)
+                actual = px.cover_strip(left, right, resolution=3, threads=1)
+                quad = np.asarray([left[0], right[0], right[1], left[1]])
+                expected = px.cover_footprint(quad, resolution=3, threads=1)
+                np.testing.assert_array_equal(actual.cells, expected.cells)
+                self.assertEqual(actual.cells.size, expected_count)
+                centers = px.centers(actual.cells, resolution=3)
+                self.assertGreater(expected_y_sign * float(np.mean(centers[:, 1])), 0.0)
+
+        left, right = edges(180.0)
+        with self.assertRaises(ValueError):
+            px.cover_strip(left, right, resolution=3, threads=1)
 
     def test_strip_errors_name_the_invalid_edge(self) -> None:
         left = np.asarray([lonlat_to_vec(-5.0, -5.0), lonlat_to_vec(-5.0, 5.0)])
@@ -417,6 +498,30 @@ class PolypixTests(unittest.TestCase):
         self.assertIn(cell, unfiltered.cells)
         np.testing.assert_array_equal(restricted.cells, [cell])
 
+    def test_resolution_29_scan_keeps_a_center_on_the_longitude_bound(self) -> None:
+        resolution = 29
+        cell = np.uint64(6 * 4**resolution)
+        center = px.centers(cell, resolution)[0]
+        tangent = np.cross(np.asarray([0.0, 0.0, 1.0]), center)
+        tangent /= np.linalg.norm(tangent)
+        inward = np.cross(center, tangent)
+        scale = 8.0e-9
+
+        def offset_point(x: float, y: float) -> np.ndarray:
+            point = center + scale * (x * tangent + y * inward)
+            return point / np.linalg.norm(point)
+
+        footprint = np.asarray(
+            [
+                offset_point(-1.0, 0.0),
+                offset_point(1.0, 0.0),
+                offset_point(1.0, 2.0),
+                offset_point(-1.0, 2.0),
+            ]
+        )
+        actual = px.cover_footprint(footprint, resolution, threads=1)
+        self.assertIn(cell, actual.cells)
+
     def test_cover_matches_bruteforce_for_spherical_cases(self) -> None:
         cases = {
             "ordinary": (
@@ -466,6 +571,44 @@ class PolypixTests(unittest.TestCase):
                     brute_force_cover(polygon, resolution),
                 )
 
+    def test_resolution_zero_coverage_matches_independent_oracle(self) -> None:
+        polygon = regular_spherical_polygon(
+            lonlat_to_vec(15.0, 25.0),
+            math.radians(65.0),
+            6,
+        )
+        actual = px.cover_footprint(polygon, resolution=0, threads=1)
+        self.assertCellsEqual(
+            actual.cells,
+            independent_cover_xyz(polygon, resolution=0),
+        )
+
+    def test_minor_arc_semantics_choose_the_antimeridian_region(self) -> None:
+        polygon = vectors(
+            [(-179.0, -20.0), (179.0, -20.0), (179.0, 20.0), (-179.0, 20.0)]
+        )
+        actual = px.cover_footprint(polygon, resolution=3, threads=1)
+        self.assertCellsEqual(
+            actual.cells,
+            independent_cover_xyz(polygon, resolution=3),
+        )
+        self.assertTrue(np.all(px.centers(actual.cells, 3)[:, 0] < 0.0))
+
+    def test_large_cap_vertices_select_the_minor_arc_antipodal_cap(self) -> None:
+        north_91 = regular_spherical_polygon(
+            np.asarray([0.0, 0.0, 1.0]),
+            math.radians(91.0),
+            12,
+        )
+        south_89 = regular_spherical_polygon(
+            np.asarray([0.0, 0.0, -1.0]),
+            math.radians(89.0),
+            12,
+        )
+        actual = px.cover_footprint(north_91, resolution=3, threads=1)
+        expected = px.cover_footprint(south_89, resolution=3, threads=1)
+        np.testing.assert_array_equal(actual.cells, expected.cells)
+
     def test_fixed_seed_random_footprints_match_independent_oracle(self) -> None:
         random = np.random.default_rng(20260727)
         for _ in range(100):
@@ -479,8 +622,7 @@ class PolypixTests(unittest.TestCase):
                     + radius
                     * math.cos(2.0 * math.pi * index / vertex_count)
                     / math.cos(math.radians(latitude)),
-                    latitude
-                    + radius * math.sin(2.0 * math.pi * index / vertex_count),
+                    latitude + radius * math.sin(2.0 * math.pi * index / vertex_count),
                 )
                 for index in range(vertex_count)
             ]
@@ -489,6 +631,70 @@ class PolypixTests(unittest.TestCase):
                 actual.cells,
                 brute_force_cover(polygon, resolution=3),
             )
+
+    def test_wide_and_polar_random_footprints_match_independent_oracle(self) -> None:
+        random = np.random.default_rng(20260728)
+        cases: list[tuple[np.ndarray, int]] = []
+        for resolution in (4, 5, 6):
+            for index in range(6):
+                if index == 0:
+                    axis = lonlat_to_vec(float(random.uniform(-180.0, 180.0)), 89.0)
+                elif index == 1:
+                    axis = lonlat_to_vec(float(random.uniform(-180.0, 180.0)), -89.0)
+                else:
+                    axis = random.normal(size=3)
+                radius = math.radians(float(random.uniform(8.0, 82.0)))
+                vertex_count = int(random.integers(3, 9))
+                cases.append(
+                    (
+                        regular_spherical_polygon(axis, radius, vertex_count),
+                        resolution,
+                    )
+                )
+
+        for index, (polygon, resolution) in enumerate(cases):
+            with self.subTest(case=index, resolution=resolution):
+                actual = px.cover_footprint(polygon, resolution, threads=1)
+                self.assertCellsEqual(
+                    actual.cells,
+                    independent_cover_xyz(polygon, resolution),
+                )
+
+    def test_sub_meter_footprint_is_valid_at_resolution_29(self) -> None:
+        polygon = regular_spherical_polygon(
+            np.asarray([1.0, 0.0, 0.0]),
+            3.0e-8,
+            4,
+        )
+        coverage = px.cover_footprint(
+            polygon,
+            resolution=29,
+            candidate_cells=np.empty(0, dtype=np.uint64),
+            threads=1,
+        )
+        np.testing.assert_array_equal(coverage.cells, [])
+        np.testing.assert_array_equal(coverage.offsets, [0, 0])
+
+    def test_small_high_latitude_quad_is_not_rejected_by_endpoint_roundoff(
+        self,
+    ) -> None:
+        longitude = -159.20634920634922
+        latitude = -60.0
+        polygon = vectors(
+            [
+                (longitude - 0.05, latitude - 0.05),
+                (longitude + 0.05, latitude - 0.05),
+                (longitude + 0.05, latitude + 0.05),
+                (longitude - 0.05, latitude + 0.05),
+            ]
+        )
+        coverage = px.cover_footprint(
+            polygon,
+            resolution=29,
+            candidate_cells=[],
+            threads=1,
+        )
+        np.testing.assert_array_equal(coverage.offsets, [0, 0])
 
     def test_historical_thin_southern_polygon_uses_intended_side(self) -> None:
         # This input exposed a side-selection defect in the former CDS-backed
@@ -551,12 +757,29 @@ class PolypixTests(unittest.TestCase):
                     single_threaded.offsets,
                 )
 
+    def test_strip_thread_counts_produce_identical_ordered_results(self) -> None:
+        latitudes = np.linspace(-50.0, 50.0, 301)
+        left = np.asarray([lonlat_to_vec(-4.0, value) for value in latitudes])
+        right = np.asarray([lonlat_to_vec(4.0, value) for value in latitudes])
+
+        single_threaded = px.cover_strip(left, right, resolution=5, threads=1)
+        parallel = px.cover_strip(left, right, resolution=5, threads=4)
+        automatic = px.cover_strip(left, right, resolution=5)
+        for actual in (parallel, automatic):
+            np.testing.assert_array_equal(actual.cells, single_threaded.cells)
+            np.testing.assert_array_equal(actual.offsets, single_threaded.offsets)
+
     def test_thread_count_must_be_a_positive_integer(self) -> None:
         polygon = vectors([(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)])
         for threads in (0, -1, True):
             with self.subTest(threads=threads):
                 with self.assertRaises((TypeError, ValueError)):
                     px.cover_footprint(polygon, resolution=2, threads=threads)
+
+        sequential = px.cover_footprint(polygon, resolution=2, threads=1)
+        bounded = px.cover_footprint(polygon, resolution=2, threads=100_000)
+        np.testing.assert_array_equal(bounded.cells, sequential.cells)
+        np.testing.assert_array_equal(bounded.offsets, sequential.offsets)
 
     def test_concurrent_calls_are_deterministic(self) -> None:
         polygon = vectors([(-5.0, -5.0), (12.0, -4.0), (10.0, 9.0), (-6.0, 7.0)])
@@ -683,12 +906,37 @@ class PolypixTests(unittest.TestCase):
                 (2.0, 2.0),
                 (0.0, 2.0),
             ],
+            "antipodal_edge": [(0.0, 0.0), (180.0, 0.0), (0.0, 20.0)],
+            "self_intersecting": [
+                (-10.0, -10.0),
+                (10.0, 10.0),
+                (10.0, -10.0),
+                (-10.0, 10.0),
+            ],
+            "exact_hemisphere": [(0.0, 0.0), (120.0, 0.0), (-120.0, 0.0)],
+            "hemisphere_rectangle": [
+                (-90.0, -20.0),
+                (90.0, -20.0),
+                (90.0, 20.0),
+                (-90.0, 20.0),
+            ],
         }
 
         for name, polygon in invalid_polygons.items():
             with self.subTest(name=name):
                 with self.assertRaises(ValueError):
                     px.cover_footprint(vectors(polygon), resolution=1)
+
+    def test_batch_geometry_errors_name_the_offending_footprint(self) -> None:
+        valid = vectors([(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)])
+        invalid = valid.copy()
+        invalid[2] = invalid[1]
+        batch = np.stack((valid, invalid, valid))
+
+        for threads in (1, 4, None):
+            with self.subTest(threads=threads):
+                with self.assertRaisesRegex(ValueError, r"footprints_xyz\[1\]"):
+                    px.cover_footprint(batch, resolution=3, threads=threads)
 
     def test_cover_accepts_empty_batches(self) -> None:
         for shape in ((0, 4, 3), (0, 0, 3)):
@@ -702,6 +950,16 @@ class PolypixTests(unittest.TestCase):
                 self.assertEqual(coverage.cells.shape, (0,))
                 np.testing.assert_array_equal(coverage.offsets, [0])
                 self.assertEqual(coverage.counts.shape, (0,))
+
+        list_coverage = px.cover_footprint([], resolution=1)
+        np.testing.assert_array_equal(list_coverage.cells, [])
+        np.testing.assert_array_equal(list_coverage.offsets, [0])
+
+    def test_coverage_does_not_claim_array_value_equality(self) -> None:
+        first = px.cover_footprint([], resolution=1)
+        second = px.cover_footprint([], resolution=1)
+        self.assertIsNot(first, second)
+        self.assertFalse(first == second)
 
     def test_cover_rejects_nonempty_zero_vertex_batch(self) -> None:
         with self.assertRaises(ValueError):
