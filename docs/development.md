@@ -14,7 +14,7 @@ tests/
   test_polypix.py     behavior tests
   test_ring_geometry.py  independent HEALPix geometry fixtures
 benchmarks/
-  scorecard.py        Polypix correctness and performance regression report
+  test_polypix_benchmarks.py  CodSpeed public-call regression benchmarks
 docs/
   *.md                Zensical documentation pages
 ```
@@ -68,15 +68,9 @@ Run the CodSpeed benchmark suite locally:
 pixi run --environment bench bench
 ```
 
-Run the end-to-end Polypix regression scorecard:
-
-```bash
-python -m benchmarks.scorecard --output scorecard.json
-```
-
 Cross-library benchmarks and their optional dependencies intentionally live in
-a separate comparison repository. This repository measures Polypix regressions
-and correctness without carrying adapters for other libraries.
+a separate comparison repository. This repository keeps only focused CodSpeed
+regression benchmarks and product correctness tests.
 
 CodSpeed reports performance regressions through
 `.github/workflows/codspeed.yml` on pull requests and pushes to `main`.

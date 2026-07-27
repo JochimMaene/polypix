@@ -9,12 +9,11 @@ use std::f64::consts::TAU;
 use rayon::prelude::*;
 
 use super::{
-    contains_center, merge_segments, prepare_polygons, run_parallel, Coverage, Polygon, Vec3,
-    CONTAINMENT_EPSILON, MAX_RESOLUTION,
+    automatic_parallel, contains_center, install_in_pool, normalize, prepare_polygon,
+    validate_polygon, Coverage, Vec3, CONTAINMENT_EPSILON, MAX_RESOLUTION,
 };
 
 const INDEX_EPSILON: f64 = 1.0e-12;
-const QUADS_PER_CHUNK: usize = 256;
 
 #[derive(Clone, Copy)]
 struct Ring {
@@ -30,19 +29,20 @@ struct Ring {
 struct Quad {
     vertices: [Vec3; 4],
     edge_normals: [Vec3; 4],
+    len: usize,
 }
 
-fn longitude_bounds(
-    vertices: &[Vec3; 4],
-    edge_normals: &[Vec3],
-) -> ([Option<(f64, f64)>; 2], usize) {
+fn longitude_bounds(vertices: &[Vec3], edge_normals: &[Vec3]) -> ([Option<(f64, f64)>; 2], usize) {
     if contains_center(edge_normals, [0.0, 0.0, 1.0])
         || contains_center(edge_normals, [0.0, 0.0, -1.0])
     {
         return ([Some((0.0, TAU)), None], 1);
     }
 
-    let mut longitudes = vertices.map(|vertex| vertex[1].atan2(vertex[0]).rem_euclid(TAU));
+    let mut longitudes = vertices
+        .iter()
+        .map(|vertex| vertex[1].atan2(vertex[0]).rem_euclid(TAU))
+        .collect::<Vec<_>>();
     longitudes.sort_unstable_by(f64::total_cmp);
 
     let mut largest_gap = -1.0;
@@ -103,13 +103,16 @@ fn longitude_bounds(
 }
 
 #[inline(always)]
-fn quad_contains(edge_normals: &[Vec3; 4], x: f64, y: f64, z: f64) -> bool {
+fn quad_contains(quad: &Quad, x: f64, y: f64, z: f64) -> bool {
+    if quad.len != 4 {
+        return contains_center(&quad.edge_normals[..quad.len], [x, y, z]);
+    }
     let inside =
         |normal: Vec3| normal[0] * x + normal[1] * y + normal[2] * z >= -CONTAINMENT_EPSILON;
-    inside(edge_normals[0])
-        && inside(edge_normals[1])
-        && inside(edge_normals[2])
-        && inside(edge_normals[3])
+    inside(quad.edge_normals[0])
+        && inside(quad.edge_normals[1])
+        && inside(quad.edge_normals[2])
+        && inside(quad.edge_normals[3])
 }
 
 fn ring_z(nside: u64, ring: u64) -> f64 {
@@ -394,138 +397,17 @@ fn ring_range(nside: u64, minimum_z: f64, maximum_z: f64) -> (u64, u64) {
     (first, last)
 }
 
-fn allowed_intervals(normal: Vec3, z: f64, radial: f64) -> ([Option<(f64, f64)>; 2], usize) {
-    let amplitude = radial * normal[0].hypot(normal[1]);
-    if amplitude <= 1.0e-15 {
-        return if normal[2] * z >= -CONTAINMENT_EPSILON {
-            ([Some((0.0, TAU)), None], 1)
-        } else {
-            ([None, None], 0)
-        };
-    }
-
-    let threshold = (-CONTAINMENT_EPSILON - normal[2] * z) / amplitude;
-    if threshold > 1.0 {
-        return ([None, None], 0);
-    }
-    if threshold <= -1.0 {
-        return ([Some((0.0, TAU)), None], 1);
-    }
-
-    let center = normal[1].atan2(normal[0]).rem_euclid(TAU);
-    let half_width = threshold.acos();
-    let start = center - half_width;
-    let end = center + half_width;
-    if start < 0.0 {
-        ([Some((0.0, end)), Some((start + TAU, TAU))], 2)
-    } else if end > TAU {
-        ([Some((0.0, end - TAU)), Some((start, TAU))], 2)
-    } else {
-        ([Some((start, end)), None], 1)
-    }
-}
-
-fn intersect_ring(
-    edge_normals: &[Vec3],
-    z: f64,
-    radial: f64,
-    intervals: &mut Vec<(f64, f64)>,
-    next: &mut Vec<(f64, f64)>,
-) {
-    intervals.clear();
-    intervals.push((0.0, TAU));
-
-    for &normal in edge_normals {
-        let (allowed, allowed_count) = allowed_intervals(normal, z, radial);
-        if allowed_count == 0 {
-            intervals.clear();
-            return;
-        }
-
-        next.clear();
-        for &(current_start, current_end) in intervals.iter() {
-            for item in allowed.iter().take(allowed_count) {
-                let (allowed_start, allowed_end) = item.expect("counted interval");
-                let start = current_start.max(allowed_start);
-                let end = current_end.min(allowed_end);
-                if start <= end {
-                    next.push((start, end));
-                }
-            }
-        }
-        if next.is_empty() {
-            intervals.clear();
-            return;
-        }
-        let mut write = 0;
-        for read in 0..next.len() {
-            let read_interval = next[read];
-            if write > 0 && read_interval.0 <= next[write - 1].1 + 1.0e-15 {
-                next[write - 1].1 = next[write - 1].1.max(read_interval.1);
-            } else {
-                next[write] = read_interval;
-                write += 1;
-            }
-        }
-        next.truncate(write);
-        std::mem::swap(intervals, next);
-    }
-}
-
-fn append_interval(ring: Ring, start: f64, end: f64, cells: &mut Vec<u64>) {
-    debug_assert!(ring.index > 0);
-    let step = TAU / ring.cells as f64;
-    let first = (start / step - ring.shift - INDEX_EPSILON).ceil().max(0.0) as u64;
-    let last = (end / step - ring.shift + INDEX_EPSILON)
-        .floor()
-        .min((ring.cells - 1) as f64) as i64;
-    if last >= first as i64 {
-        cells.extend((first..=last as u64).map(|offset| ring.start + offset));
-    }
-}
-
-fn cover_polygon_ring_into(
+fn cover_centers(
     vertices: &[Vec3],
     edge_normals: &[Vec3],
     resolution: u8,
     cells: &mut Vec<u64>,
-    intervals: &mut Vec<(f64, f64)>,
-    next: &mut Vec<(f64, f64)>,
+    contains: impl Fn(f64, f64, f64) -> bool,
 ) {
     let nside = 1_u64 << resolution;
     let (minimum_z, maximum_z) = polygon_z_bounds(vertices, edge_normals);
     let (first_ring, last_ring) = ring_range(nside, minimum_z, maximum_z);
-
-    for ring_index in first_ring..=last_ring {
-        let ring = ring_info(nside, ring_index);
-        intersect_ring(edge_normals, ring.z, ring.radial, intervals, next);
-        for &(start, end) in intervals.iter() {
-            append_interval(ring, start, end, cells);
-        }
-    }
-}
-
-fn cover_polygon_ring(polygon: &Polygon, resolution: u8) -> Vec<u64> {
-    let mut cells = Vec::new();
-    let mut intervals = Vec::with_capacity(polygon.edge_normals.len() + 2);
-    let mut next = Vec::with_capacity(polygon.edge_normals.len() + 2);
-    cover_polygon_ring_into(
-        &polygon.vertices,
-        &polygon.edge_normals,
-        resolution,
-        &mut cells,
-        &mut intervals,
-        &mut next,
-    );
-    cells
-}
-
-fn cover_quad_centers(quad: &Quad, resolution: u8, cells: &mut Vec<u64>) {
-    let nside = 1_u64 << resolution;
-    let (minimum_z, maximum_z) = polygon_z_bounds(&quad.vertices, &quad.edge_normals);
-    let (first_ring, last_ring) = ring_range(nside, minimum_z, maximum_z);
-    let (longitude_intervals, interval_count) =
-        longitude_bounds(&quad.vertices, &quad.edge_normals);
+    let (longitude_intervals, interval_count) = longitude_bounds(vertices, edge_normals);
 
     for ring_index in first_ring..=last_ring {
         let ring = ring_info(nside, ring_index);
@@ -547,7 +429,7 @@ fn cover_quad_centers(quad: &Quad, resolution: u8, cells: &mut Vec<u64>) {
             let mut x = ring.radial * cosine;
             let mut y = ring.radial * sine;
             for offset in first..=last as u64 {
-                if quad_contains(&quad.edge_normals, x, y, ring.z) {
+                if contains(x, y, ring.z) {
                     cells.push(ring.start + offset);
                 }
 
@@ -566,99 +448,39 @@ fn cover_quad_centers(quad: &Quad, resolution: u8, cells: &mut Vec<u64>) {
     }
 }
 
-fn normalize_vertex(vector: Vec3) -> Result<Vec3, String> {
-    if !vector.iter().all(|value| value.is_finite()) {
-        return Err("footprints_xyz must contain only finite vectors.".to_owned());
-    }
-    let scale = vector
-        .iter()
-        .map(|value| value.abs())
-        .fold(0.0_f64, f64::max);
-    if scale == 0.0 {
-        return Err("footprints_xyz must not contain zero-length vectors.".to_owned());
-    }
-    let scaled = [vector[0] / scale, vector[1] / scale, vector[2] / scale];
-    let inverse_length = super::dot(scaled, scaled).sqrt().recip();
-    Ok([
-        scaled[0] * inverse_length,
-        scaled[1] * inverse_length,
-        scaled[2] * inverse_length,
-    ])
+fn cover_quad_centers(quad: &Quad, resolution: u8, cells: &mut Vec<u64>) {
+    cover_centers(
+        &quad.vertices[..quad.len],
+        &quad.edge_normals[..quad.len],
+        resolution,
+        cells,
+        |x, y, z| quad_contains(quad, x, y, z),
+    );
 }
 
-fn prepare_quad(raw: &[f64]) -> Result<Quad, String> {
+fn prepare_quad(raw: &[f64], input_names: [&str; 4]) -> Result<Quad, String> {
     debug_assert_eq!(raw.len(), 12);
     let mut vertices = [[0.0; 3]; 4];
-    for (vertex, values) in vertices.iter_mut().zip(raw.chunks_exact(3)) {
-        *vertex = normalize_vertex([values[0], values[1], values[2]])?;
+    for ((vertex, values), input_name) in vertices
+        .iter_mut()
+        .zip(raw.chunks_exact(3))
+        .zip(input_names)
+    {
+        *vertex = normalize([values[0], values[1], values[2]], input_name)?;
     }
 
-    for left in 0..4 {
-        for right in (left + 1)..4 {
-            if super::nearly_equal(vertices[left], vertices[right]) {
-                return Err(if right == left + 1 || (left == 0 && right == 3) {
-                    "Footprint contains duplicate consecutive vertices.".to_owned()
-                } else {
-                    "Footprint contains duplicate vertices.".to_owned()
-                });
-            }
-        }
-    }
-
-    let interior = vertices.iter().fold([0.0; 3], |mut total, vertex| {
-        total[0] += vertex[0];
-        total[1] += vertex[1];
-        total[2] += vertex[2];
-        total
-    });
-    if super::dot(interior, interior) <= 1.0e-30 {
-        return Err("Footprint is degenerate.".to_owned());
-    }
-
-    let orientation = (0..4)
-        .map(|index| {
-            super::dot(
-                super::cross(vertices[index], vertices[(index + 1) & 3]),
-                interior,
-            )
-        })
-        .sum::<f64>();
-    if orientation.abs() <= CONTAINMENT_EPSILON {
-        return Err("Footprint is degenerate or numerically ambiguous.".to_owned());
-    }
-    if orientation < 0.0 {
-        vertices.reverse();
-    }
-
+    let len = if super::nearly_equal(vertices[0], vertices[3]) {
+        3
+    } else {
+        4
+    };
     let mut edge_normals = [[0.0; 3]; 4];
-    for index in 0..4 {
-        let edge_normal = super::cross(vertices[index], vertices[(index + 1) & 3]);
-        let edge_length_squared = super::dot(edge_normal, edge_normal);
-        if edge_length_squared <= 1.0e-30 {
-            return Err("Footprint contains degenerate or antipodal edges.".to_owned());
-        }
-        let mut found_strict_interior = false;
-        for &vertex in &vertices {
-            let side = super::dot(edge_normal, vertex);
-            if side < -CONTAINMENT_EPSILON {
-                return Err("Footprint must be convex and non-self-intersecting.".to_owned());
-            }
-            found_strict_interior |= side > CONTAINMENT_EPSILON;
-        }
-        if !found_strict_interior {
-            return Err("Footprint is degenerate.".to_owned());
-        }
-        let inverse_length = edge_length_squared.sqrt().recip();
-        edge_normals[index] = [
-            edge_normal[0] * inverse_length,
-            edge_normal[1] * inverse_length,
-            edge_normal[2] * inverse_length,
-        ];
-    }
+    validate_polygon(&mut vertices[..len], &mut edge_normals[..len])?;
 
     Ok(Quad {
         vertices,
         edge_normals,
+        len,
     })
 }
 
@@ -674,12 +496,10 @@ fn is_dense_quads(vertices: &[f64], offsets: &[u64]) -> bool {
             .all(|pair| pair[1].checked_sub(pair[0]) == Some(4))
 }
 
-type CandidateCenter = (u64, Vec3);
-
-fn candidate_centers(
+fn candidate_cells(
     raw_candidates: Option<&[u64]>,
     resolution: u8,
-) -> Result<Option<Vec<CandidateCenter>>, String> {
+) -> Result<Option<Vec<u64>>, String> {
     let Some(raw_candidates) = raw_candidates else {
         return Ok(None);
     };
@@ -692,24 +512,35 @@ fn candidate_centers(
     let mut cells = raw_candidates.to_vec();
     cells.sort_unstable();
     cells.dedup();
-    Ok(Some(
-        cells
-            .into_iter()
-            .map(|cell| (cell, center(cell, resolution)))
-            .collect(),
-    ))
+    Ok(Some(cells))
 }
 
-fn append_quad(
-    quad: &Quad,
+fn candidates_in_z_range(
+    candidates: &[u64],
     resolution: u8,
-    candidates: Option<&[CandidateCenter]>,
-    cells: &mut Vec<u64>,
-) {
+    minimum_z: f64,
+    maximum_z: f64,
+) -> &[u64] {
+    let nside = 1_u64 << resolution;
+    let start = candidates
+        .partition_point(|&cell| ring_for_cell(cell, nside).z > maximum_z + CONTAINMENT_EPSILON);
+    let end = candidates
+        .partition_point(|&cell| ring_for_cell(cell, nside).z >= minimum_z - CONTAINMENT_EPSILON);
+    &candidates[start..end]
+}
+
+fn append_quad(quad: &Quad, resolution: u8, candidates: Option<&[u64]>, cells: &mut Vec<u64>) {
     if let Some(candidates) = candidates {
-        cells.extend(candidates.iter().filter_map(|&(cell, point)| {
-            quad_contains(&quad.edge_normals, point[0], point[1], point[2]).then_some(cell)
-        }));
+        let (minimum_z, maximum_z) =
+            polygon_z_bounds(&quad.vertices[..quad.len], &quad.edge_normals[..quad.len]);
+        cells.extend(
+            candidates_in_z_range(candidates, resolution, minimum_z, maximum_z)
+                .iter()
+                .filter_map(|&cell| {
+                    let point = center(cell, resolution);
+                    quad_contains(quad, point[0], point[1], point[2]).then_some(cell)
+                }),
+        );
     } else {
         cover_quad_centers(quad, resolution, cells);
     }
@@ -718,7 +549,7 @@ fn append_quad(
 fn compute_quad_chunk(
     vertices: &[f64],
     resolution: u8,
-    candidates: Option<&[CandidateCenter]>,
+    candidates: Option<&[u64]>,
 ) -> Result<Coverage, String> {
     let polygon_count = vertices.len() / 12;
     let expected_cells_per_polygon = candidates
@@ -731,7 +562,7 @@ fn compute_quad_chunk(
     coverage.offsets.push(0);
 
     for raw_quad in vertices.chunks_exact(12) {
-        let quad = prepare_quad(raw_quad)?;
+        let quad = prepare_quad(raw_quad, ["footprints_xyz"; 4])?;
         append_quad(&quad, resolution, candidates, &mut coverage.cells);
         coverage.offsets.push(coverage.cells.len() as u64);
     }
@@ -767,56 +598,141 @@ fn merge_coverages(chunks: Vec<Coverage>) -> Coverage {
 fn compute_quad_coverage(
     vertices: &[f64],
     resolution: u8,
-    candidates: Option<&[CandidateCenter]>,
+    candidates: Option<&[u64]>,
     threads: Option<usize>,
 ) -> Result<Coverage, String> {
     let polygon_count = vertices.len() / 12;
     let parallel = match threads {
         Some(1) => false,
         Some(_) => true,
-        None => polygon_count >= 256,
+        None => automatic_parallel(polygon_count, resolution, candidates.map(<[u64]>::len)),
     };
     if !parallel {
         return compute_quad_chunk(vertices, resolution, candidates);
     }
 
+    let worker_count = threads.unwrap_or_else(rayon::current_num_threads);
+    let chunk_size = polygon_count
+        .div_ceil(worker_count.saturating_mul(4))
+        .max(1);
     let compute = || {
         vertices
-            .par_chunks(QUADS_PER_CHUNK * 12)
+            .par_chunks(chunk_size * 12)
             .map(|chunk| compute_quad_chunk(chunk, resolution, candidates))
             .collect::<Result<Vec<_>, _>>()
     };
     let chunks = if let Some(worker_count) = threads {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(worker_count)
-            .build()
-            .map_err(|error| format!("Could not create the requested thread pool: {error}"))?
-            .install(compute)?
+        install_in_pool(worker_count, compute)??
     } else {
         compute()?
     };
     Ok(merge_coverages(chunks))
 }
 
-fn compute_ring_coverage(
-    polygons: Vec<Polygon>,
+fn compute_mixed_chunk(
+    vertices: &[f64],
+    offsets: &[u64],
+    range: std::ops::Range<usize>,
     resolution: u8,
-    candidates: Option<&[CandidateCenter]>,
+    candidates: Option<&[u64]>,
+) -> Result<Coverage, String> {
+    let mut coverage = Coverage {
+        cells: Vec::new(),
+        offsets: Vec::with_capacity(range.len() + 1),
+    };
+    coverage.offsets.push(0);
+    for index in range {
+        let start = offsets[index] as usize;
+        let end = offsets[index + 1] as usize;
+        let raw = &vertices[start * 3..end * 3];
+        if end - start == 4 {
+            let quad = prepare_quad(raw, ["footprints_xyz"; 4])?;
+            append_quad(&quad, resolution, candidates, &mut coverage.cells);
+        } else {
+            let raw_polygon = raw
+                .chunks_exact(3)
+                .map(|value| [value[0], value[1], value[2]])
+                .collect::<Vec<_>>();
+            let polygon = prepare_polygon(&raw_polygon)?;
+            if let Some(candidates) = candidates {
+                let (minimum_z, maximum_z) =
+                    polygon_z_bounds(&polygon.vertices, &polygon.edge_normals);
+                coverage.cells.extend(
+                    candidates_in_z_range(candidates, resolution, minimum_z, maximum_z)
+                        .iter()
+                        .filter_map(|&cell| {
+                            contains_center(&polygon.edge_normals, center(cell, resolution))
+                                .then_some(cell)
+                        }),
+                );
+            } else {
+                cover_centers(
+                    &polygon.vertices,
+                    &polygon.edge_normals,
+                    resolution,
+                    &mut coverage.cells,
+                    |x, y, z| contains_center(&polygon.edge_normals, [x, y, z]),
+                );
+            }
+        }
+        coverage.offsets.push(coverage.cells.len() as u64);
+    }
+    Ok(coverage)
+}
+
+fn compute_mixed_coverage(
+    vertices: &[f64],
+    offsets: &[u64],
+    resolution: u8,
+    candidates: Option<&[u64]>,
     threads: Option<usize>,
 ) -> Result<Coverage, String> {
-    run_parallel(&polygons, threads, |polygon| {
-        if let Some(candidates) = candidates {
-            candidates
-                .iter()
-                .filter_map(|&(cell, point)| {
-                    contains_center(&polygon.edge_normals, point).then_some(cell)
-                })
-                .collect()
-        } else {
-            cover_polygon_ring(polygon, resolution)
-        }
-    })
-    .map(merge_segments)
+    if vertices.len() % 3 != 0 {
+        return Err("vertices_xyz must have shape (vertices, 3).".to_owned());
+    }
+    let vertex_count = vertices.len() / 3;
+    if offsets.is_empty() {
+        return Err("offsets must contain at least one value.".to_owned());
+    }
+    if offsets[0] != 0 || offsets[offsets.len() - 1] != vertex_count as u64 {
+        return Err("offsets must start at 0 and end at the total vertex count.".to_owned());
+    }
+    if offsets.windows(2).any(|pair| pair[1] < pair[0]) {
+        return Err("offsets must be nondecreasing.".to_owned());
+    }
+
+    let polygon_count = offsets.len() - 1;
+    let parallel = match threads {
+        Some(1) => false,
+        Some(_) => true,
+        None => automatic_parallel(polygon_count, resolution, candidates.map(<[u64]>::len)),
+    };
+    if !parallel {
+        return compute_mixed_chunk(vertices, offsets, 0..polygon_count, resolution, candidates);
+    }
+
+    let worker_count = threads.unwrap_or_else(rayon::current_num_threads);
+    let chunk_size = polygon_count
+        .div_ceil(worker_count.saturating_mul(4))
+        .max(1);
+    let ranges = (0..polygon_count)
+        .step_by(chunk_size)
+        .map(|start| start..(start + chunk_size).min(polygon_count))
+        .collect::<Vec<_>>();
+    let compute = || {
+        ranges
+            .par_iter()
+            .map(|range| {
+                compute_mixed_chunk(vertices, offsets, range.clone(), resolution, candidates)
+            })
+            .collect::<Result<Vec<_>, _>>()
+    };
+    let chunks = if let Some(worker_count) = threads {
+        install_in_pool(worker_count, compute)??
+    } else {
+        compute()?
+    };
+    Ok(merge_coverages(chunks))
 }
 
 pub(crate) fn cover(
@@ -827,12 +743,17 @@ pub(crate) fn cover(
     threads: Option<usize>,
 ) -> Result<Coverage, String> {
     debug_assert!(resolution <= MAX_RESOLUTION);
-    let candidates = candidate_centers(raw_candidates, resolution)?;
+    let candidates = candidate_cells(raw_candidates, resolution)?;
     if is_dense_quads(vertices, offsets) {
         compute_quad_coverage(vertices, resolution, candidates.as_deref(), threads)
     } else {
-        let polygons = prepare_polygons(vertices, offsets)?;
-        compute_ring_coverage(polygons, resolution, candidates.as_deref(), threads)
+        compute_mixed_coverage(
+            vertices,
+            offsets,
+            resolution,
+            candidates.as_deref(),
+            threads,
+        )
     }
 }
 
@@ -860,7 +781,7 @@ fn compute_strip_chunk(
     right: &[f64],
     range: std::ops::Range<usize>,
     resolution: u8,
-    candidates: Option<&[CandidateCenter]>,
+    candidates: Option<&[u64]>,
 ) -> Result<Coverage, String> {
     let count = range.len();
     let expected_cells_per_polygon = candidates
@@ -873,7 +794,15 @@ fn compute_strip_chunk(
     coverage.offsets.push(0);
     for index in range {
         let raw = strip_quad(left, right, index);
-        let quad = prepare_quad(&raw)?;
+        let quad = prepare_quad(
+            &raw,
+            [
+                "left_edge_xyz",
+                "right_edge_xyz",
+                "right_edge_xyz",
+                "left_edge_xyz",
+            ],
+        )?;
         append_quad(&quad, resolution, candidates, &mut coverage.cells);
         coverage.offsets.push(coverage.cells.len() as u64);
     }
@@ -901,11 +830,15 @@ pub(crate) fn cover_strip(
         return Err("cover_strip() requires at least two edge samples.".to_owned());
     }
     let segment_count = sample_count - 1;
-    let candidates = candidate_centers(raw_candidates, resolution)?;
+    let candidates = candidate_cells(raw_candidates, resolution)?;
     let parallel = match threads {
         Some(1) => false,
         Some(_) => true,
-        None => segment_count >= 256,
+        None => automatic_parallel(
+            segment_count,
+            resolution,
+            candidates.as_deref().map(<[u64]>::len),
+        ),
     };
     if !parallel {
         return compute_strip_chunk(
@@ -917,9 +850,13 @@ pub(crate) fn cover_strip(
         );
     }
 
+    let worker_count = threads.unwrap_or_else(rayon::current_num_threads);
+    let chunk_size = segment_count
+        .div_ceil(worker_count.saturating_mul(4))
+        .max(1);
     let ranges = (0..segment_count)
-        .step_by(QUADS_PER_CHUNK)
-        .map(|start| start..(start + QUADS_PER_CHUNK).min(segment_count))
+        .step_by(chunk_size)
+        .map(|start| start..(start + chunk_size).min(segment_count))
         .collect::<Vec<_>>();
     let compute = || {
         ranges
@@ -936,11 +873,7 @@ pub(crate) fn cover_strip(
             .collect::<Result<Vec<_>, _>>()
     };
     let chunks = if let Some(worker_count) = threads {
-        rayon::ThreadPoolBuilder::new()
-            .num_threads(worker_count)
-            .build()
-            .map_err(|error| format!("Could not create the requested thread pool: {error}"))?
-            .install(compute)?
+        install_in_pool(worker_count, compute)??
     } else {
         compute()?
     };

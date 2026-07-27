@@ -106,11 +106,13 @@ justify owning delicate HEALPix geometry.
 
 ## Result
 
-The ring geometry, fixed-quadrilateral path, paired-edge strip path, ragged
-polygon path, sparse candidate filtering, centers, and boundaries now live in
-one private production module. Independent fixtures cover polar, equatorial,
-seam, and resolution-29 geometry. CDS was removed from the locked graph. There
-is no algorithm selector or NESTED compatibility layer.
+The ring geometry, fixed-quadrilateral predicate, paired-edge strip path,
+ragged polygon path, z-indexed sparse candidate filtering, centers, and
+boundaries now live in one private production module. Coverage uses one
+center-scan traversal; the four-edge predicate remains unrolled because its
+measured gain is material. Independent fixtures cover polar, equatorial, seam,
+and resolution-29 geometry. CDS was removed from the locked graph. There is no
+algorithm selector or NESTED compatibility layer.
 
 Ownership alone is not the optimization: the improvement comes from deleting
 the overlap/BMOC pipeline in favor of direct center work.
@@ -137,6 +139,37 @@ differs from both Polypix and HEALPix C++ by about `3.83e-6` in one Cartesian
 component. Polypix starts its square-root estimate in floating point but
 corrects it to the exact integer result with overflow-safe integer arithmetic.
 A resolution-29 fixture pins the affected transition.
+
+The repository also pins a broad audit against HEALPix C++ through
+`healpy==1.19.0`. `tests/test_ring_geometry.py` selects 257 evenly spaced RING
+indices at each of resolutions 0, 1, 3, 8, 16, and 29 and checks three
+deterministic projections of their centers and corners. Targeted fixtures
+retain near-machine-precision checks, while a separate scalar implementation
+checks every center through resolution 6. The broad reference values can be
+regenerated with:
+
+```python
+cells = np.array(
+    [i * (12 * 4**resolution - 1) // 256 for i in range(257)],
+    dtype=np.int64,
+)
+centers = np.stack(
+    healpy.pix2vec(2**resolution, cells, nest=False),
+    axis=-1,
+)
+corners = np.moveaxis(
+    healpy.boundaries(2**resolution, cells, step=1, nest=False),
+    1,
+    2,
+)
+signature = [
+    math.fsum(
+        float(value) * math.sin((index + 1) * frequency)
+        for index, value in enumerate(values.ravel())
+    ) / values.size
+    for frequency in (0.6180339887498948, 1.4142135623730951, 2.718281828459045)
+]
+```
 
 The remaining CDS projection precautions—signed-zero preservation, inverse
 projection clamping, and a pole guard—serve longitude/latitude projection APIs

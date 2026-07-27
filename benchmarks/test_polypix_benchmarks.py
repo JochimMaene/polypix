@@ -32,6 +32,25 @@ def footprints() -> np.ndarray:
 
 
 @pytest.fixture(scope="module")
+def large_footprints() -> np.ndarray:
+    longitudes = np.linspace(-170.0, 170.0, 64)
+    latitudes = np.linspace(-60.0, 60.0, 64)
+    return np.asarray(
+        [
+            [
+                _lonlat_to_xyz(float(lon - 0.05), float(lat - 0.05)),
+                _lonlat_to_xyz(float(lon + 0.05), float(lat - 0.05)),
+                _lonlat_to_xyz(float(lon + 0.05), float(lat + 0.05)),
+                _lonlat_to_xyz(float(lon - 0.05), float(lat + 0.05)),
+            ]
+            for lat in latitudes
+            for lon in longitudes
+        ],
+        dtype=np.float64,
+    )
+
+
+@pytest.fixture(scope="module")
 def strip_edges() -> tuple[np.ndarray, np.ndarray]:
     latitudes = np.linspace(-40.0, 40.0, 501)
     left = np.asarray(
@@ -66,6 +85,74 @@ def test_cover_footprint_batch(
 
     assert coverage.offsets.shape == (footprints.shape[0] + 1,)
     assert coverage.cells.dtype == np.uint64
+
+
+def test_cover_footprint_single_latency(
+    benchmark, footprints: np.ndarray
+) -> None:
+    coverage = benchmark(px.cover_footprint, footprints[0], 7, threads=1)
+
+    assert coverage.offsets.shape == (2,)
+
+
+def test_cover_footprint_automatic_parallel(
+    benchmark, large_footprints: np.ndarray
+) -> None:
+    coverage = benchmark(px.cover_footprint, large_footprints, 9)
+
+    assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
+
+
+@pytest.mark.parametrize("resolution", [6, 12], ids=lambda value: f"resolution_{value}")
+def test_cover_footprint_automatic_light_batch(
+    benchmark, footprints: np.ndarray, resolution: int
+) -> None:
+    coverage = benchmark(px.cover_footprint, footprints[:300], resolution)
+
+    assert coverage.offsets.shape == (301,)
+
+
+def test_cover_footprint_explicit_pool_reuse(
+    benchmark, large_footprints: np.ndarray
+) -> None:
+    coverage = benchmark(px.cover_footprint, large_footprints, 9, threads=4)
+
+    assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
+
+
+def test_cover_footprint_mixed_ragged_batch(
+    benchmark, large_footprints: np.ndarray
+) -> None:
+    midpoint = large_footprints[-1, 1] + large_footprints[-1, 2]
+    midpoint /= np.linalg.norm(midpoint)
+    pentagon = np.vstack(
+        (large_footprints[-1, :2], midpoint, large_footprints[-1, 2:])
+    )
+    ragged = tuple(large_footprints[:-1]) + (pentagon,)
+
+    coverage = benchmark(px.cover_footprint, ragged, 9, threads=1)
+
+    assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
+
+
+def test_cover_footprint_with_large_sparse_candidate_set(
+    benchmark, large_footprints: np.ndarray
+) -> None:
+    resolution = 12
+    pixel_count = 12 * 4**resolution
+    candidates = np.arange(65536, dtype=np.uint64) * np.uint64(
+        pixel_count // 65536
+    )
+
+    coverage = benchmark(
+        px.cover_footprint,
+        large_footprints,
+        resolution,
+        candidate_cells=candidates,
+        threads=1,
+    )
+
+    assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
 
 
 def test_cover_strip(benchmark, strip_edges: tuple[np.ndarray, np.ndarray]) -> None:

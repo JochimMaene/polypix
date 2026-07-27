@@ -89,7 +89,8 @@ unnecessary behavioral break.
 ### Correctness Spike
 
 The evaluation spike was intentionally discarded after its regression cases
-and acceptance checks moved into the production tests and scorecard.
+and acceptance checks moved into the production tests and focused CodSpeed
+benchmarks.
 
 The exact-overlap plus flagged-range center filter matched an independent
 fixed-resolution brute-force center oracle for:

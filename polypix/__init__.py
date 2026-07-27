@@ -126,21 +126,19 @@ def _as_footprints(
     | Sequence[Sequence[Sequence[float]]]
     | np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    dense_array: np.ndarray | None
-    try:
-        raw_array = np.asarray(values)
-    except ValueError:
-        # NumPy rejects a ragged sequence before assigning it an object dtype.
-        dense_array = None
+    if isinstance(values, np.ndarray):
+        if values.dtype == np.dtype("O"):
+            raise TypeError("footprints_xyz must contain real numbers.")
+        dense_array: np.ndarray | None = _as_float_array(values, "footprints_xyz")
+    elif isinstance(values, Sequence) and len(values) > 0:
+        first = np.asarray(values[0])
+        dense_array = (
+            None
+            if first.ndim == 2
+            else _as_float_array(values, "footprints_xyz")
+        )
     else:
-        if raw_array.dtype == np.dtype("O") and not isinstance(values, np.ndarray):
-            dense_array = None
-        else:
-            dense_array = _as_float_array(raw_array, "footprints_xyz")
-
-    if dense_array is None and isinstance(values, np.ndarray):
-        # Object arrays are deliberately not an alternate ragged representation.
-        _as_float_array(values, "footprints_xyz")
+        dense_array = None
 
     if dense_array is not None:
         dense = _dense_footprints(dense_array)
@@ -158,10 +156,20 @@ def _as_footprints(
             "(footprints, vertices, 3), or be a sequence of (vertices, 3) arrays."
         )
 
-    footprints = [
-        _as_float_matrix(footprint, 3, f"footprints_xyz[{index}]")
-        for index, footprint in enumerate(values)
-    ]
+    if all(
+        isinstance(footprint, np.ndarray)
+        and footprint.dtype == np.float64
+        and footprint.ndim == 2
+        and footprint.shape[1] == 3
+        and footprint.flags.c_contiguous
+        for footprint in values
+    ):
+        footprints = list(values)
+    else:
+        footprints = [
+            _as_float_matrix(footprint, 3, f"footprints_xyz[{index}]")
+            for index, footprint in enumerate(values)
+        ]
     counts = np.asarray(
         [footprint.shape[0] for footprint in footprints], dtype=np.uint64
     )
@@ -172,27 +180,18 @@ def _as_footprints(
     return vertices, offsets
 
 
-def _pixel_count(resolution: int) -> int:
-    return 12 << (2 * resolution)
-
-
 def _as_ring_cells(
     values: int | Sequence[int] | np.ndarray,
-    resolution: int,
     name: str,
 ) -> np.ndarray:
-    cells = _as_uint64_vector(values, name)
-    if np.any(cells >= _pixel_count(resolution)):
-        raise ValueError(
-            f"{name} must contain valid RING indices at resolution {resolution}."
-        )
-    return cells
+    return _as_uint64_vector(values, name)
 
 
-def _coverage(payload: dict, resolution: int) -> Coverage:
+def _coverage(payload: tuple[np.ndarray, np.ndarray], resolution: int) -> Coverage:
+    cells, offsets = payload
     return Coverage(
-        cells=np.asarray(payload["cells"], dtype=np.uint64),
-        offsets=np.asarray(payload["offsets"], dtype=np.uint64),
+        cells=cells,
+        offsets=offsets,
         resolution=resolution,
     )
 
@@ -208,7 +207,7 @@ def _cover_xyz(
     candidates = (
         None
         if candidate_cells is None
-        else _as_ring_cells(candidate_cells, resolution, "candidate_cells")
+        else _as_ring_cells(candidate_cells, "candidate_cells")
     )
     return _coverage(
         _cover(vertices, offsets, resolution, candidates, requested_threads),
@@ -252,7 +251,7 @@ def cover_strip(
     candidates = (
         None
         if candidate_cells is None
-        else _as_ring_cells(candidate_cells, resolved, "candidate_cells")
+        else _as_ring_cells(candidate_cells, "candidate_cells")
     )
     return _coverage(
         _cover_strip(left, right, resolved, candidates, requested_threads),
@@ -265,8 +264,8 @@ def centers(
     resolution: int,
 ) -> np.ndarray:
     resolved = _as_resolution(resolution)
-    ring = _as_ring_cells(cells, resolved, "cells")
-    return np.asarray(_center(ring, resolved), dtype=np.float64)
+    ring = _as_ring_cells(cells, "cells")
+    return _center(ring, resolved)
 
 
 def boundaries(
@@ -274,8 +273,8 @@ def boundaries(
     resolution: int,
 ) -> np.ndarray:
     resolved = _as_resolution(resolution)
-    ring = _as_ring_cells(cells, resolved, "cells")
-    return np.asarray(_boundary_many(ring, resolved), dtype=np.float64)
+    ring = _as_ring_cells(cells, "cells")
+    return _boundary_many(ring, resolved)
 
 
 __all__ = [

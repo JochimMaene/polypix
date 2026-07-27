@@ -1,5 +1,3 @@
-from typing import Any
-
 import numpy as np
 import numpy.typing as npt
 
@@ -11,14 +9,14 @@ def _cover(
     resolution: int,
     candidate_cells: npt.NDArray[np.uint64] | None = None,
     threads: int | None = None,
-) -> dict[str, Any]: ...
+) -> tuple[npt.NDArray[np.uint64], npt.NDArray[np.uint64]]: ...
 def _cover_strip(
     left_edge_xyz: npt.NDArray[np.float64],
     right_edge_xyz: npt.NDArray[np.float64],
     resolution: int,
     candidate_cells: npt.NDArray[np.uint64] | None = None,
     threads: int | None = None,
-) -> dict[str, Any]: ...
+) -> tuple[npt.NDArray[np.uint64], npt.NDArray[np.uint64]]: ...
 def _center(
     cells: npt.NDArray[np.uint64],
     resolution: int,

@@ -4,17 +4,22 @@ use numpy::{
 };
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyDict;
-use rayon::prelude::*;
+use std::sync::{Arc, Mutex, OnceLock};
 
 mod ring;
 
 const MAX_RESOLUTION: u8 = 29;
-const MIN_AUTO_PARALLEL_FOOTPRINTS: usize = 256;
+const AUTO_PARALLEL_MIN_ITEMS: usize = 1024;
+const AUTO_PARALLEL_MIN_WORK: usize = 1 << 20;
 const ZERO_NORM_EPSILON: f64 = 1.0e-15;
 const CONTAINMENT_EPSILON: f64 = 1.0e-14;
 
 type Vec3 = [f64; 3];
+type CachedPool = Mutex<Option<(usize, Arc<rayon::ThreadPool>)>>;
+type PyCoverage<'py> = (
+    Bound<'py, numpy::PyArray1<u64>>,
+    Bound<'py, numpy::PyArray1<u64>>,
+);
 
 #[derive(Clone)]
 struct Polygon {
@@ -22,7 +27,6 @@ struct Polygon {
     edge_normals: Vec<Vec3>,
 }
 
-#[derive(Default)]
 struct Coverage {
     cells: Vec<u64>,
     offsets: Vec<u64>,
@@ -44,16 +48,18 @@ fn norm(vector: Vec3) -> f64 {
     vector[0].hypot(vector[1]).hypot(vector[2])
 }
 
-fn normalize(vector: Vec3) -> Result<Vec3, String> {
+fn normalize(vector: Vec3, input_name: &str) -> Result<Vec3, String> {
     if !vector.iter().all(|value| value.is_finite()) {
-        return Err("footprints_xyz must contain only finite vectors.".to_owned());
+        return Err(format!("{input_name} must contain only finite vectors."));
     }
     let scale = vector
         .iter()
         .map(|value| value.abs())
         .fold(0.0_f64, f64::max);
     if scale == 0.0 {
-        return Err("footprints_xyz must not contain zero-length vectors.".to_owned());
+        return Err(format!(
+            "{input_name} must not contain zero-length vectors."
+        ));
     }
     let scaled = [vector[0] / scale, vector[1] / scale, vector[2] / scale];
     let inverse_length = norm(scaled).recip();
@@ -70,23 +76,8 @@ fn nearly_equal(left: Vec3, right: Vec3) -> bool {
         && (left[2] - right[2]).abs() < 1.0e-12
 }
 
-fn prepare_polygon(raw_vertices: &[[f64; 3]]) -> Result<Polygon, String> {
-    if raw_vertices.len() < 3 {
-        return Err("Each footprint needs at least three vertices.".to_owned());
-    }
-
-    let mut vertices = raw_vertices
-        .iter()
-        .copied()
-        .map(normalize)
-        .collect::<Result<Vec<_>, _>>()?;
-    if nearly_equal(vertices[0], *vertices.last().expect("non-empty polygon")) {
-        vertices.pop();
-    }
-    if vertices.len() < 3 {
-        return Err("Each footprint needs at least three unique vertices.".to_owned());
-    }
-
+fn validate_polygon(vertices: &mut [Vec3], edge_normals: &mut [Vec3]) -> Result<(), String> {
+    debug_assert_eq!(vertices.len(), edge_normals.len());
     for left in 0..vertices.len() {
         let right = (left + 1) % vertices.len();
         if nearly_equal(vertices[left], vertices[right]) {
@@ -113,7 +104,7 @@ fn prepare_polygon(raw_vertices: &[[f64; 3]]) -> Result<Polygon, String> {
             .find(|&candidate| norm(candidate) > ZERO_NORM_EPSILON)
             .ok_or_else(|| "Footprint is degenerate.".to_owned())?;
     }
-    interior = normalize(interior)?;
+    interior = normalize(interior, "footprints_xyz")?;
 
     let orientation = vertices
         .iter()
@@ -127,12 +118,9 @@ fn prepare_polygon(raw_vertices: &[[f64; 3]]) -> Result<Polygon, String> {
         vertices.reverse();
     }
 
-    let mut edge_normals = Vec::with_capacity(vertices.len());
-    for (&current, &next) in vertices
-        .iter()
-        .zip(vertices.iter().cycle().skip(1))
-        .take(vertices.len())
-    {
+    for index in 0..vertices.len() {
+        let current = vertices[index];
+        let next = vertices[(index + 1) % vertices.len()];
         let edge_normal = cross(current, next);
         let edge_length = norm(edge_normal);
         if edge_length <= ZERO_NORM_EPSILON {
@@ -140,7 +128,7 @@ fn prepare_polygon(raw_vertices: &[[f64; 3]]) -> Result<Polygon, String> {
         }
 
         let mut found_strict_interior = false;
-        for &vertex in &vertices {
+        for &vertex in vertices.iter() {
             let side = dot(edge_normal, vertex);
             if side < -CONTAINMENT_EPSILON {
                 return Err("Footprint must be convex and non-self-intersecting.".to_owned());
@@ -150,46 +138,39 @@ fn prepare_polygon(raw_vertices: &[[f64; 3]]) -> Result<Polygon, String> {
         if !found_strict_interior {
             return Err("Footprint is degenerate.".to_owned());
         }
-        edge_normals.push([
+        edge_normals[index] = [
             edge_normal[0] / edge_length,
             edge_normal[1] / edge_length,
             edge_normal[2] / edge_length,
-        ]);
+        ];
     }
+    Ok(())
+}
+
+pub(crate) fn prepare_polygon(raw_vertices: &[[f64; 3]]) -> Result<Polygon, String> {
+    if raw_vertices.len() < 3 {
+        return Err("Each footprint needs at least three vertices.".to_owned());
+    }
+
+    let mut vertices = raw_vertices
+        .iter()
+        .copied()
+        .map(|vertex| normalize(vertex, "footprints_xyz"))
+        .collect::<Result<Vec<_>, _>>()?;
+    if nearly_equal(vertices[0], *vertices.last().expect("non-empty polygon")) {
+        vertices.pop();
+    }
+    if vertices.len() < 3 {
+        return Err("Each footprint needs at least three unique vertices.".to_owned());
+    }
+
+    let mut edge_normals = vec![[0.0; 3]; vertices.len()];
+    validate_polygon(&mut vertices, &mut edge_normals)?;
 
     Ok(Polygon {
         vertices,
         edge_normals,
     })
-}
-
-fn prepare_polygons(vertices: &[f64], offsets: &[u64]) -> Result<Vec<Polygon>, String> {
-    if vertices.len() % 3 != 0 {
-        return Err("vertices_xyz must have shape (vertices, 3).".to_owned());
-    }
-    let vertex_count = vertices.len() / 3;
-    if offsets.is_empty() {
-        return Err("offsets must contain at least one value.".to_owned());
-    }
-    if offsets[0] != 0 || offsets[offsets.len() - 1] != vertex_count as u64 {
-        return Err("offsets must start at 0 and end at the total vertex count.".to_owned());
-    }
-    if offsets.windows(2).any(|pair| pair[1] < pair[0]) {
-        return Err("offsets must be nondecreasing.".to_owned());
-    }
-
-    offsets
-        .windows(2)
-        .map(|pair| {
-            let start = pair[0] as usize;
-            let end = pair[1] as usize;
-            let polygon = vertices[start * 3..end * 3]
-                .chunks_exact(3)
-                .map(|value| [value[0], value[1], value[2]])
-                .collect::<Vec<_>>();
-            prepare_polygon(&polygon)
-        })
-        .collect()
 }
 
 fn contains_center(edge_normals: &[Vec3], center: Vec3) -> bool {
@@ -198,47 +179,44 @@ fn contains_center(edge_normals: &[Vec3], center: Vec3) -> bool {
         .all(|&normal| dot(normal, center) >= -CONTAINMENT_EPSILON)
 }
 
-fn run_parallel<T, F>(
-    items: &[Polygon],
-    threads: Option<usize>,
-    operation: F,
-) -> Result<Vec<T>, String>
-where
-    T: Send,
-    F: Fn(&Polygon) -> T + Sync + Send,
-{
-    let parallel = match threads {
-        Some(1) => false,
-        Some(_) => true,
-        None => items.len() >= MIN_AUTO_PARALLEL_FOOTPRINTS,
-    };
-    if !parallel {
-        return Ok(items.iter().map(operation).collect());
+fn automatic_parallel(item_count: usize, resolution: u8, candidate_count: Option<usize>) -> bool {
+    if item_count < AUTO_PARALLEL_MIN_ITEMS {
+        return false;
     }
-
-    if let Some(worker_count) = threads {
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(worker_count)
-            .build()
-            .map_err(|error| format!("Could not create the requested thread pool: {error}"))?;
-        Ok(pool.install(|| items.par_iter().map(&operation).collect()))
-    } else {
-        Ok(items.par_iter().map(operation).collect())
+    let work_per_item =
+        candidate_count.unwrap_or_else(|| 1_usize << usize::from(resolution.min(12)));
+    match item_count.checked_mul(work_per_item) {
+        Some(work) => work >= AUTO_PARALLEL_MIN_WORK,
+        None => true,
     }
 }
 
-fn merge_segments(segments: Vec<Vec<u64>>) -> Coverage {
-    let cell_count = segments.iter().map(Vec::len).sum();
-    let mut coverage = Coverage {
-        cells: Vec::with_capacity(cell_count),
-        offsets: Vec::with_capacity(segments.len() + 1),
-    };
-    coverage.offsets.push(0);
-    for segment in segments {
-        coverage.cells.extend(segment);
-        coverage.offsets.push(coverage.cells.len() as u64);
+fn explicit_pool(worker_count: usize) -> Result<Arc<rayon::ThreadPool>, String> {
+    static POOL: OnceLock<CachedPool> = OnceLock::new();
+    let cache = POOL.get_or_init(|| Mutex::new(None));
+    let mut cached = cache
+        .lock()
+        .map_err(|_| "The explicit thread-pool cache is unavailable.".to_owned())?;
+    if let Some((cached_count, pool)) = cached.as_ref() {
+        if *cached_count == worker_count {
+            return Ok(Arc::clone(pool));
+        }
     }
-    coverage
+    let pool = Arc::new(
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(worker_count)
+            .build()
+            .map_err(|error| format!("Could not create the requested thread pool: {error}"))?,
+    );
+    *cached = Some((worker_count, Arc::clone(&pool)));
+    Ok(pool)
+}
+
+fn install_in_pool<T: Send>(
+    worker_count: usize,
+    operation: impl FnOnce() -> T + Send,
+) -> Result<T, String> {
+    Ok(explicit_pool(worker_count)?.install(operation))
 }
 
 fn validate_resolution(resolution: u8) -> Result<(), String> {
@@ -258,7 +236,7 @@ fn _cover<'py>(
     resolution: u8,
     candidate_cells: Option<PyReadonlyArray1<'py, u64>>,
     threads: Option<usize>,
-) -> PyResult<Bound<'py, PyDict>> {
+) -> PyResult<PyCoverage<'py>> {
     validate_resolution(resolution).map_err(PyValueError::new_err)?;
     if vertices_xyz.shape().get(1) != Some(&3) {
         return Err(PyValueError::new_err(
@@ -284,10 +262,10 @@ fn _cover<'py>(
         .detach(|| ring::cover(vertices, raw_offsets, resolution, raw_candidates, threads))
         .map_err(PyValueError::new_err)?;
 
-    let result = PyDict::new(py);
-    result.set_item("cells", coverage.cells.into_pyarray(py))?;
-    result.set_item("offsets", coverage.offsets.into_pyarray(py))?;
-    Ok(result)
+    Ok((
+        coverage.cells.into_pyarray(py),
+        coverage.offsets.into_pyarray(py),
+    ))
 }
 
 #[pyfunction(signature = (left_edge_xyz, right_edge_xyz, resolution, candidate_cells=None, threads=None))]
@@ -298,7 +276,7 @@ fn _cover_strip<'py>(
     resolution: u8,
     candidate_cells: Option<PyReadonlyArray1<'py, u64>>,
     threads: Option<usize>,
-) -> PyResult<Bound<'py, PyDict>> {
+) -> PyResult<PyCoverage<'py>> {
     validate_resolution(resolution).map_err(PyValueError::new_err)?;
     if left_edge_xyz.shape().get(1) != Some(&3) || right_edge_xyz.shape().get(1) != Some(&3) {
         return Err(PyValueError::new_err(
@@ -323,10 +301,10 @@ fn _cover_strip<'py>(
         .detach(|| ring::cover_strip(left, right, resolution, raw_candidates, threads))
         .map_err(PyValueError::new_err)?;
 
-    let result = PyDict::new(py);
-    result.set_item("cells", coverage.cells.into_pyarray(py))?;
-    result.set_item("offsets", coverage.offsets.into_pyarray(py))?;
-    Ok(result)
+    Ok((
+        coverage.cells.into_pyarray(py),
+        coverage.offsets.into_pyarray(py),
+    ))
 }
 
 #[pyfunction]
