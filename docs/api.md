@@ -63,9 +63,11 @@ them.
 `candidate_cells` optionally restricts the result to a one-dimensional set of
 standard RING indices at the requested resolution. Duplicate candidates are
 ignored. An empty candidate set returns empty segments without dropping input
-items. Center inclusion uses a `1e-14` dot-product boundary tolerance.
-Mathematically equivalent floating-point center calculations can differ only
-inside that boundary band.
+items. Center inclusion uses a nominal `1e-14` dot-product boundary tolerance.
+This is a predicate threshold, not a strict absolute-error guarantee:
+floating-point uncertainty also depends on edge length and on the equivalent
+center-evaluation path. Only centers numerically indistinguishable from a
+boundary can be strategy-sensitive.
 
 `threads=None` uses the automatic native policy. `threads=1` disables internal
 parallelism; a larger positive integer sets the reusable worker-pool maximum.
@@ -161,7 +163,8 @@ closing vertex are accepted. A cell center on an edge is included.
 
 Polypix rejects footprints with fewer than three unique vertices, duplicate or
 antipodal vertices, degenerate edges, non-finite coordinates, self
-intersections, or non-convex geometry.
+intersections, or non-convex geometry. Redundant vertices on the same
+great-circle edge are accepted within floating-point precision.
 
 For `cover_strip()`, consecutive samples on each edge are joined by the same
 minor arcs. Callers must sample physical swaths densely enough that these arcs

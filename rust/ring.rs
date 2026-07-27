@@ -16,10 +16,14 @@ use crate::geometry::{
 };
 
 pub(crate) const MAX_RESOLUTION: u8 = 29;
-// Measurements on primary small-footprint batches show item count predicts the
-// dispatch crossover better than resolution or candidate-set size. Parallelism
-// is consistently beneficial from 2,048 independent items on supported hosts.
+// Measurements on unrestricted small-footprint scans show item count predicts
+// the dispatch crossover better than resolution. Parallelism is consistently
+// beneficial from 2,048 independent items on supported hosts.
 const AUTO_PARALLEL_MIN_ITEMS: usize = 2048;
+// Candidate filtering is much cheaper per footprint than a complete scan.
+// Measurements show dispatch pays off only beyond roughly one million actual
+// z-band visits, which plan_candidates computes without another estimate.
+const CANDIDATE_PARALLEL_MIN_VISITS: usize = 1 << 20;
 const INDEX_UNCERTAINTY_ULPS: f64 = 128.0;
 const LONGITUDE_BOUNDS_EPSILON: f64 = 1.0e-14;
 type CachedPool = Mutex<Option<(usize, Arc<rayon::ThreadPool>)>>;
@@ -548,6 +552,15 @@ impl PreparedFootprint {
         if raw.len() == 12 {
             return prepare_quad(raw, ["vector"; 4], false).map(Self::Quad);
         }
+        if raw.len() == 15 {
+            let first =
+                normalize([raw[0], raw[1], raw[2]]).map_err(|error| format!("vector {error}"))?;
+            let last = normalize([raw[12], raw[13], raw[14]])
+                .map_err(|error| format!("vector {error}"))?;
+            if nearly_equal(first, last) {
+                return prepare_quad(&raw[..12], ["vector"; 4], false).map(Self::Quad);
+            }
+        }
         let raw_polygon = raw
             .chunks_exact(3)
             .map(|value| [value[0], value[1], value[2]])
@@ -611,18 +624,18 @@ fn candidate_range(
     maximum_z: f64,
 ) -> Range<usize> {
     let nside = 1_u64 << resolution;
-    let start = candidates.partition_point(|&cell| {
-        ring_z(nside, ring_of_cell(cell, nside)) > maximum_z + CONTAINMENT_EPSILON
-    });
-    let end = candidates.partition_point(|&cell| {
-        ring_z(nside, ring_of_cell(cell, nside)) >= minimum_z - CONTAINMENT_EPSILON
-    });
+    let (first_ring, last_ring) = ring_range(nside, minimum_z, maximum_z);
+    let first_cell = ring_start(nside, first_ring);
+    let last_cell = ring_start(nside, last_ring + 1);
+    let start = candidates.partition_point(|&cell| cell < first_cell);
+    let end = candidates.partition_point(|&cell| cell < last_cell);
     start..end
 }
 
 struct CandidatePlan {
     ranges: Vec<Range<usize>>,
     centers: Option<Vec<Vec3>>,
+    total_visits: usize,
 }
 
 fn plan_candidates(
@@ -650,7 +663,19 @@ fn plan_candidates(
             .map(|cell| center(cell, resolution))
             .collect()
     });
-    CandidatePlan { ranges, centers }
+    CandidatePlan {
+        ranges,
+        centers,
+        total_visits,
+    }
+}
+
+fn candidate_threads(plan: &CandidatePlan, threads: Option<usize>) -> Option<usize> {
+    if plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS {
+        threads
+    } else {
+        Some(1)
+    }
 }
 
 fn compute_candidate_chunk(
@@ -729,7 +754,7 @@ fn explicit_pool(worker_count: usize) -> Result<Arc<rayon::ThreadPool>, String> 
     let cache = POOL.get_or_init(|| Mutex::new(None));
     let mut cached = cache
         .lock()
-        .map_err(|_| "The explicit thread-pool cache is unavailable.".to_owned())?;
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     if let Some((cached_count, pool)) = cached.as_ref() {
         if *cached_count == worker_count {
             return Ok(Arc::clone(pool));
@@ -763,15 +788,17 @@ fn dispatch_coverage(
     if threads == Some(1) || !automatic_parallel(item_count) {
         return chunk(0..item_count);
     }
-    let worker_count = match threads {
+    let (worker_count, use_global_pool) = match threads {
         Some(1) => unreachable!("handled above"),
         Some(requested) => {
             let available = std::thread::available_parallelism()
                 .map(|count| count.get())
                 .unwrap_or(1);
-            requested.min(available)
+            let workers = requested.min(available);
+            let use_global = requested >= available && rayon::current_num_threads() <= workers;
+            (workers, use_global)
         }
-        None => rayon::current_num_threads().min(item_count),
+        None => (rayon::current_num_threads().min(item_count), true),
     };
     if worker_count <= 1 {
         return chunk(0..item_count);
@@ -789,10 +816,10 @@ fn dispatch_coverage(
             .map(|range| chunk(range.clone()))
             .collect::<Result<Vec<_>, _>>()
     };
-    let chunks = if threads.is_some() {
-        install_in_pool(worker_count, compute)??
-    } else {
+    let chunks = if use_global_pool {
         compute()?
+    } else {
+        install_in_pool(worker_count, compute)??
     };
     Ok(merge_coverages(chunks))
 }
@@ -851,7 +878,7 @@ fn compute_mixed_coverage(
             })
             .collect::<Result<Vec<_>, _>>()?;
         let plan = plan_candidates(&footprints, candidates, resolution);
-        return dispatch_coverage(polygon_count, threads, |range| {
+        return dispatch_coverage(polygon_count, candidate_threads(&plan, threads), |range| {
             Ok(compute_candidate_chunk(
                 &footprints,
                 &plan,
@@ -963,7 +990,7 @@ pub(crate) fn cover_strip(
             .map(|index| prepare_strip_footprint(left, right, index))
             .collect::<Result<Vec<_>, _>>()?;
         let plan = plan_candidates(&footprints, candidates, resolution);
-        return dispatch_coverage(segment_count, threads, |range| {
+        return dispatch_coverage(segment_count, candidate_threads(&plan, threads), |range| {
             Ok(compute_candidate_chunk(
                 &footprints,
                 &plan,

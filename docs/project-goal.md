@@ -43,6 +43,8 @@ A footprint is a convex spherical polygon:
 - the covered region is closed, so a cell center on an edge is included;
 - either vertex orientation is accepted;
 - one repeated closing vertex is accepted and removed;
+- redundant vertices on one great-circle edge are accepted within
+  floating-point precision;
 - degenerate, antipodal, self-intersecting, and non-convex geometry is rejected.
 
 Validation is mandatory. There is no unsafe or validation-free mode.
@@ -70,9 +72,10 @@ product.
 Coverage may be restricted to a sparse set of `candidate_cells`. Candidate
 inputs have set semantics and use the requested resolution and RING ordering.
 The implementation may choose the fastest equivalent algorithm internally.
-Center inclusion uses one documented floating-point boundary tolerance;
-mathematically equivalent strategies may differ only inside that tolerance
-band.
+Center inclusion uses one documented nominal floating-point predicate
+tolerance. Numerical uncertainty also depends on edge conditioning and the
+equivalent center-evaluation path; strategy differences are confined to
+centers numerically indistinguishable from a boundary.
 
 ### Grid And Cell IDs
 

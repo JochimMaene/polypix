@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import unittest
 from concurrent.futures import ThreadPoolExecutor
+from functools import cache
 
 import numpy as np
 
@@ -38,6 +39,7 @@ def vectors(vertices_lonlat: list[tuple[float, float]]) -> np.ndarray:
     )
 
 
+@cache
 def reference_ring_centers(resolution: int) -> np.ndarray:
     """Independent scalar HEALPix RING equations used by the coverage oracle."""
     nside = 1 << resolution
@@ -249,6 +251,25 @@ class PolypixTests(unittest.TestCase):
             [open_coverage.cells, open_coverage.cells],
         )
 
+    def test_redundant_collinear_vertices_are_accepted_at_small_scales(self) -> None:
+        for half_size_degrees in (0.35, 0.05, 0.005):
+            quad = vectors(
+                [
+                    (-half_size_degrees, -half_size_degrees),
+                    (half_size_degrees, -half_size_degrees),
+                    (half_size_degrees, half_size_degrees),
+                    (-half_size_degrees, half_size_degrees),
+                ]
+            )
+            midpoint = quad[1] + quad[2]
+            midpoint /= np.linalg.norm(midpoint)
+            densified = np.vstack((quad[:2], midpoint, quad[2:]))
+
+            with self.subTest(half_size_degrees=half_size_degrees):
+                expected = px.cover_footprint(quad, resolution=12, threads=1)
+                actual = px.cover_footprint(densified, resolution=12, threads=1)
+                np.testing.assert_array_equal(actual.cells, expected.cells)
+
     def test_cover_strip_covers_consecutive_edge_intervals(self) -> None:
         left = np.asarray(
             [
@@ -370,6 +391,32 @@ class PolypixTests(unittest.TestCase):
             actual,
             post_filter_coverage(unfiltered, candidates),
         )
+
+    def test_random_candidate_coverage_matches_post_filtering(self) -> None:
+        random = np.random.default_rng(20260729)
+        resolution = 5
+        pixel_count = 12 * 4**resolution
+        for case in range(40):
+            polygon = regular_spherical_polygon(
+                random.normal(size=3),
+                math.radians(float(random.uniform(0.2, 12.0))),
+                int(random.integers(3, 8)),
+            )
+            unfiltered = px.cover_footprint(polygon, resolution, threads=1)
+            random_cells = random.integers(0, pixel_count, size=128, dtype=np.uint64)
+            candidates = np.concatenate((random_cells, unfiltered.cells[::3]))
+
+            with self.subTest(case=case):
+                actual = px.cover_footprint(
+                    polygon,
+                    resolution,
+                    candidate_cells=candidates,
+                    threads=1,
+                )
+                self.assertSegmentsEqual(
+                    actual,
+                    post_filter_coverage(unfiltered, candidates),
+                )
 
     def test_strip_candidate_coverage_matches_post_filtering(self) -> None:
         left = np.asarray(
@@ -611,26 +658,31 @@ class PolypixTests(unittest.TestCase):
 
     def test_fixed_seed_random_footprints_match_independent_oracle(self) -> None:
         random = np.random.default_rng(20260727)
-        for _ in range(100):
-            longitude = float(random.uniform(-180.0, 180.0))
-            latitude = float(random.uniform(-60.0, 60.0))
-            radius = float(random.uniform(0.1, 5.0))
-            vertex_count = int(random.integers(3, 7))
-            polygon = [
-                (
-                    longitude
-                    + radius
-                    * math.cos(2.0 * math.pi * index / vertex_count)
-                    / math.cos(math.radians(latitude)),
-                    latitude + radius * math.sin(2.0 * math.pi * index / vertex_count),
-                )
-                for index in range(vertex_count)
-            ]
-            actual = px.cover_footprint(vectors(polygon), resolution=3, threads=1)
-            self.assertCellsEqual(
-                actual.cells,
-                brute_force_cover(polygon, resolution=3),
-            )
+        for resolution in (3, 4, 5):
+            for case in range(128):
+                longitude = float(random.uniform(-180.0, 180.0))
+                latitude = float(random.uniform(-60.0, 60.0))
+                radius = float(random.uniform(0.1, 5.0))
+                vertex_count = int(random.integers(3, 7))
+                polygon = [
+                    (
+                        longitude
+                        + radius
+                        * math.cos(2.0 * math.pi * index / vertex_count)
+                        / math.cos(math.radians(latitude)),
+                        latitude
+                        + radius * math.sin(2.0 * math.pi * index / vertex_count),
+                    )
+                    for index in range(vertex_count)
+                ]
+                with self.subTest(resolution=resolution, case=case):
+                    actual = px.cover_footprint(
+                        vectors(polygon), resolution=resolution, threads=1
+                    )
+                    self.assertCellsEqual(
+                        actual.cells,
+                        brute_force_cover(polygon, resolution=resolution),
+                    )
 
     def test_wide_and_polar_random_footprints_match_independent_oracle(self) -> None:
         random = np.random.default_rng(20260728)
@@ -933,11 +985,12 @@ class PolypixTests(unittest.TestCase):
         valid = vectors([(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)])
         invalid = valid.copy()
         invalid[2] = invalid[1]
-        batch = np.stack((valid, invalid, valid))
+        batch = np.repeat(valid[np.newaxis, :, :], 4096, axis=0)
+        batch[3000] = invalid
 
         for threads in (1, 4, None):
             with self.subTest(threads=threads):
-                with self.assertRaisesRegex(ValueError, r"footprints_xyz\[1\]"):
+                with self.assertRaisesRegex(ValueError, r"footprints_xyz\[3000\]"):
                     px.cover_footprint(batch, resolution=3, threads=threads)
 
     def test_cover_accepts_empty_batches(self) -> None:

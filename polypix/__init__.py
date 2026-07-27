@@ -1,3 +1,5 @@
+"""Fast center-in-polygon coverage on the HEALPix RING grid."""
+
 from __future__ import annotations
 
 import operator
@@ -25,12 +27,15 @@ _FOOTPRINT_SHAPE_ERROR = (
 
 @dataclass(frozen=True, eq=False)
 class Coverage:
+    """Segmented HEALPix RING coverage for one footprint or a batch."""
+
     cells: npt.NDArray[np.uint64]
     offsets: npt.NDArray[np.uint64]
     resolution: int
 
     @property
     def counts(self) -> npt.NDArray[np.intp]:
+        """Number of covered cells for each input item."""
         return np.diff(self.offsets).astype(np.intp, copy=False)
 
 
@@ -216,6 +221,34 @@ def cover_footprint(
     candidate_cells: Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
     threads: int | None = None,
 ) -> Coverage:
+    """Cover convex spherical footprints by HEALPix cell-center inclusion.
+
+    Parameters
+    ----------
+    footprints_xyz
+        One ``(vertices, 3)`` footprint, a dense batch, or a ragged sequence.
+        Finite nonzero vectors are normalized; edges follow minor great-circle
+        arcs.
+    resolution
+        HEALPix resolution from 0 through 29.
+    candidate_cells
+        Optional RING indices restricting which cell centers are tested.
+    threads
+        ``None`` selects the automatic policy, 1 is sequential, and larger
+        values are reusable worker-pool maximums.
+
+    Returns
+    -------
+    Coverage
+        Flat RING indices and offsets delimiting each input footprint.
+
+    Raises
+    ------
+    TypeError
+        If inputs have incompatible numeric types.
+    ValueError
+        If shapes, indices, vectors, or polygon geometry are invalid.
+    """
     resolved = _as_resolution(resolution)
     vertices, offsets = _as_footprints(footprints_xyz)
     return _cover_xyz(vertices, offsets, resolved, candidate_cells, threads)
@@ -229,6 +262,12 @@ def cover_strip(
     candidate_cells: Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
     threads: int | None = None,
 ) -> Coverage:
+    """Cover the quadrilateral segments between two sampled spherical edges.
+
+    Each output segment covers ``[left[i], right[i], right[i+1], left[i+1]]``.
+    Inputs, resolution, candidates, threading, return value, and errors follow
+    :func:`cover_footprint`.
+    """
     resolved = _as_resolution(resolution)
     left = _as_float_matrix(left_edge_xyz, 3, "left_edge_xyz")
     right = _as_float_matrix(right_edge_xyz, 3, "right_edge_xyz")
@@ -255,6 +294,11 @@ def centers(
     cells: int | Sequence[int] | npt.NDArray[np.integer[Any]],
     resolution: int,
 ) -> npt.NDArray[np.float64]:
+    """Return unit-vector centers for HEALPix RING indices.
+
+    The result has shape ``(cells, 3)``. Invalid resolutions, non-integer
+    inputs, negative values, and out-of-range indices are rejected.
+    """
     resolved = _as_resolution(resolution)
     ring = _as_uint64_vector(cells, "cells")
     return _center(ring, resolved)
@@ -264,6 +308,11 @@ def boundaries(
     cells: int | Sequence[int] | npt.NDArray[np.integer[Any]],
     resolution: int,
 ) -> npt.NDArray[np.float64]:
+    """Return four unit-vector corners for HEALPix RING indices.
+
+    The result has shape ``(cells, 4, 3)`` in boundary traversal order.
+    Validation follows :func:`centers`.
+    """
     resolved = _as_resolution(resolution)
     ring = _as_uint64_vector(cells, "cells")
     return _boundary_many(ring, resolved)

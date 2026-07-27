@@ -55,8 +55,9 @@ Longitude wraparound and poles need no special coordinate treatment because
 the kernel operates on three-dimensional vectors.
 
 Either vertex orientation and one repeated closing vertex are accepted.
-Degenerate, duplicate, antipodal, self-intersecting, and non-convex geometry is
-rejected.
+Redundant vertices on the same great-circle edge are also accepted within
+floating-point precision. Degenerate, duplicate, antipodal, self-intersecting,
+and non-convex geometry is rejected.
 
 ## Batches And Segments
 
@@ -96,10 +97,11 @@ coverage = px.cover_strip(
 
 Candidates are standard RING indices at the requested resolution and have set
 semantics. The native kernel tests their centers directly; it does not first
-materialize complete global coverage. Coverage uses a `1e-14` dot-product
-boundary tolerance. Candidate filtering and complete scans may evaluate a
-center through mathematically equivalent floating-point paths, so only centers
-inside that tolerance band can be strategy-sensitive.
+materialize complete global coverage. Coverage uses a nominal `1e-14`
+dot-product predicate tolerance. Floating-point uncertainty also depends on
+edge length and the equivalent center-evaluation path, so the constant is not
+a strict absolute-error bound. Only centers numerically indistinguishable from
+a boundary can be strategy-sensitive.
 
 Complete scans use one conservative longitude bound for each footprint. This
 is fast for the primary workload of small footprints and short strip segments,

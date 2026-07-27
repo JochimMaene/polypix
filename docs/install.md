@@ -44,6 +44,11 @@ pixi run test
 This creates an environment with Python, NumPy, Rust, Maturin, and pytest, then
 installs Polypix in editable mode.
 
+The checked-in Pixi platforms are Linux x86-64 and macOS. Windows and Linux
+ARM64 contributors can use `python -m pip install -e .` with a stable Rust
+toolchain and a supported CPython, matching the source-build path exercised by
+CI.
+
 ## Local Wheels
 
 To build a local wheel from the active Pixi environment:

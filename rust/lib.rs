@@ -15,10 +15,20 @@ type PyCoverage<'py> = (
     Bound<'py, numpy::PyArray1<u64>>,
 );
 
-fn validate_resolution(resolution: u8) -> Result<(), String> {
+fn validate_resolution(resolution: u8) -> PyResult<()> {
     if resolution > MAX_RESOLUTION {
-        return Err(format!(
+        return Err(PyValueError::new_err(format!(
             "resolution must be between 0 and {MAX_RESOLUTION}."
+        )));
+    }
+    Ok(())
+}
+
+fn validate_cells(cells: &[u64], resolution: u8) -> Result<(), String> {
+    let cell_count = 12_u64 << (2 * resolution);
+    if cells.iter().any(|&cell| cell >= cell_count) {
+        return Err(format!(
+            "cells must contain valid RING indices at resolution {resolution}."
         ));
     }
     Ok(())
@@ -33,7 +43,7 @@ fn _cover<'py>(
     candidate_cells: Option<PyReadonlyArray1<'py, u64>>,
     threads: Option<usize>,
 ) -> PyResult<PyCoverage<'py>> {
-    validate_resolution(resolution).map_err(PyValueError::new_err)?;
+    validate_resolution(resolution)?;
     if vertices_xyz.shape().get(1) != Some(&3) {
         return Err(PyValueError::new_err("Invalid internal footprint buffers."));
     }
@@ -78,7 +88,7 @@ fn _cover_strip<'py>(
     candidate_cells: Option<PyReadonlyArray1<'py, u64>>,
     threads: Option<usize>,
 ) -> PyResult<PyCoverage<'py>> {
-    validate_resolution(resolution).map_err(PyValueError::new_err)?;
+    validate_resolution(resolution)?;
     if left_edge_xyz.shape().get(1) != Some(&3)
         || right_edge_xyz.shape().get(1) != Some(&3)
         || left_edge_xyz.shape()[0] != right_edge_xyz.shape()[0]
@@ -116,23 +126,18 @@ fn _center<'py>(
     cells: PyReadonlyArray1<'py, u64>,
     resolution: u8,
 ) -> PyResult<Bound<'py, PyArray2<f64>>> {
-    validate_resolution(resolution).map_err(PyValueError::new_err)?;
+    validate_resolution(resolution)?;
     let cells = cells
         .as_slice()
         .map_err(|_| PyValueError::new_err("cells must be C-contiguous."))?;
-    let cell_count = 12_u64 << (2 * resolution);
     let values = py
         .detach(|| {
+            validate_cells(cells, resolution)?;
             let mut values = Vec::with_capacity(cells.len() * 3);
             for &cell in cells {
-                if cell >= cell_count {
-                    return Err(format!(
-                        "cells must contain valid RING indices at resolution {resolution}."
-                    ));
-                }
                 values.extend(ring::center(cell, resolution));
             }
-            Ok(values)
+            Ok::<Vec<f64>, String>(values)
         })
         .map_err(PyValueError::new_err)?;
     Ok(Array2::from_shape_vec((cells.len(), 3), values)
@@ -146,25 +151,20 @@ fn _boundary_many<'py>(
     cells: PyReadonlyArray1<'py, u64>,
     resolution: u8,
 ) -> PyResult<Bound<'py, PyArray3<f64>>> {
-    validate_resolution(resolution).map_err(PyValueError::new_err)?;
+    validate_resolution(resolution)?;
     let cells = cells
         .as_slice()
         .map_err(|_| PyValueError::new_err("cells must be C-contiguous."))?;
-    let cell_count = 12_u64 << (2 * resolution);
     let values = py
         .detach(|| {
+            validate_cells(cells, resolution)?;
             let mut values = Vec::with_capacity(cells.len() * 12);
             for &cell in cells {
-                if cell >= cell_count {
-                    return Err(format!(
-                        "cells must contain valid RING indices at resolution {resolution}."
-                    ));
-                }
                 for corner in ring::boundary(cell, resolution) {
                     values.extend(corner);
                 }
             }
-            Ok(values)
+            Ok::<Vec<f64>, String>(values)
         })
         .map_err(PyValueError::new_err)?;
     Ok(Array3::from_shape_vec((cells.len(), 4, 3), values)

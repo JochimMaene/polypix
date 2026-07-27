@@ -161,6 +161,19 @@ def test_cover_footprint_mixed_ragged_batch(
     assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
 
 
+def test_cover_footprint_mixed_ragged_batch_automatic(
+    benchmark, large_footprints: np.ndarray
+) -> None:
+    midpoint = large_footprints[-1, 1] + large_footprints[-1, 2]
+    midpoint /= np.linalg.norm(midpoint)
+    pentagon = np.vstack((large_footprints[-1, :2], midpoint, large_footprints[-1, 2:]))
+    ragged = tuple(large_footprints[:-1]) + (pentagon,)
+
+    coverage = benchmark(px.cover_footprint, ragged, 9)
+
+    assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
+
+
 def test_cover_footprint_with_large_sparse_candidate_set(
     benchmark,
     large_footprints: np.ndarray,
@@ -189,6 +202,24 @@ def test_cover_footprint_with_candidates_automatic_parallel(
         large_footprints,
         12,
         candidate_cells=large_sparse_resolution_12_cells,
+    )
+
+    assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
+
+
+@pytest.mark.parametrize("threads", [1, None], ids=["serial", "automatic"])
+def test_cover_footprint_with_small_sparse_candidate_set(
+    benchmark,
+    large_footprints: np.ndarray,
+    sparse_resolution_12_cells: np.ndarray,
+    threads: int | None,
+) -> None:
+    coverage = benchmark(
+        px.cover_footprint,
+        large_footprints,
+        12,
+        candidate_cells=sparse_resolution_12_cells,
+        threads=threads,
     )
 
     assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)

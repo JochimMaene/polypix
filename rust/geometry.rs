@@ -2,6 +2,12 @@
 
 pub(crate) const CONTAINMENT_EPSILON: f64 = 1.0e-14;
 const ZERO_NORM_EPSILON: f64 = 1.0e-15;
+// Convexity uses an unnormalized scalar triple product of unit-vector inputs.
+// This small absolute guard absorbs the observed last-bit residual for an
+// exactly collinear spherical midpoint without the short-edge amplification
+// caused by normalizing the edge cross product. Keeping it below one epsilon
+// also preserves valid centimetre-scale footprints at resolution 29.
+const VALIDATION_TRIPLE_EPSILON: f64 = 0.5 * f64::EPSILON;
 
 pub(crate) type Vec3 = [f64; 3];
 
@@ -125,17 +131,18 @@ pub(crate) fn validate_polygon(
         }
     }
 
-    for (index, &edge_normal) in edge_normals.iter().enumerate() {
+    for index in 0..edge_normals.len() {
+        let raw_edge_normal = cross(vertices[index], vertices[(index + 1) % vertices.len()]);
         let mut found_strict_interior = false;
         for (vertex_index, &vertex) in vertices.iter().enumerate() {
             if vertex_index == index || vertex_index == (index + 1) % vertices.len() {
                 continue;
             }
-            let side = dot(edge_normal, vertex);
-            if side < -CONTAINMENT_EPSILON {
+            let side = dot(raw_edge_normal, vertex);
+            if side < -VALIDATION_TRIPLE_EPSILON {
                 return Err("Footprint must be convex and non-self-intersecting.".to_owned());
             }
-            found_strict_interior |= side > CONTAINMENT_EPSILON;
+            found_strict_interior |= side > VALIDATION_TRIPLE_EPSILON;
         }
         if !found_strict_interior {
             return Err("Footprint is degenerate.".to_owned());

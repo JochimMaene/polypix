@@ -198,7 +198,7 @@ class RingGeometryTests(unittest.TestCase):
             )
 
     def test_exhaustive_low_resolution_boundary_topology(self) -> None:
-        for resolution in range(5):
+        for resolution in range(7):
             cell_count = 12 * 4**resolution
             cells = np.arange(cell_count, dtype=np.uint64)
             centers = px.centers(cells, resolution)
