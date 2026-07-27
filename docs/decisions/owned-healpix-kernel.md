@@ -1,23 +1,25 @@
 # Owned HEALPix Kernel Evaluation
 
-Status: **approve one bounded traversal spike; do not replace CDS yet**
+Status: **prototype succeeded; develop the bounded RING-first kernel, but keep
+CDS until the production gates pass**
 
 ## Decision
 
-It is now reasonable to test a Polypix-owned HEALPix kernel, but not to start a
-general HEALPix rewrite. The only admissible implementation is the smallest
-internal kernel needed by the frozen public API:
+The direct RING scan prototype demonstrates that a Polypix-owned center-only
+kernel can produce order-of-magnitude improvements on the primary dense
+quadrilateral and strip workloads. This justifies developing the smallest
+production kernel needed by the target API:
 
-- fixed-resolution NESTED center coordinates;
+- fixed-resolution RING center coordinates;
 - four boundary vertices;
 - center-sampled coverage of validated convex spherical polygons;
 - direct filtering of explicit candidate cells.
 
-There will be no RING support, MOC API, neighbour operations, projections,
+There will be no NESTED support, MOC API, neighbour operations, projections,
 general polygon library, backend selector, or public algorithm controls.
 
 CDS remains the production implementation until an owned spike passes the
-correctness and performance gates below. If it fails, delete the spike.
+correctness, packaging, and multi-platform gates below.
 
 ## Why Reconsider
 
@@ -53,23 +55,32 @@ win must come from eliminating the overlap/BMOC/center-filter pipeline with a
 center-specific traversal, not from accumulating replacement utilities one by
 one.
 
-## Spike Shape
+## Prototype Outcome
 
-The spike should compete as one alternative implementation of `cover_polygon`
-behind an internal compile-time switch or benchmark-only entry point. It should:
+The successful prototype did not traverse NESTED cells. It exploited the
+geometry of the requested center rule directly:
 
-1. traverse the 12 NESTED base cells directly;
-2. reject or accept subtrees using conservative spherical bounds;
-3. descend ambiguous cells and test the requested-resolution center against the
-   already prepared polygon half-spaces;
-4. append raw NESTED ranges or leaves directly to the result, without building a
-   general MOC;
-5. reuse the existing outer Rayon batch parallelism and Python boundary.
+1. bound each validated footprint across the `4 * nside - 1` HEALPix
+   iso-latitude rings;
+2. walk only the possible longitudes on each crossed ring;
+3. test centers against the polygon half-spaces;
+4. append standard RING IDs directly;
+5. fuse fixed-quadrilateral preparation and reuse output storage;
+6. distribute coarse independent chunks through Rayon.
 
-The difficult requirement is conservative classification of curved HEALPix
-cells at seams and poles. A fast algorithm that can miss a valid center is not a
-candidate. If proving the bound requires recreating a general spherical
-intersection library, stop: that would violate the narrow-kernel constraint.
+On the Intel i7-1165G7 benchmark host, a representative 21-repeat
+single-thread run measured 10.82x for 4,096 resolution-6 quadrilaterals, 16.70x
+for the same batch at resolution 9, and 17.05x for 4,096 resolution-9 strip
+quadrilaterals. Membership matched the CDS-backed kernel. Ragged 3--6 vertex
+polygons reached 7.55x and one-footprint latency 6.15x, so a universal 10x claim
+is not yet justified. Full details and the reproducible command live in
+`spikes/NOTES.md`.
+
+RING is part of the architectural result rather than a second supported
+ordering. Direct ring spans are the source of the speedup, while conversion of
+materialized results to NESTED consumes a meaningful share of high-output
+calls. Supporting both would add code and choices without helping the primary
+path.
 
 ## Admission Gates
 
@@ -80,9 +91,9 @@ The production CDS dependency is removed only if the owned kernel:
    much larger fixed-seed randomized corpus;
 2. agrees with independent HEALPix center and boundary fixtures through
    resolution 29, including faces, seams, and poles;
-3. improves the geometric mean of the primary single-thread public-call
-   workloads by at least 20% on the benchmark host, with no primary workload
-   more than 5% slower;
+3. preserves the order-of-magnitude direction on the primary fixed-quad and
+   strip public-call workloads and materially improves the documented ragged
+   path, with no primary workload slower;
 4. retains the improvement with automatic threading and improves, rather than
    further regresses, single-footprint latency;
 5. demonstrates the same direction on x86-64 and ARM64 before release;
@@ -95,7 +106,12 @@ justify owning delicate HEALPix geometry.
 
 ## Current Recommendation
 
-Proceed with the bounded center-specific traversal spike. Do not incrementally
-replace CDS utilities, expose another backend, or promise dependency removal.
-The C++ comparison shows enough headroom to investigate, while the failed center
-primitive shows that ownership alone is not an optimization.
+Absorb the ring geometry and fixed-capacity preparation into one private
+production module. Add the native paired-edge input path before optimizing
+secondary cases, then address ragged polygons and sparse candidates with
+separate measured fast paths only if they stay small. Do not expose an
+algorithm selector or preserve NESTED compatibility during `0.x`.
+
+CDS remains the correctness reference and shipping implementation until the
+admission gates pass. Ownership alone is still not the optimization: deleting
+the overlap/BMOC pipeline in favor of direct center work is.

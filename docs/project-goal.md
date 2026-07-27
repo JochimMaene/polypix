@@ -4,7 +4,7 @@
 
 Polypix will become the default permissively licensed Python engine for
 converting large batches of valid convex spherical footprints and paired-edge
-strips into deterministic, center-sampled HEALPix NESTED cells through a
+strips into deterministic, center-sampled HEALPix RING cells through a
 minimal NumPy-first API and leading measured end-to-end CPU performance.
 
 This document defines the direction of the project while it remains in `0.x`.
@@ -59,21 +59,23 @@ fractional-area, and approximate bounding-box modes are not part of the
 product.
 
 Coverage may be restricted to a sparse set of `candidate_cells`. Candidate
-inputs have set semantics and use the requested resolution and NESTED ordering.
+inputs have set semantics and use the requested resolution and RING ordering.
 The implementation may choose the fastest equivalent algorithm internally.
 
 ### Grid And Cell IDs
 
 HEALPix is the first and only committed grid. Polypix uses fixed-resolution
-NESTED ordering and calls the HEALPix order a `resolution`:
+RING ordering and calls the HEALPix order a `resolution`:
 
 ```text
 nside = 2 ** resolution
 ```
 
-Results contain standard HEALPix NESTED pixel indices. Polypix does not define
-a custom packed cell token, support RING indices, or mix resolutions in one
-result.
+Results contain standard HEALPix RING pixel indices. Polypix does not define a
+custom packed cell token, support NESTED indices, or mix resolutions in one
+result. RING earns its place because the center-only coverage kernel emits
+contiguous spans on HEALPix iso-latitude rings directly; converting every
+result to NESTED measurably penalizes the primary high-output workloads.
 
 HEALPix-first does not permanently rule out another discrete global grid. A
 second grid must first demonstrate a substantial user need or a material
@@ -86,7 +88,7 @@ that evidence exists.
 Every coverage operation returns one `Coverage`, including a single footprint.
 Its canonical representation is:
 
-- `cells`: one eager, flat array of standard NESTED indices;
+- `cells`: one eager, flat array of standard RING indices;
 - `offsets`: segment boundaries for the input footprints or strip intervals;
 - `resolution`: stored once for the result;
 - `counts`: derived from `offsets`.
@@ -243,7 +245,7 @@ The following are outside the committed product:
 - concave polygons, holes, multipolygons, or geometry repair;
 - coverage rules other than center inclusion;
 - implicit unions or aggregation;
-- RING or mixed-resolution results;
+- NESTED or mixed-resolution results;
 - MOCs, map operations, neighbors, hierarchy traversal, interpolation,
   spherical harmonics, FITS, or plotting;
 - distributed, streaming, GPU, CuPy, or JAX execution;

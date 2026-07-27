@@ -11,6 +11,9 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rayon::prelude::*;
 
+#[path = "../spikes/ring_kernel.rs"]
+mod ring_kernel_prototype;
+
 const MAX_RESOLUTION: u8 = 29;
 const MIN_AUTO_PARALLEL_FOOTPRINTS: usize = 256;
 const ZERO_NORM_EPSILON: f64 = 1.0e-15;
@@ -470,5 +473,6 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_cover, module)?)?;
     module.add_function(wrap_pyfunction!(_center, module)?)?;
     module.add_function(wrap_pyfunction!(_boundary_many, module)?)?;
+    ring_kernel_prototype::register(module)?;
     Ok(())
 }

@@ -85,6 +85,7 @@ zensical = "*"
 [tool.pixi.tasks]
 test = "python -m pytest -q tests"
 bench = "python -m pytest benchmarks --codspeed"
+ring-prototype = "maturin develop --release && python spikes/ring_kernel.py"
 wheel = "maturin build --release --out dist"
 docs-build = "zensical build --strict"
 docs-serve = "zensical serve"
