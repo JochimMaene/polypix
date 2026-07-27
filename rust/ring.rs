@@ -16,10 +16,11 @@ use crate::geometry::{
 };
 
 pub(crate) const MAX_RESOLUTION: u8 = 29;
-// Measurements on unrestricted small-footprint scans show item count predicts
-// the dispatch crossover better than resolution. Parallelism is consistently
-// beneficial from 2,048 independent items on supported hosts.
-const AUTO_PARALLEL_MIN_ITEMS: usize = 2048;
+// Scan dispatch combines fixed preparation work with a spherical-cap estimate
+// of cells visited. The constants retain the measured crossover for primary
+// small footprints while allowing a few expensive footprints to parallelize.
+const SCAN_PARALLEL_MIN_WORK: usize = 1 << 21;
+const SCAN_PREPARATION_WORK: usize = 1 << 10;
 // Candidate filtering is much cheaper per footprint than a complete scan.
 // Measurements show dispatch pays off only beyond roughly one million actual
 // z-band visits, which plan_candidates computes without another estimate.
@@ -33,7 +34,6 @@ pub(crate) struct Coverage {
     pub(crate) offsets: Vec<u64>,
 }
 
-#[derive(Clone, Copy)]
 struct Ring {
     start: u64,
     cells: u64,
@@ -42,7 +42,6 @@ struct Ring {
     radial: f64,
 }
 
-#[derive(Clone, Copy)]
 struct Quad {
     vertices: [Vec3; 4],
     edge_normals: [Vec3; 4],
@@ -259,7 +258,6 @@ fn ring_to_face_xy(cell: u64, nside: u64) -> (u8, i64, i64) {
         let index = longitude_index % nside;
         let bottom_left = index < (ring_index - nside + 1) / 2;
         let top_left = index < (3 * nside - ring_index + 1) / 2;
-        let mut wrapped = false;
         let face = match (bottom_left, top_left) {
             (false, true) => panel,
             (true, false) => 8 + panel,
@@ -267,8 +265,7 @@ fn ring_to_face_xy(cell: u64, nside: u64) -> (u8, i64, i64) {
             (false, false) => {
                 let face = 4 + (panel + 1) % 4;
                 if face == 4 {
-                    longitude_index -= 4 * nside - 1;
-                    wrapped = true;
+                    longitude_index -= 4 * nside;
                 }
                 face
             }
@@ -279,21 +276,11 @@ fn ring_to_face_xy(cell: u64, nside: u64) -> (u8, i64, i64) {
         let phase = (ring_index - nside) % 2;
         let face_phase = 2 * (face % 4) - (face_row % 2) + 1;
         let mut horizontal = 2 * longitude_index - phase - face_phase * nside;
-        if wrapped {
-            horizontal -= 1;
-        }
-        let mut x = (vertical + horizontal) / 2;
-        let mut y = (vertical - horizontal) / 2;
         // Face coordinates require vertical and horizontal to have matching
-        // parity. At wrapped equatorial panels the analytical horizontal term
-        // can land on the other parity; repair it before integer division so
-        // Rust's truncation toward zero cannot choose the neighboring face
-        // coordinate for a negative sum.
-        if vertical != x + y || horizontal != x - y {
-            horizontal += 1;
-            x = (vertical + horizontal) / 2;
-            y = (vertical - horizontal) / 2;
-        }
+        // parity before integer division.
+        horizontal += (vertical - horizontal) & 1;
+        let x = (vertical + horizontal) / 2;
+        let y = (vertical - horizontal) / 2;
         return (face as u8, x, y);
     }
 
@@ -491,6 +478,9 @@ fn cover_centers(
                     cells.push(ring.start + offset);
                 }
 
+                // Resynchronize every 64 steps: accumulated rotation drift
+                // stays below the 1e-14 containment tolerance while avoiding
+                // one sin_cos evaluation per tested center.
                 if offset < last as u64 && (offset - first + 1) & 63 == 0 {
                     let longitude = (offset as f64 + 1.0 + ring.shift) * step;
                     let (sine, cosine) = longitude.sin_cos();
@@ -670,14 +660,6 @@ fn plan_candidates(
     }
 }
 
-fn candidate_threads(plan: &CandidatePlan, threads: Option<usize>) -> Option<usize> {
-    if plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS {
-        threads
-    } else {
-        Some(1)
-    }
-}
-
 fn compute_candidate_chunk(
     footprints: &[PreparedFootprint],
     plan: &CandidatePlan,
@@ -742,8 +724,80 @@ fn merge_coverages(chunks: Vec<Coverage>) -> Coverage {
     coverage
 }
 
-fn automatic_parallel(item_count: usize) -> bool {
-    item_count >= AUTO_PARALLEL_MIN_ITEMS
+fn estimated_cap_cells(raw: &[f64], resolution: u8) -> usize {
+    let mut center = [0.0; 3];
+    for values in raw.chunks_exact(3) {
+        let Ok(vertex) = normalize([values[0], values[1], values[2]]) else {
+            return 0;
+        };
+        center[0] += vertex[0];
+        center[1] += vertex[1];
+        center[2] += vertex[2];
+    }
+    let Ok(center) = normalize(center) else {
+        return 0;
+    };
+    let mut minimum_cosine = 1.0_f64;
+    for values in raw.chunks_exact(3) {
+        let Ok(vertex) = normalize([values[0], values[1], values[2]]) else {
+            return 0;
+        };
+        minimum_cosine = minimum_cosine.min(dot(center, vertex));
+    }
+    let sphere_fraction = 0.5 * (1.0 - minimum_cosine).clamp(0.0, 2.0);
+    let cell_count = (12_u64 << (2 * resolution)) as f64;
+    (sphere_fraction * cell_count) as usize
+}
+
+fn scan_parallel_work(
+    vertices: &[f64],
+    offsets: &[u64],
+    resolution: u8,
+    threads: Option<usize>,
+) -> usize {
+    if threads == Some(1) || offsets.len() <= 2 {
+        return 0;
+    }
+    let item_count = offsets.len() - 1;
+    let mut work = item_count.saturating_mul(SCAN_PREPARATION_WORK);
+    if work >= SCAN_PARALLEL_MIN_WORK {
+        return work;
+    }
+    for index in 0..item_count {
+        let start = offsets[index] as usize * 3;
+        let end = offsets[index + 1] as usize * 3;
+        work = work.saturating_add(estimated_cap_cells(&vertices[start..end], resolution));
+        if work >= SCAN_PARALLEL_MIN_WORK {
+            break;
+        }
+    }
+    work
+}
+
+fn strip_parallel_work(
+    left: &[f64],
+    right: &[f64],
+    segment_count: usize,
+    resolution: u8,
+    threads: Option<usize>,
+) -> usize {
+    if threads == Some(1) || segment_count <= 1 {
+        return 0;
+    }
+    let mut work = segment_count.saturating_mul(SCAN_PREPARATION_WORK);
+    if work >= SCAN_PARALLEL_MIN_WORK {
+        return work;
+    }
+    for index in 0..segment_count {
+        work = work.saturating_add(estimated_cap_cells(
+            &strip_quad(left, right, index),
+            resolution,
+        ));
+        if work >= SCAN_PARALLEL_MIN_WORK {
+            break;
+        }
+    }
+    work
 }
 
 fn explicit_pool(worker_count: usize) -> Result<Arc<rayon::ThreadPool>, String> {
@@ -779,13 +833,14 @@ fn install_in_pool<T: Send>(
 
 fn dispatch_coverage(
     item_count: usize,
+    parallel_worthwhile: bool,
     threads: Option<usize>,
     chunk: impl Fn(std::ops::Range<usize>) -> Result<Coverage, String> + Send + Sync,
 ) -> Result<Coverage, String> {
     if item_count == 0 {
         return chunk(0..0);
     }
-    if threads == Some(1) || !automatic_parallel(item_count) {
+    if threads == Some(1) || !parallel_worthwhile {
         return chunk(0..item_count);
     }
     let (worker_count, use_global_pool) = match threads {
@@ -814,13 +869,16 @@ fn dispatch_coverage(
         ranges
             .par_iter()
             .map(|range| chunk(range.clone()))
-            .collect::<Result<Vec<_>, _>>()
+            .collect::<Vec<_>>()
     };
     let chunks = if use_global_pool {
-        compute()?
+        compute()
     } else {
-        install_in_pool(worker_count, compute)??
+        install_in_pool(worker_count, compute)?
     };
+    // Rayon preserves indexed collection order. Resolve errors afterward so
+    // multiple invalid chunks always report the lowest input range.
+    let chunks = chunks.into_iter().collect::<Result<Vec<_>, _>>()?;
     Ok(merge_coverages(chunks))
 }
 
@@ -878,19 +936,28 @@ fn compute_mixed_coverage(
             })
             .collect::<Result<Vec<_>, _>>()?;
         let plan = plan_candidates(&footprints, candidates, resolution);
-        return dispatch_coverage(polygon_count, candidate_threads(&plan, threads), |range| {
-            Ok(compute_candidate_chunk(
-                &footprints,
-                &plan,
-                candidates,
-                range,
-                resolution,
-            ))
-        });
+        return dispatch_coverage(
+            polygon_count,
+            plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS,
+            threads,
+            |range| {
+                Ok(compute_candidate_chunk(
+                    &footprints,
+                    &plan,
+                    candidates,
+                    range,
+                    resolution,
+                ))
+            },
+        );
     }
-    dispatch_coverage(polygon_count, threads, |range| {
-        compute_mixed_chunk(vertices, offsets, range, resolution)
-    })
+    let parallel_work = scan_parallel_work(vertices, offsets, resolution, threads);
+    dispatch_coverage(
+        polygon_count,
+        parallel_work >= SCAN_PARALLEL_MIN_WORK,
+        threads,
+        |range| compute_mixed_chunk(vertices, offsets, range, resolution),
+    )
 }
 
 pub(crate) fn cover(
@@ -990,19 +1057,28 @@ pub(crate) fn cover_strip(
             .map(|index| prepare_strip_footprint(left, right, index))
             .collect::<Result<Vec<_>, _>>()?;
         let plan = plan_candidates(&footprints, candidates, resolution);
-        return dispatch_coverage(segment_count, candidate_threads(&plan, threads), |range| {
-            Ok(compute_candidate_chunk(
-                &footprints,
-                &plan,
-                candidates,
-                range,
-                resolution,
-            ))
-        });
+        return dispatch_coverage(
+            segment_count,
+            plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS,
+            threads,
+            |range| {
+                Ok(compute_candidate_chunk(
+                    &footprints,
+                    &plan,
+                    candidates,
+                    range,
+                    resolution,
+                ))
+            },
+        );
     }
-    dispatch_coverage(segment_count, threads, |range| {
-        compute_strip_chunk(left, right, range, resolution)
-    })
+    let parallel_work = strip_parallel_work(left, right, segment_count, resolution, threads);
+    dispatch_coverage(
+        segment_count,
+        parallel_work >= SCAN_PARALLEL_MIN_WORK,
+        threads,
+        |range| compute_strip_chunk(left, right, range, resolution),
+    )
 }
 
 #[cfg(test)]

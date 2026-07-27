@@ -11,7 +11,6 @@ const VALIDATION_TRIPLE_EPSILON: f64 = 0.5 * f64::EPSILON;
 
 pub(crate) type Vec3 = [f64; 3];
 
-#[derive(Clone)]
 pub(crate) struct Polygon {
     pub(crate) vertices: Vec<Vec3>,
     pub(crate) edge_normals: Vec<Vec3>,

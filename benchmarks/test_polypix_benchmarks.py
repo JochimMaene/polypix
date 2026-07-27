@@ -15,6 +15,26 @@ def _lonlat_to_xyz(lon_deg: float, lat_deg: float) -> tuple[float, float, float]
     return cos_lat * math.cos(lon), cos_lat * math.sin(lon), math.sin(lat)
 
 
+def _regular_spherical_quad(
+    axis: tuple[float, float, float], radius: float
+) -> np.ndarray:
+    center = np.asarray(axis, dtype=np.float64)
+    center /= np.linalg.norm(center)
+    seed = (
+        np.asarray([1.0, 0.0, 0.0])
+        if abs(center[2]) > 0.9
+        else np.asarray([0.0, 0.0, 1.0])
+    )
+    tangent_x = np.cross(seed, center)
+    tangent_x /= np.linalg.norm(tangent_x)
+    tangent_y = np.cross(center, tangent_x)
+    angles = np.arange(4) * (math.pi / 2.0)
+    return math.cos(radius) * center + math.sin(radius) * (
+        np.cos(angles)[:, np.newaxis] * tangent_x
+        + np.sin(angles)[:, np.newaxis] * tangent_y
+    )
+
+
 @pytest.fixture(scope="module")
 def footprints() -> np.ndarray:
     rows: list[list[tuple[float, float, float]]] = []
@@ -46,6 +66,19 @@ def large_footprints() -> np.ndarray:
             for lat in latitudes
             for lon in longitudes
         ],
+        dtype=np.float64,
+    )
+
+
+@pytest.fixture(scope="module")
+def few_large_footprints() -> np.ndarray:
+    axes = (
+        _lonlat_to_xyz(float(longitude), float(latitude))
+        for latitude in np.linspace(-50.0, 50.0, 8)
+        for longitude in np.linspace(-160.0, 160.0, 8)
+    )
+    return np.asarray(
+        [_regular_spherical_quad(axis, 0.3) for axis in axes],
         dtype=np.float64,
     )
 
@@ -129,6 +162,22 @@ def test_cover_footprint_automatic_parallel(
     coverage = benchmark(px.cover_footprint, large_footprints, resolution)
 
     assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
+
+
+@pytest.mark.parametrize("threads", [1, None], ids=["serial", "automatic"])
+def test_cover_few_large_footprints(
+    benchmark,
+    few_large_footprints: np.ndarray,
+    threads: int | None,
+) -> None:
+    coverage = benchmark(
+        px.cover_footprint,
+        few_large_footprints,
+        10,
+        threads=threads,
+    )
+
+    assert coverage.offsets.shape == (few_large_footprints.shape[0] + 1,)
 
 
 @pytest.mark.parametrize("resolution", [6, 12], ids=lambda value: f"resolution_{value}")

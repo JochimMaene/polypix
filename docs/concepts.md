@@ -124,3 +124,9 @@ automatic = px.cover_footprint(batch, resolution=9)
 reusable worker-pool maximum, capped by the host. Calls below the measured
 parallel crossover remain sequential without initializing a pool. Results are
 identical across thread settings on the same build and platform.
+
+Parallel execution builds ordered per-worker chunks and then concatenates
+them. While merging a very large materialized result, peak native memory can
+approach twice the final `cells` array. Use `threads=1` when that temporary
+memory is more important than throughput. A range-compressed result remains a
+documented future experiment rather than added API complexity.

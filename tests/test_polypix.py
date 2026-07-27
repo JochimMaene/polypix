@@ -712,10 +712,10 @@ class PolypixTests(unittest.TestCase):
                     independent_cover_xyz(polygon, resolution),
                 )
 
-    def test_sub_meter_footprint_is_valid_at_resolution_29(self) -> None:
+    def test_centimetre_scale_footprint_is_valid_at_resolution_29(self) -> None:
         polygon = regular_spherical_polygon(
             np.asarray([1.0, 0.0, 0.0]),
-            3.0e-8,
+            1.0e-8,
             4,
         )
         coverage = px.cover_footprint(
@@ -991,6 +991,19 @@ class PolypixTests(unittest.TestCase):
         for threads in (1, 4, None):
             with self.subTest(threads=threads):
                 with self.assertRaisesRegex(ValueError, r"footprints_xyz\[3000\]"):
+                    px.cover_footprint(batch, resolution=3, threads=threads)
+
+    def test_parallel_batch_reports_the_first_invalid_footprint(self) -> None:
+        valid = vectors([(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)])
+        invalid = valid.copy()
+        invalid[2] = invalid[1]
+        batch = np.repeat(valid[np.newaxis, :, :], 4096, axis=0)
+        batch[10] = invalid
+        batch[3000] = invalid
+
+        for threads in (4, None):
+            with self.subTest(threads=threads):
+                with self.assertRaisesRegex(ValueError, r"footprints_xyz\[10\]"):
                     px.cover_footprint(batch, resolution=3, threads=threads)
 
     def test_cover_accepts_empty_batches(self) -> None:
