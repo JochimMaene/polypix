@@ -10,6 +10,7 @@ publish = false
 include = [
   "/Cargo.lock",
   "/Cargo.toml",
+  "/CHANGELOG.md",
   "/LICENSE",
   "/README.md",
   "/THIRD_PARTY_NOTICES.md",

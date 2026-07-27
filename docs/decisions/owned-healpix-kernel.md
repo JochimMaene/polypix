@@ -1,34 +1,26 @@
-# Owned HEALPix Kernel Evaluation
+# Owned HEALPix Kernel
 
-Status: **accepted; owned RING-first kernel replaces CDS**
+Status: **accepted; owned RING-first production kernel**
 
 ## Decision
 
-The direct RING scan prototype demonstrates that a Polypix-owned center-only
-kernel can produce order-of-magnitude improvements on the primary dense
-quadrilateral and strip workloads. This justifies developing the smallest
-production kernel needed by the target API:
+Polypix adopted an owned, center-only HEALPix RING kernel after a direct scan
+prototype materially improved the primary dense quadrilateral, ragged, and
+strip workloads. The production kernel implements only:
 
 - fixed-resolution RING center coordinates;
 - four boundary vertices;
 - center-sampled coverage of validated convex spherical polygons;
 - direct filtering of explicit candidate cells.
 
-There will be no NESTED support, MOC API, neighbour operations, projections,
-general polygon library, backend selector, or public algorithm controls.
+NESTED support, MOCs, neighbour operations, projections, a general polygon
+library, backend selection, and public algorithm controls remain outside the
+project.
 
-The owned implementation is now the production implementation. Release remains
-gated by the existing multi-platform wheel and smoke-test workflows.
+## Context
 
-## Why Reconsider
+The unreleased CDS adapter prompted the kernel experiment for two reasons:
 
-The original CDS decision explicitly allowed reconsideration when performance
-or dependency burden became material. Both now have evidence:
-
-- The symmetric v0.2.1 comparison shows that the integrated Rust/CDS path is
-  1.23× slower for 4,096 dense resolution-9 footprints and about 2× slower for
-  one resolution-9 footprint on the measured Intel host. It leads other primary
-  batch paths, so the result is mixed rather than a general regression.
 - Polypix needs center membership, while CDS first constructs an exact
   polygon-overlap BMOC and Polypix then center-filters partial leaves. A
   center-specific traversal could avoid overlap work and the intermediate BMOC.
@@ -36,8 +28,6 @@ or dependency burden became material. Both now have evidence:
   dependency subtree contains 53 uniquely named crates, including functionality
   for images, compression, dates, maps, and serialization. LTO keeps the wheel
   small, but source builds and supply-chain review still carry this breadth.
-
-These facts justify a spike. They do not prove that a new kernel will be faster.
 
 ## Rejected Alternatives
 
@@ -52,25 +42,16 @@ The BSD-3-Clause `healpix_bare` subset provides cell conversion but not polygon
 coverage. It would leave Polypix responsible for traversal while adding a
 runtime dependency, so it remains suitable only as a possible external oracle.
 
-## Small Primitive Experiment
-
 A clean internal NESTED-to-XYZ center implementation was temporarily substituted
 for `cdshealpix::Layer::center`. It retained identical scorecard memberships and
-passed the existing suite, but repeated sequential scorecard runs did not
-demonstrate an improvement and several batch timings regressed. Host-frequency
-variance made the precise size unsuitable as a claim; the absence of a
-repeatable win was enough to remove the code.
+passed the suite, but did not demonstrate a repeatable improvement and several
+batch timings regressed. It was removed. The successful direction eliminated
+the overlap/BMOC/center-filter pipeline rather than replacing isolated mapping
+primitives.
 
-This rejects incremental reimplementation of isolated mapping primitives as a
-performance strategy. CDS already has optimized Morton decoding. Any credible
-win must come from eliminating the overlap/BMOC/center-filter pipeline with a
-center-specific traversal, not from accumulating replacement utilities one by
-one.
+## Implementation
 
-## Prototype Outcome
-
-The successful prototype did not traverse NESTED cells. It exploited the
-geometry of the requested center rule directly:
+The production traversal:
 
 1. bound each validated footprint across the `4 * nside - 1` HEALPix
    iso-latitude rings;
@@ -80,38 +61,34 @@ geometry of the requested center rule directly:
 5. fuse fixed-quadrilateral preparation and reuse output storage;
 6. distribute coarse independent chunks through Rayon.
 
-On the Intel i7-1165G7 benchmark host, a representative 21-repeat
-single-thread run measured 10.82x for 4,096 resolution-6 quadrilaterals, 16.70x
-for the same batch at resolution 9, and 17.05x for 4,096 resolution-9 strip
-quadrilaterals. Membership matched the CDS-backed kernel. Ragged 3--6 vertex
-polygons reached 7.55x and one-footprint latency 6.15x, so a universal 10x claim
-is not yet justified. Commit `a8cd3cc` preserves the reproducible prototype
-state used for these measurements.
-
 RING is part of the architectural result rather than a second supported
 ordering. Direct ring spans are the source of the speedup, while conversion of
 materialized results to NESTED consumes a meaningful share of high-output
 calls. Supporting both would add code and choices without helping the primary
 path.
 
-## Admission Gates And Evidence
+Internal prototype comparisons were used to decide whether owning the kernel
+earned its maintenance cost. They are deliberately not published as product
+speed claims because the removed internal CDS adapter is not a reproducible
+public alternative. Public comparative claims require the separate benchmark
+repository described in the [project goal](../project-goal.md).
 
-The owned kernel was admitted after it:
+## Admission Evidence
 
-1. has zero membership differences against brute-force cell-center enumeration
+The owned kernel was admitted after the evidence showed:
+
+1. zero membership differences against brute-force cell-center enumeration
    across all cells at tractable resolutions, the adversarial corpus, and a
    much larger fixed-seed randomized corpus;
-2. agrees with independent HEALPix center and boundary fixtures through
+2. agreement with independent HEALPix center and boundary fixtures through
    resolution 29, including faces, seams, and poles;
-3. preserves the order-of-magnitude direction on the primary fixed-quad and
-   strip public-call workloads and materially improves the documented ragged
-   path, with no primary workload slower;
-4. retains the improvement with automatic threading and improves, rather than
-   further regresses, single-footprint latency;
-5. delegates x86-64 and ARM64 release confirmation to the existing wheel smoke
-   matrix before publication;
-6. materially reduces the locked dependency graph and clean source-build cost;
-7. remains a private, focused module whose maintenance burden is proportionate
+3. material improvements on the primary fixed-quad, strip, and documented
+   ragged public-call workloads, with no primary workload slower;
+4. retained improvements with automatic threading and improved, rather than
+   further regressed, single-footprint latency;
+5. an x86-64 and ARM64 wheel smoke matrix as a release gate;
+6. a materially smaller locked dependency graph and clean source-build cost;
+7. a private, focused kernel whose maintenance burden is proportionate
    to the measured gain.
 
 Performance thresholds are deliberately material. A marginal result does not
@@ -119,9 +96,9 @@ justify owning delicate HEALPix geometry.
 
 ## Result
 
-The ring geometry, fixed-quadrilateral predicate, paired-edge strip path,
-ragged polygon path, z-indexed sparse candidate filtering, centers, and
-boundaries now live in one private production module. Coverage uses one
+The private production kernel owns ring geometry, the fixed-quadrilateral
+predicate, paired-edge strip and ragged polygon paths, z-indexed sparse
+candidate filtering, centers, and boundaries. Coverage uses one
 center-scan traversal; the four-edge predicate remains unrolled because its
 measured gain is material. Independent fixtures cover polar, equatorial, seam,
 and resolution-29 geometry. CDS was removed from the locked graph. There is no
@@ -141,6 +118,10 @@ The subsequent face-coordinate transform is a small adaptation of
 Astrometry.net's BSD-3-Clause HEALPix mapping and is identified in the source
 and `THIRD_PARTY_NOTICES.md`. Keeping these origins explicit is part of the
 Apache-2.0 release evidence.
+
+Repository history through the 0.3 preparation branch was reviewed and contains
+one contributor under two recorded email identities, both belonging to Jochim
+Maene. No third-party contributor grant is required for the relicensing.
 
 ## Numerical Audit
 

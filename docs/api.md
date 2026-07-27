@@ -29,6 +29,9 @@ coverage.cells[coverage.offsets[i] : coverage.offsets[i + 1]]
 
 Segments contain no duplicate cells and preserve input item order. Their
 internal deterministic traversal order is intentionally not an API promise.
+`Coverage` instances use identity equality: compare `cells`, `offsets`, and
+`resolution` explicitly when value equality is needed. This avoids an implicit
+linear scan of potentially very large arrays.
 
 ## cover_footprint
 
@@ -137,6 +140,10 @@ For `N` paired samples, the result therefore contains `N - 1` segments.
 Polypix does not merge those segments. `candidate_cells` and `threads` have the
 same meaning as in `cover_footprint()`.
 
+Consecutive paired samples must describe a nonzero-area segment. Repeating both
+edge samples at the same step is rejected; remove stationary duplicate samples
+upstream before calling `cover_strip()`.
+
 ## centers
 
 ```python
@@ -176,4 +183,5 @@ great-circle edge are accepted within floating-point precision.
 For `cover_strip()`, consecutive samples on each edge are joined by the same
 minor arcs. Callers must sample physical swaths densely enough that these arcs
 are the intended boundary. Near-180-degree steps can bow toward a pole, and a
-step beyond 180 degrees selects the opposite shorter arc.
+step beyond 180 degrees selects the opposite shorter arc. Repeating both paired
+samples creates a zero-area segment and is rejected.

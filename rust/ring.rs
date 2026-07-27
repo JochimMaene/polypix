@@ -23,9 +23,13 @@ pub(crate) const MAX_RESOLUTION: u8 = 29;
 const SCAN_PARALLEL_MIN_WORK: usize = 1 << 21;
 const SCAN_PREPARATION_WORK: usize = 1 << 10;
 // Candidate filtering is much cheaper per footprint than a complete scan.
-// Measurements show dispatch pays off only beyond roughly one million actual
-// z-band visits, which plan_candidates computes without another estimate.
+// Preparation has the same fixed geometry cost as a scan; smaller batches use
+// their exact z-band visits before deciding whether to initialize a pool.
 const CANDIDATE_PARALLEL_MIN_VISITS: usize = 1 << 20;
+const CANDIDATE_PREPARATION_WORK: usize = 1 << 8;
+const CANDIDATE_RANGE_PROBE_WORK: usize = 1 << 5;
+const CANDIDATE_CENTER_CACHE_REUSE: usize = 3;
+const CANDIDATE_CENTER_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
 const ROTATION_RESYNC_STEPS: u64 = 64;
 const INDEX_UNCERTAINTY_ULPS: f64 = 128.0;
 const LONGITUDE_BOUNDS_EPSILON: f64 = 1.0e-14;
@@ -204,6 +208,7 @@ fn integer_sqrt(value: u64) -> u64 {
 }
 
 fn ring_start(nside: u64, ring: u64) -> u64 {
+    debug_assert!(ring >= 1);
     if ring < nside {
         2 * ring * (ring - 1)
     } else if ring <= 3 * nside {
@@ -643,8 +648,8 @@ fn candidate_range(
 
 struct CandidatePlan {
     ranges: Vec<Range<usize>>,
-    centers: Option<Vec<Vec3>>,
     center_start: usize,
+    center_end: usize,
     total_visits: usize,
 }
 
@@ -652,41 +657,72 @@ fn plan_candidates(
     footprints: &[PreparedFootprint],
     candidates: &[u64],
     resolution: u8,
+    parallel: bool,
 ) -> CandidatePlan {
-    let mut total_visits = 0_usize;
-    let ranges = footprints
+    let candidate_range_for = |footprint: &PreparedFootprint| {
+        let (minimum_z, maximum_z) = footprint.z_bounds();
+        candidate_range(candidates, resolution, minimum_z, maximum_z)
+    };
+    let ranges = if parallel {
+        footprints
+            .par_iter()
+            .map(candidate_range_for)
+            .collect::<Vec<_>>()
+    } else {
+        footprints
+            .iter()
+            .map(candidate_range_for)
+            .collect::<Vec<_>>()
+    };
+    let total_visits = ranges
         .iter()
-        .map(|footprint| {
-            let (minimum_z, maximum_z) = footprint.z_bounds();
-            let range = candidate_range(candidates, resolution, minimum_z, maximum_z);
-            total_visits = total_visits.saturating_add(range.len());
-            range
-        })
-        .collect::<Vec<_>>();
+        .fold(0_usize, |total, range| total.saturating_add(range.len()));
     let center_start = ranges.iter().map(|range| range.start).min().unwrap_or(0);
     let center_end = ranges.iter().map(|range| range.end).max().unwrap_or(0);
-    let center_span = center_end.saturating_sub(center_start);
-    // Without a cache each visit reconstructs one center. Cache only the
-    // bounding envelope visited by the batch, and only when reuse pays for
-    // materializing that envelope once.
-    let centers = (total_visits > center_span && center_span > 0).then(|| {
-        candidates[center_start..center_end]
+    CandidatePlan {
+        ranges,
+        center_start,
+        center_end,
+        total_visits,
+    }
+}
+
+fn candidate_cache_range(plan: &CandidatePlan) -> Option<Range<usize>> {
+    let center_span = plan.center_end.saturating_sub(plan.center_start);
+    let maximum_centers = CANDIDATE_CENTER_CACHE_MAX_BYTES / std::mem::size_of::<Vec3>();
+    (center_span > 0
+        && center_span <= maximum_centers
+        && plan.total_visits > center_span.saturating_mul(CANDIDATE_CENTER_CACHE_REUSE))
+    .then_some(plan.center_start..plan.center_end)
+}
+
+fn candidate_centers(
+    plan: &CandidatePlan,
+    candidates: &[u64],
+    resolution: u8,
+    parallel: bool,
+) -> Option<Vec<Vec3>> {
+    let range = candidate_cache_range(plan)?;
+    let cells = &candidates[range];
+    Some(if parallel {
+        cells
+            .par_iter()
+            .copied()
+            .map(|cell| center(cell, resolution))
+            .collect()
+    } else {
+        cells
             .iter()
             .copied()
             .map(|cell| center(cell, resolution))
             .collect()
-    });
-    CandidatePlan {
-        ranges,
-        centers,
-        center_start,
-        total_visits,
-    }
+    })
 }
 
 fn compute_candidate_chunk(
     footprints: &[PreparedFootprint],
     plan: &CandidatePlan,
+    centers: Option<&[Vec3]>,
     candidates: &[u64],
     range: Range<usize>,
     resolution: u8,
@@ -700,7 +736,7 @@ fn compute_candidate_chunk(
     coverage.offsets.push(0);
     for index in range {
         let candidate_range = plan.ranges[index].clone();
-        if let Some(centers) = plan.centers.as_ref() {
+        if let Some(centers) = centers {
             coverage
                 .cells
                 .extend(candidate_range.filter_map(|candidate_index| {
@@ -837,20 +873,16 @@ fn install_in_pool<T: Send>(
     Ok(explicit_pool(worker_count)?.install(operation))
 }
 
-fn dispatch_coverage(
+fn run_with_parallelism<T: Send>(
     item_count: usize,
     parallel_worthwhile: bool,
     threads: Option<usize>,
-    chunk: impl Fn(std::ops::Range<usize>) -> Result<Coverage, String> + Send + Sync,
-) -> Result<Coverage, String> {
-    if item_count == 0 {
-        return chunk(0..0);
-    }
-    if threads == Some(1) || !parallel_worthwhile {
-        return chunk(0..item_count);
+    operation: impl FnOnce(bool) -> T + Send,
+) -> Result<T, String> {
+    if item_count <= 1 || threads == Some(1) || !parallel_worthwhile {
+        return Ok(operation(false));
     }
     let (worker_count, use_global_pool) = match threads {
-        Some(1) => unreachable!("handled above"),
         Some(requested) => {
             let available = std::thread::available_parallelism()
                 .map(|count| count.get())
@@ -862,30 +894,49 @@ fn dispatch_coverage(
         None => (rayon::current_num_threads().min(item_count), true),
     };
     if worker_count <= 1 {
+        return Ok(operation(false));
+    }
+    if use_global_pool {
+        Ok(operation(true))
+    } else {
+        install_in_pool(worker_count, || operation(true))
+    }
+}
+
+fn compute_coverage_chunks(
+    item_count: usize,
+    parallel: bool,
+    chunk: impl Fn(std::ops::Range<usize>) -> Result<Coverage, String> + Send + Sync,
+) -> Result<Coverage, String> {
+    if !parallel || item_count == 0 {
         return chunk(0..item_count);
     }
-
+    let worker_count = rayon::current_num_threads().min(item_count);
     let active_workers = worker_count.min(item_count);
     let chunk_size = item_count.div_ceil(active_workers.saturating_mul(4)).max(1);
     let ranges = (0..item_count)
         .step_by(chunk_size)
         .map(|start| start..(start + chunk_size).min(item_count))
         .collect::<Vec<_>>();
-    let compute = || {
-        ranges
-            .par_iter()
-            .map(|range| chunk(range.clone()))
-            .collect::<Vec<_>>()
-    };
-    let chunks = if use_global_pool {
-        compute()
-    } else {
-        install_in_pool(worker_count, compute)?
-    };
+    let chunks = ranges
+        .par_iter()
+        .map(|range| chunk(range.clone()))
+        .collect::<Vec<_>>();
     // Rayon preserves indexed collection order. Resolve errors afterward so
     // multiple invalid chunks always report the lowest input range.
     let chunks = chunks.into_iter().collect::<Result<Vec<_>, _>>()?;
     Ok(merge_coverages(chunks))
+}
+
+fn dispatch_coverage(
+    item_count: usize,
+    parallel_worthwhile: bool,
+    threads: Option<usize>,
+    chunk: impl Fn(std::ops::Range<usize>) -> Result<Coverage, String> + Send + Sync,
+) -> Result<Coverage, String> {
+    run_with_parallelism(item_count, parallel_worthwhile, threads, |parallel| {
+        compute_coverage_chunks(item_count, parallel, chunk)
+    })?
 }
 
 fn expected_cells_per_footprint(resolution: u8) -> usize {
@@ -899,26 +950,62 @@ fn compute_candidate_coverage(
     candidates: &[u64],
     resolution: u8,
     threads: Option<usize>,
-    prepare: impl Fn(usize) -> Result<PreparedFootprint, String>,
+    prepare: impl Fn(usize) -> Result<PreparedFootprint, String> + Send + Sync,
 ) -> Result<Coverage, String> {
-    let footprints = (0..item_count)
-        .map(prepare)
-        .collect::<Result<Vec<_>, _>>()?;
-    let plan = plan_candidates(&footprints, candidates, resolution);
-    dispatch_coverage(
-        item_count,
-        plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS,
-        threads,
-        |range| {
+    let prepare_all = |parallel| {
+        let prepared = if parallel {
+            (0..item_count)
+                .into_par_iter()
+                .map(&prepare)
+                .collect::<Vec<_>>()
+        } else {
+            (0..item_count).map(&prepare).collect::<Vec<_>>()
+        };
+        // Resolve errors after the indexed collection so the first invalid
+        // footprint is stable across thread counts.
+        prepared.into_iter().collect::<Result<Vec<_>, _>>()
+    };
+    let compute_planned = |footprints: &[PreparedFootprint], plan: &CandidatePlan, parallel| {
+        let centers = candidate_centers(plan, candidates, resolution, parallel);
+        compute_coverage_chunks(item_count, parallel, |range| {
             Ok(compute_candidate_chunk(
-                &footprints,
-                &plan,
+                footprints,
+                plan,
+                centers.as_deref(),
                 candidates,
                 range,
                 resolution,
             ))
-        },
-    )
+        })
+    };
+    // Planning performs two binary searches per footprint. This proxy tracks
+    // their logarithmic cost without scanning candidates or initializing a
+    // pool; the exact visit count remains the fallback for smaller batches.
+    let range_probe_count = if candidates.len() > 1 {
+        candidates.len().ilog2() as usize + 1
+    } else {
+        0
+    };
+    let preparation_work = item_count.saturating_mul(
+        CANDIDATE_PREPARATION_WORK
+            .saturating_add(range_probe_count.saturating_mul(CANDIDATE_RANGE_PROBE_WORK)),
+    );
+    if threads != Some(1) && preparation_work >= CANDIDATE_PARALLEL_MIN_VISITS {
+        return run_with_parallelism(item_count, true, threads, |parallel| {
+            let footprints = prepare_all(parallel)?;
+            let plan = plan_candidates(&footprints, candidates, resolution, parallel);
+            compute_planned(&footprints, &plan, parallel)
+        })?;
+    }
+
+    let footprints = prepare_all(false)?;
+    let plan = plan_candidates(&footprints, candidates, resolution, false);
+    run_with_parallelism(
+        item_count,
+        plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS,
+        threads,
+        |parallel| compute_planned(&footprints, &plan, parallel),
+    )?
 }
 
 fn compute_mixed_chunk(
@@ -1099,8 +1186,9 @@ pub(crate) fn cover_strip(
 #[cfg(test)]
 mod tests {
     use super::{
-        integer_sqrt, ring_info, ring_of_cell, ring_start, ring_to_face_xy, ROTATION_RESYNC_STEPS,
-        TAU,
+        candidate_cache_range, integer_sqrt, ring_info, ring_of_cell, ring_start, ring_to_face_xy,
+        CandidatePlan, CANDIDATE_CENTER_CACHE_MAX_BYTES, CANDIDATE_CENTER_CACHE_REUSE,
+        ROTATION_RESYNC_STEPS, TAU,
     };
     use crate::geometry::CONTAINMENT_EPSILON;
 
@@ -1126,6 +1214,24 @@ mod tests {
                 assert_eq!(ring_of_cell(next_start - 1, nside), ring);
             }
         }
+    }
+
+    #[test]
+    fn candidate_cache_requires_reuse_and_respects_the_memory_budget() {
+        let maximum_centers = CANDIDATE_CENTER_CACHE_MAX_BYTES / std::mem::size_of::<super::Vec3>();
+        let plan = |center_end, total_visits| CandidatePlan {
+            ranges: Vec::new(),
+            center_start: 0,
+            center_end,
+            total_visits,
+        };
+
+        assert!(candidate_cache_range(&plan(100, 100 * CANDIDATE_CENTER_CACHE_REUSE)).is_none());
+        assert_eq!(
+            candidate_cache_range(&plan(100, 100 * CANDIDATE_CENTER_CACHE_REUSE + 1)),
+            Some(0..100)
+        );
+        assert!(candidate_cache_range(&plan(maximum_centers + 1, usize::MAX)).is_none());
     }
 
     #[test]

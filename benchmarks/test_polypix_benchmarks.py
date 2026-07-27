@@ -251,16 +251,19 @@ def test_cover_footprint_with_large_sparse_candidate_set(
     assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
 
 
-def test_cover_footprint_with_candidates_automatic_parallel(
+@pytest.mark.parametrize("threads", [1, None], ids=["serial", "automatic"])
+def test_cover_footprint_with_candidates_parallel_scaling(
     benchmark,
     large_footprints: np.ndarray,
-    large_sparse_resolution_12_cells: np.ndarray,
+    multi_million_sorted_resolution_12_cells: np.ndarray,
+    threads: int | None,
 ) -> None:
     coverage = benchmark(
         px.cover_footprint,
         large_footprints,
         12,
-        candidate_cells=large_sparse_resolution_12_cells,
+        candidate_cells=multi_million_sorted_resolution_12_cells,
+        threads=threads,
     )
 
     assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)

@@ -160,6 +160,11 @@ class PolypixTests(unittest.TestCase):
             expected,
             strict=True,
         ):
+            self.assertEqual(
+                actual_segment.size,
+                np.unique(actual_segment).size,
+                "coverage segment contains duplicate cells",
+            )
             self.assertCellsEqual(actual_segment, expected_segment)
 
     def test_centers_match_independent_ring_equations_through_resolution_6(
@@ -820,6 +825,32 @@ class PolypixTests(unittest.TestCase):
         for actual in (parallel, automatic):
             np.testing.assert_array_equal(actual.cells, single_threaded.cells)
             np.testing.assert_array_equal(actual.offsets, single_threaded.offsets)
+
+    def test_strip_candidate_thread_counts_are_deterministic(self) -> None:
+        latitudes = np.linspace(-50.0, 50.0, 2049)
+        left = np.asarray([lonlat_to_vec(-4.0, value) for value in latitudes])
+        right = np.asarray([lonlat_to_vec(4.0, value) for value in latitudes])
+        full = px.cover_strip(left, right, resolution=5, threads=1)
+        candidates = np.unique(full.cells[::2])
+
+        single_threaded = px.cover_strip(
+            left,
+            right,
+            resolution=5,
+            candidate_cells=candidates,
+            threads=1,
+        )
+        for threads in (4, None):
+            with self.subTest(threads=threads):
+                actual = px.cover_strip(
+                    left,
+                    right,
+                    resolution=5,
+                    candidate_cells=candidates,
+                    threads=threads,
+                )
+                np.testing.assert_array_equal(actual.cells, single_threaded.cells)
+                np.testing.assert_array_equal(actual.offsets, single_threaded.offsets)
 
     def test_thread_count_must_be_a_positive_integer(self) -> None:
         polygon = vectors([(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)])

@@ -78,8 +78,10 @@ pixi run --environment bench bench
 ```
 
 Cross-library benchmarks and their optional dependencies intentionally live in
-a separate comparison repository. This repository keeps only focused CodSpeed
-regression benchmarks and product correctness tests.
+a separate comparison repository. That repository is not public yet. Until it
+is linked here, this repository makes no public cross-library performance
+claim; it keeps only focused CodSpeed regression benchmarks and product
+correctness tests.
 
 The broad independent boundary fixtures can be regenerated in a temporary
 environment containing `healpy`:

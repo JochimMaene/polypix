@@ -27,7 +27,7 @@ _FOOTPRINT_SHAPE_ERROR = (
 
 @dataclass(frozen=True, eq=False)
 class Coverage:
-    """Segmented HEALPix RING coverage for one footprint or a batch."""
+    """Segmented HEALPix RING coverage using identity, not array-value, equality."""
 
     cells: npt.NDArray[np.uint64]
     offsets: npt.NDArray[np.uint64]
@@ -263,6 +263,7 @@ def cover_strip(
     """Cover the quadrilateral segments between two sampled spherical edges.
 
     Each output segment covers ``[left[i], right[i], right[i+1], left[i+1]]``.
+    Repeated paired samples create a zero-area segment and are rejected.
     Inputs, resolution, candidates, threading, return value, and errors follow
     :func:`cover_footprint`.
     """

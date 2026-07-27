@@ -77,6 +77,10 @@ opposite shorter arc, and an exactly ambiguous segment is rejected. Polypix
 cannot distinguish intentional minor-arc geometry from an undersampled
 trajectory.
 
+Repeated paired samples produce a zero-area strip segment and are rejected.
+Stationary or resampled inputs should remove consecutive duplicate sample pairs
+before calling `cover_strip()`.
+
 Both return one `Coverage` with flat cells and offsets:
 
 ```text
@@ -111,8 +115,8 @@ strategy-sensitive.
 
 When many footprints revisit candidates, the kernel may cache center vectors
 for the bounding candidate span used by that batch. This temporary cache costs
-24 bytes per candidate in the span and is created only when estimated reuse
-outweighs reconstruction.
+24 bytes per candidate in the span. It is created only when estimated reuse is
+substantial and is capped at 64 MiB; larger spans use on-demand reconstruction.
 
 Complete scans use one conservative longitude bound for each footprint. This
 is fast for the primary workload of small footprints and short strip segments,
@@ -139,5 +143,6 @@ identical across thread settings on the same build and platform.
 Parallel execution builds ordered per-worker chunks and then concatenates
 them. While merging a very large materialized result, peak native memory can
 approach twice the final `cells` array. Use `threads=1` when that temporary
-memory is more important than throughput. A range-compressed result remains a
-documented future experiment rather than added API complexity.
+memory is more important than throughput. Candidate filtering can additionally
+use the bounded center cache described above. A range-compressed result remains
+a documented future experiment rather than added API complexity.

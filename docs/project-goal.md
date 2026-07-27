@@ -165,7 +165,9 @@ construction.
 Performance claims must be based on public, reproducible comparisons against
 the fastest applicable alternatives. Those cross-library comparisons live in a
 separate benchmark repository so competitor dependencies and adapters do not
-become part of Polypix. This repository's regression benchmarks cover:
+become part of Polypix. That repository is not public yet, so no cross-library
+claim is made until a URL and reproducible results are published. This
+repository's regression benchmarks cover:
 
 - representative dense and ragged footprint batches;
 - strip intervals;

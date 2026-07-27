@@ -8,6 +8,7 @@ const ZERO_NORM_EPSILON: f64 = 1.0e-15;
 // caused by normalizing the edge cross product. Keeping it below one epsilon
 // also preserves valid centimetre-scale footprints at resolution 29.
 const VALIDATION_TRIPLE_EPSILON: f64 = 0.5 * f64::EPSILON;
+const VERTEX_EQUALITY_EPSILON: f64 = 1.0e-12;
 
 pub(crate) type Vec3 = [f64; 3];
 
@@ -55,9 +56,9 @@ pub(crate) fn normalize(vector: Vec3) -> Result<Vec3, String> {
 }
 
 pub(crate) fn nearly_equal(left: Vec3, right: Vec3) -> bool {
-    (left[0] - right[0]).abs() < 1.0e-12
-        && (left[1] - right[1]).abs() < 1.0e-12
-        && (left[2] - right[2]).abs() < 1.0e-12
+    (left[0] - right[0]).abs() < VERTEX_EQUALITY_EPSILON
+        && (left[1] - right[1]).abs() < VERTEX_EQUALITY_EPSILON
+        && (left[2] - right[2]).abs() < VERTEX_EQUALITY_EPSILON
 }
 
 fn normalized_edge(left: Vec3, right: Vec3) -> Result<Vec3, String> {
