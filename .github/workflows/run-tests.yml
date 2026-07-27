@@ -55,6 +55,12 @@ jobs:
           PIXI_CACHE_DIR: ${{ runner.temp }}/pixi-cache
         run: pixi run --manifest-path "$GITHUB_WORKSPACE" --environment test python -m pytest -q "$GITHUB_WORKSPACE/tests"
 
+      - name: Check Rust formatting and lints
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          pixi run --environment test cargo fmt --all -- --check
+          pixi run --environment test cargo clippy --all-targets --locked -- -D warnings
+
       - name: Select Python on Windows
         if: runner.os == 'Windows'
         uses: actions/setup-python@v5

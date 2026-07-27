@@ -1,8 +1,8 @@
 # Permissive HEALPix Kernel Evaluation
 
-Status: **accept `cdshealpix` behind a Polypix-owned adapter, conditionally**
+Status: **superseded by the [owned RING kernel](owned-healpix-kernel.md)**
 
-Date: 2026-07-26
+Date: 2026-07-26; superseded 2026-07-27
 
 ## Decision
 

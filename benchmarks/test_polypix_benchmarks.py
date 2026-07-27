@@ -52,8 +52,8 @@ def cells(footprints: np.ndarray) -> np.ndarray:
 def sparse_resolution_12_cells() -> np.ndarray:
     resolution = 12
     pixel_count = 12 * (4**resolution)
-    nested_indices = np.arange(1024, dtype=np.uint64) * np.uint64(pixel_count // 1024)
-    return nested_indices
+    ring_indices = np.arange(1024, dtype=np.uint64) * np.uint64(pixel_count // 1024)
+    return ring_indices
 
 
 @pytest.mark.parametrize(

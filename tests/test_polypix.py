@@ -279,7 +279,7 @@ class PolypixTests(unittest.TestCase):
                 resolution=4,
                 candidate_cells=np.empty((1, 0), dtype=np.uint64),
             )
-        with self.assertRaisesRegex(ValueError, "valid NESTED indices"):
+        with self.assertRaisesRegex(ValueError, "valid RING indices"):
             px.cover_footprint(
                 polygon,
                 resolution=4,
@@ -485,7 +485,7 @@ class PolypixTests(unittest.TestCase):
             with self.subTest(cells=cells):
                 with self.assertRaises(ValueError):
                     px.boundaries(cells, resolution=3)
-        with self.assertRaisesRegex(ValueError, "valid NESTED indices"):
+        with self.assertRaisesRegex(ValueError, "valid RING indices"):
             px.centers([12 * 4**3], resolution=3)
 
     def test_cover_rejects_invalid_array_shape(self) -> None:

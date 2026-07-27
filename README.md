@@ -66,7 +66,7 @@ center_vectors = px.centers(coverage.cells, coverage.resolution)
 corner_vectors = px.boundaries(coverage.cells[:3], coverage.resolution)
 ```
 
-`coverage.cells` contains standard fixed-resolution HEALPix NESTED indices as
+`coverage.cells` contains standard fixed-resolution HEALPix RING indices as
 `uint64`; `coverage.offsets` divides the flat array into one segment per input
 footprint. Geometry helpers return body-centered unit vectors, never
 longitude/latitude or datum-specific coordinates.
@@ -107,6 +107,5 @@ development guide instead of this user-facing overview.
 ## License
 
 Polypix is distributed under the
-[Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0). Its native
-kernel uses `cdshealpix` under that project's Apache-2.0 licensing option. See
-`THIRD_PARTY_NOTICES.md` for dependency notices.
+[Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0). See
+`THIRD_PARTY_NOTICES.md` for dependency and embedded-code notices.

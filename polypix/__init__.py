@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from ._core import __version__, _boundary_many, _center, _cover
+from ._core import __version__, _boundary_many, _center, _cover, _cover_strip
 
 _MAX_RESOLUTION = 29
 
@@ -105,29 +105,6 @@ def _as_float_matrix(values: object, width: int, name: str) -> np.ndarray:
     return array
 
 
-def _normalize_vectors(vectors: np.ndarray, name: str) -> np.ndarray:
-    if not np.all(np.isfinite(vectors)):
-        raise ValueError(f"{name} must contain only finite vectors.")
-
-    scales = np.max(np.abs(vectors), axis=1)
-    if np.any(scales == 0.0):
-        raise ValueError(f"{name} must not contain zero-length vectors.")
-
-    scaled = vectors / scales[:, np.newaxis]
-    scaled_lengths = np.linalg.norm(scaled, axis=1)
-
-    # Preserve the zero-copy path for the common case. A unit vector's largest
-    # component is in [1 / sqrt(3), 1], so this guard also keeps the norm
-    # calculation away from overflow and underflow. The native kernel still
-    # normalizes these values before using them.
-    if np.all((scales >= 0.5) & (scales <= 1.0 + 1e-12)):
-        lengths = scales * scaled_lengths
-        if np.all(np.abs(lengths - 1.0) <= 1e-12):
-            return vectors
-
-    return np.ascontiguousarray(scaled / scaled_lengths[:, np.newaxis])
-
-
 def _dense_footprints(array: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
     if array.ndim == 2 and array.shape[1] == 3:
         return array, np.asarray([0, array.shape[0]], dtype=np.uint64)
@@ -173,7 +150,7 @@ def _as_footprints(
                 "(footprints, vertices, 3), or be a sequence of (vertices, 3) arrays."
             )
         vertices, offsets = dense
-        return _normalize_vectors(vertices, "footprints_xyz"), offsets
+        return vertices, offsets
 
     if not isinstance(values, Sequence) or len(values) == 0:
         raise ValueError(
@@ -192,14 +169,14 @@ def _as_footprints(
         (np.zeros(1, dtype=np.uint64), np.cumsum(counts, dtype=np.uint64))
     )
     vertices = np.ascontiguousarray(np.concatenate(footprints, axis=0))
-    return _normalize_vectors(vertices, "footprints_xyz"), offsets
+    return vertices, offsets
 
 
 def _pixel_count(resolution: int) -> int:
     return 12 << (2 * resolution)
 
 
-def _as_nested_cells(
+def _as_ring_cells(
     values: int | Sequence[int] | np.ndarray,
     resolution: int,
     name: str,
@@ -207,7 +184,7 @@ def _as_nested_cells(
     cells = _as_uint64_vector(values, name)
     if np.any(cells >= _pixel_count(resolution)):
         raise ValueError(
-            f"{name} must contain valid NESTED indices at resolution {resolution}."
+            f"{name} must contain valid RING indices at resolution {resolution}."
         )
     return cells
 
@@ -231,7 +208,7 @@ def _cover_xyz(
     candidates = (
         None
         if candidate_cells is None
-        else _as_nested_cells(candidate_cells, resolution, "candidate_cells")
+        else _as_ring_cells(candidate_cells, resolution, "candidate_cells")
     )
     return _coverage(
         _cover(vertices, offsets, resolution, candidates, requested_threads),
@@ -262,14 +239,8 @@ def cover_strip(
     threads: int | None = None,
 ) -> Coverage:
     resolved = _as_resolution(resolution)
-    left = _normalize_vectors(
-        _as_float_matrix(left_edge_xyz, 3, "left_edge_xyz"),
-        "left_edge_xyz",
-    )
-    right = _normalize_vectors(
-        _as_float_matrix(right_edge_xyz, 3, "right_edge_xyz"),
-        "right_edge_xyz",
-    )
+    left = _as_float_matrix(left_edge_xyz, 3, "left_edge_xyz")
+    right = _as_float_matrix(right_edge_xyz, 3, "right_edge_xyz")
     if left.shape[0] != right.shape[0]:
         raise ValueError(
             "left_edge_xyz and right_edge_xyz must contain the same number of samples."
@@ -277,15 +248,16 @@ def cover_strip(
     if left.shape[0] < 2:
         raise ValueError("cover_strip() requires at least two edge samples.")
 
-    footprints = np.empty((left.shape[0] - 1, 4, 3), dtype=np.float64)
-    footprints[:, 0, :] = left[:-1]
-    footprints[:, 1, :] = right[:-1]
-    footprints[:, 2, :] = right[1:]
-    footprints[:, 3, :] = left[1:]
-    dense = _dense_footprints(footprints)
-    assert dense is not None
-    vertices, offsets = dense
-    return _cover_xyz(vertices, offsets, resolved, candidate_cells, threads)
+    requested_threads = _as_threads(threads)
+    candidates = (
+        None
+        if candidate_cells is None
+        else _as_ring_cells(candidate_cells, resolved, "candidate_cells")
+    )
+    return _coverage(
+        _cover_strip(left, right, resolved, candidates, requested_threads),
+        resolved,
+    )
 
 
 def centers(
@@ -293,8 +265,8 @@ def centers(
     resolution: int,
 ) -> np.ndarray:
     resolved = _as_resolution(resolution)
-    nested = _as_nested_cells(cells, resolved, "cells")
-    return np.asarray(_center(nested, resolved), dtype=np.float64)
+    ring = _as_ring_cells(cells, resolved, "cells")
+    return np.asarray(_center(ring, resolved), dtype=np.float64)
 
 
 def boundaries(
@@ -302,8 +274,8 @@ def boundaries(
     resolution: int,
 ) -> np.ndarray:
     resolved = _as_resolution(resolution)
-    nested = _as_nested_cells(cells, resolved, "cells")
-    return np.asarray(_boundary_many(nested, resolved), dtype=np.float64)
+    ring = _as_ring_cells(cells, resolved, "cells")
+    return np.asarray(_boundary_many(ring, resolved), dtype=np.float64)
 
 
 __all__ = [

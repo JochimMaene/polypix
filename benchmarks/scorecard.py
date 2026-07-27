@@ -56,7 +56,7 @@ class Workload:
 
 @dataclass(frozen=True)
 class CoverageResult:
-    """Backend-neutral, standard-NESTED representation used by the scorecard."""
+    """Backend-neutral, standard-RING representation used by the scorecard."""
 
     cells: np.ndarray
     offsets: np.ndarray
@@ -201,7 +201,7 @@ def strip_edges(
 
 
 def sparse_candidate_cells(resolution: int, count: int) -> np.ndarray:
-    """Generate deterministic, globally distributed standard NESTED indices."""
+    """Generate deterministic, globally distributed standard RING indices."""
 
     pixel_count = 12 * (4**resolution)
     if count > pixel_count:
@@ -411,7 +411,7 @@ def _healpy_backend() -> Backend:
             # healpy's ufunc accepts signed pixel indices.  Every valid
             # fixed-resolution HEALPix index fits safely in int64.
             healpy_cells = workload.candidate_cells.astype(np.int64, copy=False)
-            x, y, z = hp.pix2vec(nside, healpy_cells, nest=True)
+            x, y, z = hp.pix2vec(nside, healpy_cells, nest=False)
             centers = np.column_stack((x, y, z))
             return _candidate_coverage(footprints, workload.candidate_cells, centers)
 
@@ -421,7 +421,7 @@ def _healpy_backend() -> Backend:
                     nside,
                     np.asarray(footprint),
                     inclusive=False,
-                    nest=True,
+                    nest=False,
                 ),
                 dtype=np.uint64,
             )
@@ -433,7 +433,7 @@ def _healpy_backend() -> Backend:
         "healpy",
         getattr(hp, "__version__", None),
         True,
-        "query_polygon(inclusive=False, nest=True); batch loop is timed",
+        "query_polygon(inclusive=False, nest=False); batch loop is timed",
         run,
     )
 
@@ -442,7 +442,7 @@ def _cdshealpix_backend() -> Backend:
     try:
         import astropy.units as units
         from astropy.coordinates import Latitude, Longitude
-        from cdshealpix import nested
+        from cdshealpix import nested, ring, to_ring
     except ImportError as exc:
         return Backend("cdshealpix", None, False, str(exc), None)
 
@@ -451,8 +451,7 @@ def _cdshealpix_backend() -> Backend:
     except importlib.metadata.PackageNotFoundError:
         version = None
 
-    def centers(cells: np.ndarray, resolution: int) -> np.ndarray:
-        lon, lat = nested.healpix_to_lonlat(cells, resolution)
+    def vectors(lon: Any, lat: Any) -> np.ndarray:
         lon_values = np.asarray(lon.to_value(units.rad))
         lat_values = np.asarray(lat.to_value(units.rad))
         cos_lat = np.cos(lat_values)
@@ -463,6 +462,14 @@ def _cdshealpix_backend() -> Backend:
                 np.sin(lat_values),
             )
         )
+
+    def nested_centers(cells: np.ndarray, resolution: int) -> np.ndarray:
+        lon, lat = nested.healpix_to_lonlat(cells, resolution)
+        return vectors(lon, lat)
+
+    def ring_centers(cells: np.ndarray, resolution: int) -> np.ndarray:
+        lon, lat = ring.healpix_to_lonlat(cells, 1 << resolution)
+        return vectors(lon, lat)
 
     def run(workload: Workload, threads: int | None) -> CoverageResult:
         if threads not in (None, 1):
@@ -483,7 +490,7 @@ def _cdshealpix_backend() -> Backend:
             return _candidate_coverage(
                 footprints,
                 workload.candidate_cells,
-                centers(workload.candidate_cells, workload.resolution),
+                ring_centers(workload.candidate_cells, workload.resolution),
             )
 
         chunks: list[np.ndarray] = []
@@ -504,19 +511,24 @@ def _cdshealpix_backend() -> Backend:
             if at_resolution.size:
                 normals = _oriented_edge_normals(np.asarray(footprint))
                 inside = np.all(
-                    centers(at_resolution, workload.resolution) @ normals.T
+                    nested_centers(at_resolution, workload.resolution) @ normals.T
                     >= -CENTER_EPSILON,
                     axis=1,
                 )
                 at_resolution = at_resolution[inside]
-            chunks.append(at_resolution)
+            chunks.append(
+                np.asarray(
+                    to_ring(at_resolution, workload.resolution),
+                    dtype=np.uint64,
+                )
+            )
         return _concatenate_segments(chunks)
 
     return Backend(
         "cdshealpix",
         version,
         True,
-        "flat polygon_search followed by an explicitly timed center filter",
+        "flat NESTED polygon_search, center filter, and timed RING conversion",
         run,
     )
 
@@ -650,7 +662,7 @@ def _oracle_centers(
     x, y, z = hp.pix2vec(
         1 << resolution,
         cells.astype(np.int64, copy=False),
-        nest=True,
+        nest=False,
     )
     return (
         np.column_stack((x, y, z)),
@@ -727,7 +739,7 @@ def adversarial_footprints() -> list[tuple[str, np.ndarray, int]]:
 
 
 def randomized_correctness_footprints(
-    count: int = 32,
+    count: int = 256,
     seed: int = 0x50_4F_4C_59,
 ) -> tuple[np.ndarray, ...]:
     """Generate a reproducible randomized correctness corpus."""

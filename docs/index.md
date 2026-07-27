@@ -1,7 +1,7 @@
 # Polypix
 
 Polypix converts large batches of convex spherical footprints into the HEALPix
-NESTED cells whose centers lie inside them. It is a deliberately small,
+RING cells whose centers lie inside them. It is a deliberately small,
 NumPy-first engine for coverage simulations and spatial indexing.
 
 Use it when footprint geometry already exists and throughput matters. Satellite
@@ -49,7 +49,7 @@ center_vectors = px.centers(coverage.cells, coverage.resolution)
 corner_vectors = px.boundaries(coverage.cells[:3], coverage.resolution)
 ```
 
-`coverage.cells` contains standard fixed-resolution HEALPix NESTED indices.
+`coverage.cells` contains standard fixed-resolution HEALPix RING indices.
 `coverage.offsets` divides that flat `uint64` array into one segment per input
 footprint.
 

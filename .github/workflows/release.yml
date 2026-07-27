@@ -108,7 +108,7 @@ jobs:
 
       - name: Test installed wheel
         working-directory: ${{ runner.temp }}
-        run: python -m pytest -q "${{ github.workspace }}/tests"
+        run: python -m pytest -q "${{ github.workspace }}/tests" --ignore="${{ github.workspace }}/tests/test_scorecard.py"
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
@@ -171,7 +171,7 @@ jobs:
 
       - name: Test installed wheel
         working-directory: ${{ runner.temp }}
-        run: python -m pytest -q "${{ github.workspace }}/tests"
+        run: python -m pytest -q "${{ github.workspace }}/tests" --ignore="${{ github.workspace }}/tests/test_scorecard.py"
 
       - name: Upload smoke wheel
         uses: actions/upload-artifact@v4

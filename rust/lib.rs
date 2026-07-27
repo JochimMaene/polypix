@@ -1,7 +1,3 @@
-use std::f64::consts::PI;
-
-use cdshealpix::nested::{bmoc::BMOC, get};
-use cdshealpix::sph_geom::ContainsSouthPoleMethod;
 use numpy::ndarray::{Array2, Array3};
 use numpy::{
     IntoPyArray, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods,
@@ -11,8 +7,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use rayon::prelude::*;
 
-#[path = "../spikes/ring_kernel.rs"]
-mod ring_kernel_prototype;
+mod ring;
 
 const MAX_RESOLUTION: u8 = 29;
 const MIN_AUTO_PARALLEL_FOOTPRINTS: usize = 256;
@@ -53,11 +48,20 @@ fn normalize(vector: Vec3) -> Result<Vec3, String> {
     if !vector.iter().all(|value| value.is_finite()) {
         return Err("footprints_xyz must contain only finite vectors.".to_owned());
     }
-    let length = norm(vector);
-    if length <= ZERO_NORM_EPSILON {
+    let scale = vector
+        .iter()
+        .map(|value| value.abs())
+        .fold(0.0_f64, f64::max);
+    if scale == 0.0 {
         return Err("footprints_xyz must not contain zero-length vectors.".to_owned());
     }
-    Ok([vector[0] / length, vector[1] / length, vector[2] / length])
+    let scaled = [vector[0] / scale, vector[1] / scale, vector[2] / scale];
+    let inverse_length = norm(scaled).recip();
+    Ok([
+        scaled[0] * inverse_length,
+        scaled[1] * inverse_length,
+        scaled[2] * inverse_length,
+    ])
 }
 
 fn nearly_equal(left: Vec3, right: Vec3) -> bool {
@@ -194,87 +198,6 @@ fn contains_center(edge_normals: &[Vec3], center: Vec3) -> bool {
         .all(|&normal| dot(normal, center) >= -CONTAINMENT_EPSILON)
 }
 
-fn lonlat_to_xyz((lon, lat): (f64, f64)) -> Vec3 {
-    let (sin_lon, cos_lon) = lon.sin_cos();
-    let (sin_lat, cos_lat) = lat.sin_cos();
-    [cos_lat * cos_lon, cos_lat * sin_lon, sin_lat]
-}
-
-fn xyz_to_lonlat(vector: Vec3) -> (f64, f64) {
-    (
-        vector[1].atan2(vector[0]).rem_euclid(2.0 * PI),
-        vector[2].atan2(vector[0].hypot(vector[1])),
-    )
-}
-
-fn overlap_candidates(polygon: &Polygon, resolution: u8) -> BMOC {
-    let layer = get(resolution);
-    let lonlat = polygon
-        .vertices
-        .iter()
-        .copied()
-        .map(xyz_to_lonlat)
-        .collect::<Vec<_>>();
-    let desired_contains_south = contains_center(&polygon.edge_normals, [0.0, 0.0, -1.0]);
-
-    // CDS can pick either side of a spherical polygon. Use its faster default
-    // only when it agrees with the side selected by our validated half-spaces.
-    let mut gravity_center_z = 0.0;
-    let mut longitude_winding = 0.0;
-    let mut previous = lonlat.len() - 1;
-    for index in 0..lonlat.len() {
-        let longitude_delta = lonlat[index].0 - lonlat[previous].0;
-        let absolute_delta = longitude_delta.abs();
-        if absolute_delta <= PI {
-            longitude_winding += longitude_delta;
-        } else if longitude_delta > 0.0 {
-            longitude_winding -= 2.0 * PI - absolute_delta;
-        } else {
-            longitude_winding += 2.0 * PI - absolute_delta;
-        }
-        gravity_center_z += polygon.vertices[index][2];
-        previous = index;
-    }
-    let default_contains_south = longitude_winding.abs() > PI && gravity_center_z < 0.0;
-
-    if desired_contains_south == default_contains_south {
-        layer.polygon_coverage(&lonlat, true)
-    } else if desired_contains_south {
-        layer.custom_polygon_coverage(&lonlat, &ContainsSouthPoleMethod::ContainsSouthPole, true)
-    } else {
-        layer.custom_polygon_coverage(
-            &lonlat,
-            &ContainsSouthPoleMethod::DoNotContainsSouthPole,
-            true,
-        )
-    }
-}
-
-fn cover_polygon(polygon: &Polygon, resolution: u8) -> Vec<u64> {
-    let layer = get(resolution);
-    let candidates = overlap_candidates(polygon, resolution);
-    let mut cells = Vec::with_capacity(candidates.deep_size());
-    for (range, fully_covered) in candidates.to_flagged_ranges() {
-        if fully_covered {
-            cells.extend(range);
-        } else {
-            cells.extend(range.filter(|&cell| {
-                contains_center(&polygon.edge_normals, lonlat_to_xyz(layer.center(cell)))
-            }));
-        }
-    }
-    cells
-}
-
-fn cover_polygon_candidates(polygon: &Polygon, candidate_centers: &[(u64, Vec3)]) -> Vec<u64> {
-    candidate_centers
-        .iter()
-        .filter_map(|&(cell, center)| {
-            contains_center(&polygon.edge_normals, center).then_some(cell)
-        })
-        .collect()
-}
-
 fn run_parallel<T, F>(
     items: &[Polygon],
     threads: Option<usize>,
@@ -318,39 +241,6 @@ fn merge_segments(segments: Vec<Vec<u64>>) -> Coverage {
     coverage
 }
 
-fn compute_coverage(
-    polygons: Vec<Polygon>,
-    resolution: u8,
-    candidate_cells: Option<&[u64]>,
-    threads: Option<usize>,
-) -> Result<Coverage, String> {
-    if let Some(raw_candidates) = candidate_cells {
-        let cell_count = 12_u64 << (2 * resolution);
-        if raw_candidates.iter().any(|&cell| cell >= cell_count) {
-            return Err(format!(
-                "candidate_cells must contain valid NESTED indices at resolution {resolution}."
-            ));
-        }
-        let mut candidates = raw_candidates.to_vec();
-        candidates.sort_unstable();
-        candidates.dedup();
-        let layer = get(resolution);
-        let candidate_centers = candidates
-            .into_iter()
-            .map(|cell| (cell, lonlat_to_xyz(layer.center(cell))))
-            .collect::<Vec<_>>();
-        return run_parallel(&polygons, threads, |polygon| {
-            cover_polygon_candidates(polygon, &candidate_centers)
-        })
-        .map(merge_segments);
-    }
-
-    run_parallel(&polygons, threads, |polygon| {
-        cover_polygon(polygon, resolution)
-    })
-    .map(merge_segments)
-}
-
 fn validate_resolution(resolution: u8) -> Result<(), String> {
     if resolution > MAX_RESOLUTION {
         return Err(format!(
@@ -391,10 +281,46 @@ fn _cover<'py>(
         .transpose()?;
 
     let coverage = py
-        .detach(|| {
-            let polygons = prepare_polygons(vertices, raw_offsets)?;
-            compute_coverage(polygons, resolution, raw_candidates, threads)
+        .detach(|| ring::cover(vertices, raw_offsets, resolution, raw_candidates, threads))
+        .map_err(PyValueError::new_err)?;
+
+    let result = PyDict::new(py);
+    result.set_item("cells", coverage.cells.into_pyarray(py))?;
+    result.set_item("offsets", coverage.offsets.into_pyarray(py))?;
+    Ok(result)
+}
+
+#[pyfunction(signature = (left_edge_xyz, right_edge_xyz, resolution, candidate_cells=None, threads=None))]
+fn _cover_strip<'py>(
+    py: Python<'py>,
+    left_edge_xyz: PyReadonlyArray2<'py, f64>,
+    right_edge_xyz: PyReadonlyArray2<'py, f64>,
+    resolution: u8,
+    candidate_cells: Option<PyReadonlyArray1<'py, u64>>,
+    threads: Option<usize>,
+) -> PyResult<Bound<'py, PyDict>> {
+    validate_resolution(resolution).map_err(PyValueError::new_err)?;
+    if left_edge_xyz.shape().get(1) != Some(&3) || right_edge_xyz.shape().get(1) != Some(&3) {
+        return Err(PyValueError::new_err(
+            "strip edges must have shape (samples, 3).",
+        ));
+    }
+    let left = left_edge_xyz
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("left_edge_xyz must be C-contiguous."))?;
+    let right = right_edge_xyz
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("right_edge_xyz must be C-contiguous."))?;
+    let raw_candidates = candidate_cells
+        .as_ref()
+        .map(|cells| {
+            cells
+                .as_slice()
+                .map_err(|_| PyValueError::new_err("candidate_cells must be C-contiguous."))
         })
+        .transpose()?;
+    let coverage = py
+        .detach(|| ring::cover_strip(left, right, resolution, raw_candidates, threads))
         .map_err(PyValueError::new_err)?;
 
     let result = PyDict::new(py);
@@ -416,16 +342,15 @@ fn _center<'py>(
     let cell_count = 12_u64 << (2 * resolution);
     if cells.iter().any(|&cell| cell >= cell_count) {
         return Err(PyValueError::new_err(format!(
-            "cells must contain valid NESTED indices at resolution {resolution}."
+            "cells must contain valid RING indices at resolution {resolution}."
         )));
     }
 
     let values = py.detach(|| {
-        let layer = get(resolution);
         cells
             .iter()
             .copied()
-            .flat_map(|cell| lonlat_to_xyz(layer.center(cell)))
+            .flat_map(|cell| ring::center(cell, resolution))
             .collect::<Vec<_>>()
     });
     Ok(Array2::from_shape_vec((cells.len(), 3), values)
@@ -446,18 +371,15 @@ fn _boundary_many<'py>(
     let cell_count = 12_u64 << (2 * resolution);
     if cells.iter().any(|&cell| cell >= cell_count) {
         return Err(PyValueError::new_err(format!(
-            "cells must contain valid NESTED indices at resolution {resolution}."
+            "cells must contain valid RING indices at resolution {resolution}."
         )));
     }
 
     let values = py.detach(|| {
-        let layer = get(resolution);
         let mut values = Vec::with_capacity(cells.len() * 12);
         for &cell in cells {
-            let corners = layer.vertices(cell);
-            // Preserve the previous public order: north, west, south, east.
-            for index in [2, 3, 0, 1] {
-                values.extend(lonlat_to_xyz(corners[index]));
+            for corner in ring::boundary(cell, resolution) {
+                values.extend(corner);
             }
         }
         values
@@ -471,8 +393,8 @@ fn _boundary_many<'py>(
 fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     module.add_function(wrap_pyfunction!(_cover, module)?)?;
+    module.add_function(wrap_pyfunction!(_cover_strip, module)?)?;
     module.add_function(wrap_pyfunction!(_center, module)?)?;
     module.add_function(wrap_pyfunction!(_boundary_many, module)?)?;
-    ring_kernel_prototype::register(module)?;
     Ok(())
 }

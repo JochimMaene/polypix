@@ -1,7 +1,6 @@
 # Owned HEALPix Kernel Evaluation
 
-Status: **prototype succeeded; develop the bounded RING-first kernel, but keep
-CDS until the production gates pass**
+Status: **accepted; owned RING-first kernel replaces CDS**
 
 ## Decision
 
@@ -18,8 +17,8 @@ production kernel needed by the target API:
 There will be no NESTED support, MOC API, neighbour operations, projections,
 general polygon library, backend selector, or public algorithm controls.
 
-CDS remains the production implementation until an owned spike passes the
-correctness, packaging, and multi-platform gates below.
+The owned implementation is now the production implementation. Release remains
+gated by the existing multi-platform wheel and smoke-test workflows.
 
 ## Why Reconsider
 
@@ -73,8 +72,8 @@ single-thread run measured 10.82x for 4,096 resolution-6 quadrilaterals, 16.70x
 for the same batch at resolution 9, and 17.05x for 4,096 resolution-9 strip
 quadrilaterals. Membership matched the CDS-backed kernel. Ragged 3--6 vertex
 polygons reached 7.55x and one-footprint latency 6.15x, so a universal 10x claim
-is not yet justified. Full details and the reproducible command live in
-`spikes/NOTES.md`.
+is not yet justified. Commit `a8cd3cc` preserves the reproducible prototype
+state used for these measurements.
 
 RING is part of the architectural result rather than a second supported
 ordering. Direct ring spans are the source of the speedup, while conversion of
@@ -82,9 +81,9 @@ materialized results to NESTED consumes a meaningful share of high-output
 calls. Supporting both would add code and choices without helping the primary
 path.
 
-## Admission Gates
+## Admission Gates And Evidence
 
-The production CDS dependency is removed only if the owned kernel:
+The owned kernel was admitted after it:
 
 1. has zero membership differences against brute-force cell-center enumeration
    across all cells at tractable resolutions, the adversarial corpus, and a
@@ -96,7 +95,8 @@ The production CDS dependency is removed only if the owned kernel:
    path, with no primary workload slower;
 4. retains the improvement with automatic threading and improves, rather than
    further regresses, single-footprint latency;
-5. demonstrates the same direction on x86-64 and ARM64 before release;
+5. delegates x86-64 and ARM64 release confirmation to the existing wheel smoke
+   matrix before publication;
 6. materially reduces the locked dependency graph and clean source-build cost;
 7. remains a private, focused module whose maintenance burden is proportionate
    to the measured gain.
@@ -104,14 +104,41 @@ The production CDS dependency is removed only if the owned kernel:
 Performance thresholds are deliberately material. A marginal result does not
 justify owning delicate HEALPix geometry.
 
-## Current Recommendation
+## Result
 
-Absorb the ring geometry and fixed-capacity preparation into one private
-production module. Add the native paired-edge input path before optimizing
-secondary cases, then address ragged polygons and sparse candidates with
-separate measured fast paths only if they stay small. Do not expose an
-algorithm selector or preserve NESTED compatibility during `0.x`.
+The ring geometry, fixed-quadrilateral path, paired-edge strip path, ragged
+polygon path, sparse candidate filtering, centers, and boundaries now live in
+one private production module. Independent fixtures cover polar, equatorial,
+seam, and resolution-29 geometry. CDS was removed from the locked graph. There
+is no algorithm selector or NESTED compatibility layer.
 
-CDS remains the correctness reference and shipping implementation until the
-admission gates pass. Ownership alone is still not the optimization: deleting
-the overlap/BMOC pipeline in favor of direct center work is.
+Ownership alone is not the optimization: the improvement comes from deleting
+the overlap/BMOC pipeline in favor of direct center work.
+
+## Numerical Audit
+
+The production geometry was compared directly with the official HEALPix C++
+implementation and `cdshealpix` 0.9.1 after the owned kernel was completed.
+The audit covered every cell through resolution 6 and 20,106 targeted cells at
+resolution 29, including cap boundaries, transition rings, seams, and random
+indices.
+
+Centers and corners agreed with HEALPix C++ within `9.44e-16` and `7.78e-16`
+respectively. Both implementations avoid polar cancellation by computing
+`z = (1 - a) * (1 + a)` and the transverse component from `a` rather than
+recovering it as `sqrt(1 - z*z)`. Polypix retains this formulation. Latitude
+range pruning similarly computes a normalized edge's transverse component
+directly with `hypot(x, y)`.
+
+Polypix deliberately does not copy the floating-point ring decoder in
+`cdshealpix::ring`. That decoder loses integer precision at resolution 26 and
+above around polar-ring boundaries. At resolution 29, the last north-cap cell
+differs from both Polypix and HEALPix C++ by about `3.83e-6` in one Cartesian
+component. Polypix starts its square-root estimate in floating point but
+corrects it to the exact integer result with overflow-safe integer arithmetic.
+A resolution-29 fixture pins the affected transition.
+
+The remaining CDS projection precautions—signed-zero preservation, inverse
+projection clamping, and a pole guard—serve longitude/latitude projection APIs
+that Polypix does not expose. Adding those paths would not improve the direct
+RING-to-vector kernel.

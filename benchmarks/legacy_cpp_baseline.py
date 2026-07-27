@@ -1,9 +1,9 @@
 """Compare the current public API with Polypix's released v0.2.1 C++ API.
 
 This driver intentionally runs unchanged from either checkout. It reuses the
-fixed scorecard fixtures, adapts only the renamed API and v0.2.1's packed cell
-tokens, and times complete public calls. See docs/development.md for the
-two-checkout procedure.
+fixed scorecard fixtures, adapts the renamed API and v0.2.1's packed NESTED
+tokens to the current RING contract, and times complete public calls. See
+docs/development.md for the two-checkout procedure.
 """
 
 from __future__ import annotations
@@ -45,9 +45,49 @@ except ModuleNotFoundError:
 BASELINE_COMMIT = "20d2df6"
 
 
-def _packed_cells(cells: np.ndarray, resolution: int) -> np.ndarray:
-    prefix = np.uint64(1 << (4 + 2 * resolution))
-    return np.ascontiguousarray(cells, dtype=np.uint64) | prefix
+def _compact_bits(value: int) -> int:
+    result = 0
+    bit = 0
+    while value:
+        result |= (value & 1) << bit
+        value >>= 2
+        bit += 1
+    return result
+
+
+def _nested_to_ring(cells: np.ndarray, resolution: int) -> np.ndarray:
+    """Convert ordinary fixed-resolution NESTED IDs to RING IDs."""
+
+    nside = 1 << resolution
+    face_size = nside * nside
+    pixel_count = 12 * face_size
+    cap_cells = 2 * nside * (nside - 1)
+    ring_latitudes = (2, 2, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4)
+    ring_longitudes = (1, 3, 5, 7, 0, 2, 4, 6, 1, 3, 5, 7)
+    result = np.empty(cells.size, dtype=np.uint64)
+
+    for output_index, raw_cell in enumerate(cells):
+        face, nested = divmod(int(raw_cell), face_size)
+        x = _compact_bits(nested)
+        y = _compact_bits(nested >> 1)
+        ring = ring_latitudes[face] * nside - x - y - 1
+        if ring < nside:
+            cells_on_face = ring
+            preceding = 2 * ring * (ring - 1)
+            shift = 0
+        elif ring > 3 * nside:
+            cells_on_face = 4 * nside - ring
+            preceding = pixel_count - 2 * cells_on_face * (cells_on_face + 1)
+            shift = 0
+        else:
+            cells_on_face = nside
+            preceding = cap_cells + (ring - nside) * 4 * nside
+            shift = (ring - nside) & 1
+        longitude = (
+            ring_longitudes[face] * cells_on_face + x - y + 1 + shift
+        ) // 2
+        result[output_index] = preceding + (longitude - 1) % (4 * cells_on_face)
+    return result
 
 
 def _standard_result(result: object, resolution: int) -> CoverageResult:
@@ -55,7 +95,8 @@ def _standard_result(result: object, resolution: int) -> CoverageResult:
         cells = np.asarray(result.cells, dtype=np.uint64)
     else:
         prefix = np.uint64(1 << (4 + 2 * resolution))
-        cells = np.asarray(result.cell_ids, dtype=np.uint64) ^ prefix
+        nested = np.asarray(result.cell_ids, dtype=np.uint64) ^ prefix
+        cells = _nested_to_ring(nested, resolution)
     return CoverageResult(
         np.ascontiguousarray(cells),
         np.ascontiguousarray(result.offsets, dtype=np.uint64),
@@ -66,7 +107,10 @@ def _runner(workload: Workload, threads: int | None) -> Callable[[], CoverageRes
     is_current = hasattr(px, "cover_strip")
     candidates = workload.candidate_cells
     if candidates is not None and not is_current:
-        candidates = _packed_cells(candidates, workload.resolution)
+        raise RuntimeError(
+            "v0.2.1 accepted packed NESTED candidates, while the current "
+            "scorecard fixture is RING"
+        )
 
     if workload.kind == "strip":
         assert workload.left_edge is not None and workload.right_edge is not None
@@ -132,7 +176,7 @@ def benchmark(
 ) -> dict[str, Any]:
     old_thread_setting = os.environ.get("POLYPIX_NUM_THREADS")
     is_current = hasattr(px, "cover_strip")
-    implementation = "rust-cds" if is_current else "legacy-cpp"
+    implementation = "rust-owned-ring" if is_current else "legacy-cpp"
     if not is_current:
         os.environ["POLYPIX_NUM_THREADS"] = str(threads) if threads is not None else ""
 

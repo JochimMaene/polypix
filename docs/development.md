@@ -8,9 +8,11 @@ polypix/
   __init__.pyi       public typing stub
   py.typed            PEP 561 marker
 rust/
-  lib.rs              PyO3 module and native coverage kernel
+  lib.rs              PyO3 module and shared validation
+  ring.rs             owned center-only HEALPix RING kernel
 tests/
   test_polypix.py     behavior tests
+  test_ring_geometry.py  independent HEALPix geometry fixtures
 benchmarks/
   scorecard.py        correctness and performance scorecard
 docs/
@@ -21,7 +23,8 @@ docs/
 
 Polypix is a mixed Python/Rust project built by Maturin. PyO3 exposes the Rust
 kernel as `polypix._core`; the Python package provides the public NumPy-first
-API. The kernel uses `cdshealpix` under its Apache-2.0 licensing option.
+API. The focused HEALPix RING kernel is owned by Polypix and has no HEALPix
+runtime dependency.
 
 PyPI wheels contain the compiled kernel. NumPy is the only runtime dependency:
 HEALPix C++, CFITSIO, CMake, and a C++ compiler are not part of the build or
@@ -76,7 +79,8 @@ python -m benchmarks.scorecard --output scorecard.json
 
 The v0.2.1 `healpix_cxx` implementation remains reproducible at commit
 `20d2df6`. The compatibility driver below runs the same fixed fixtures and
-normalizes v0.2.1's packed tokens to standard fixed-resolution NESTED indices:
+normalizes v0.2.1's packed NESTED tokens to standard fixed-resolution RING
+indices:
 
 ```bash
 git worktree add --detach /tmp/polypix-v021 20d2df6
@@ -127,9 +131,9 @@ and publishes `site/` to GitHub Pages on pushes to `main`.
 
 ## License And Notices
 
-Polypix is distributed under Apache-2.0. `cdshealpix` is used under its
-Apache-2.0 option. Keep these files current whenever native dependencies
-change:
+Polypix is distributed under Apache-2.0. The boundary transform includes a
+small BSD-3-Clause adaptation from Astrometry.net. Keep these files current
+whenever native dependencies or adapted code change:
 
 - `LICENSE`;
 - `THIRD_PARTY_NOTICES.md`;

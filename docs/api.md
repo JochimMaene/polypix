@@ -15,7 +15,7 @@ Every coverage call returns:
 px.Coverage(cells, offsets, resolution)
 ```
 
-- `cells`: flat one-dimensional `uint64` array of standard HEALPix NESTED
+- `cells`: flat one-dimensional `uint64` array of standard HEALPix RING
   indices.
 - `offsets`: `uint64` segment boundaries, with length `item_count + 1`.
 - `resolution`: the common HEALPix resolution for every returned cell.
@@ -61,7 +61,7 @@ them.
 ```
 
 `candidate_cells` optionally restricts the result to a one-dimensional set of
-standard NESTED indices at the requested resolution. Duplicate candidates are
+standard RING indices at the requested resolution. Duplicate candidates are
 ignored. An empty candidate set returns empty segments without dropping input
 items.
 

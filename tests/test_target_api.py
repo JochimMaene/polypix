@@ -33,7 +33,7 @@ def _segments(coverage: px.Coverage) -> list[np.ndarray]:
     ]
 
 
-def test_coverage_uses_standard_nested_indices_and_stores_resolution() -> None:
+def test_coverage_uses_standard_ring_indices_and_stores_resolution() -> None:
     resolution = 3
     polygon = _footprint([(-15.0, -8.0), (15.0, -8.0), (15.0, 8.0), (-15.0, 8.0)])
 
@@ -150,11 +150,11 @@ def test_empty_cell_geometry_has_stable_shapes() -> None:
 
 
 def test_cells_are_validated_against_resolution() -> None:
-    with pytest.raises(ValueError, match="valid NESTED indices at resolution 2"):
+    with pytest.raises(ValueError, match="valid RING indices at resolution 2"):
         px.centers([12 * 4**2], resolution=2)
 
     polygon = _footprint([(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)])
-    with pytest.raises(ValueError, match="valid NESTED indices at resolution 2"):
+    with pytest.raises(ValueError, match="valid RING indices at resolution 2"):
         px.cover_footprint(
             polygon,
             resolution=2,

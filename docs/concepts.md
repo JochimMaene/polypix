@@ -2,7 +2,7 @@
 
 ## HEALPix Resolution And IDs
 
-Polypix uses fixed-resolution HEALPix NESTED ordering. The public API calls the
+Polypix uses fixed-resolution HEALPix RING ordering. The public API calls the
 HEALPix order a `resolution`:
 
 ```text
@@ -18,11 +18,11 @@ cell_count = 12 * 4 ** resolution
 | 8 | 256 | 786,432 |
 | 12 | 4,096 | 201,326,592 |
 
-Polypix accepts resolutions from 0 through 29. Cell values are ordinary NESTED
+Polypix accepts resolutions from 0 through 29. Cell values are ordinary RING
 pixel indices between zero and `cell_count - 1`; they are not packed tokens and
 do not encode a resolution. One result contains one resolution.
 
-RING ordering, mixed-resolution cells, MOCs, neighbors, hierarchy traversal,
+NESTED ordering, mixed-resolution cells, MOCs, neighbors, hierarchy traversal,
 and map operations are deliberately outside this focused library.
 
 ## Body-Centered Geometry
@@ -78,7 +78,7 @@ coverage = px.cover_strip(
 )
 ```
 
-Candidates are standard NESTED indices at the requested resolution and have set
+Candidates are standard RING indices at the requested resolution and have set
 semantics. The native kernel tests their centers directly; it does not first
 materialize complete global coverage.
 
