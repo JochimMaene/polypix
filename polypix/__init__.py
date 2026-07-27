@@ -3,7 +3,7 @@ from __future__ import annotations
 import operator
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, SupportsIndex, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -15,6 +15,11 @@ from ._core import (
     _center,
     _cover,
     _cover_strip,
+)
+
+_FOOTPRINT_SHAPE_ERROR = (
+    "footprints_xyz must have shape (vertices, 3), "
+    "(footprints, vertices, 3), or be a sequence of (vertices, 3) arrays."
 )
 
 
@@ -59,7 +64,7 @@ def _as_uint64_scalar(value: object, name: str) -> int:
     if isinstance(value, (bool, np.bool_)):
         raise TypeError(f"{name} must contain integers, not bool.")
     try:
-        integer = operator.index(value)
+        integer = operator.index(cast(SupportsIndex, value))
     except TypeError as exc:
         raise TypeError(f"{name} must contain integers.") from exc
     if integer < 0:
@@ -136,53 +141,18 @@ def _dense_footprints(array: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None
     return None
 
 
-def _as_footprints(
-    values: object,
-) -> tuple[np.ndarray, np.ndarray]:
-    if isinstance(values, np.ndarray):
-        if values.dtype == np.dtype("O"):
-            raise TypeError("footprints_xyz must contain real numbers.")
-        dense_array: np.ndarray | None = _as_float_array(values, "footprints_xyz")
-    elif isinstance(values, Sequence) and len(values) > 0:
-        first = np.asarray(values[0])
-        dense_array = (
-            None if first.ndim == 2 else _as_float_array(values, "footprints_xyz")
-        )
-    elif isinstance(values, Sequence):
-        return np.empty((0, 3), dtype=np.float64), np.zeros(1, dtype=np.uint64)
-    else:
-        dense_array = _as_float_array(values, "footprints_xyz")
+def _require_dense_footprints(values: object) -> tuple[np.ndarray, np.ndarray]:
+    dense = _dense_footprints(_as_float_array(values, "footprints_xyz"))
+    if dense is None:
+        raise ValueError(_FOOTPRINT_SHAPE_ERROR)
+    return dense
 
-    if dense_array is not None:
-        dense = _dense_footprints(dense_array)
-        if dense is None:
-            raise ValueError(
-                "footprints_xyz must have shape (vertices, 3), "
-                "(footprints, vertices, 3), or be a sequence of (vertices, 3) arrays."
-            )
-        vertices, offsets = dense
-        return vertices, offsets
 
-    if not isinstance(values, Sequence) or len(values) == 0:
-        raise ValueError(
-            "footprints_xyz must have shape (vertices, 3), "
-            "(footprints, vertices, 3), or be a sequence of (vertices, 3) arrays."
-        )
-
-    if all(
-        isinstance(footprint, np.ndarray)
-        and footprint.dtype == np.float64
-        and footprint.ndim == 2
-        and footprint.shape[1] == 3
-        and footprint.flags.c_contiguous
-        for footprint in values
-    ):
-        footprints = list(values)
-    else:
-        footprints = [
-            _as_float_matrix(footprint, 3, f"footprints_xyz[{index}]")
-            for index, footprint in enumerate(values)
-        ]
+def _ragged_footprints(values: Sequence[object]) -> tuple[np.ndarray, np.ndarray]:
+    footprints = [
+        _as_float_matrix(footprint, 3, f"footprints_xyz[{index}]")
+        for index, footprint in enumerate(values)
+    ]
     counts = np.asarray(
         [footprint.shape[0] for footprint in footprints], dtype=np.uint64
     )
@@ -191,6 +161,22 @@ def _as_footprints(
     )
     vertices = np.ascontiguousarray(np.concatenate(footprints, axis=0))
     return vertices, offsets
+
+
+def _as_footprints(
+    values: object,
+) -> tuple[np.ndarray, np.ndarray]:
+    if isinstance(values, np.ndarray):
+        return _require_dense_footprints(values)
+    if not isinstance(values, Sequence):
+        return _require_dense_footprints(values)
+    if len(values) == 0:
+        return np.empty((0, 3), dtype=np.float64), np.zeros(1, dtype=np.uint64)
+
+    try:
+        return _require_dense_footprints(values)
+    except ValueError:
+        return _ragged_footprints(values)
 
 
 def _coverage(payload: tuple[np.ndarray, np.ndarray], resolution: int) -> Coverage:

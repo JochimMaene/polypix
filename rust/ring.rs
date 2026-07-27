@@ -6,16 +6,28 @@
 
 use std::f64::consts::TAU;
 use std::ops::Range;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use rayon::prelude::*;
 
-use super::{
-    automatic_parallel, contains_center, install_in_pool, normalize, prepare_polygon,
-    validate_polygon, Coverage, Polygon, Vec3, CONTAINMENT_EPSILON, MAX_RESOLUTION,
+use crate::geometry::{
+    contains_center, dot, nearly_equal, normalize, prepare_polygon, validate_polygon, Polygon,
+    Vec3, CONTAINMENT_EPSILON,
 };
 
+pub(crate) const MAX_RESOLUTION: u8 = 29;
+// Measurements on primary small-footprint batches show item count predicts the
+// dispatch crossover better than resolution or candidate-set size. Parallelism
+// is consistently beneficial from 2,048 independent items on supported hosts.
+const AUTO_PARALLEL_MIN_ITEMS: usize = 2048;
 const INDEX_UNCERTAINTY_ULPS: f64 = 128.0;
 const LONGITUDE_BOUNDS_EPSILON: f64 = 1.0e-14;
+type CachedPool = Mutex<Option<(usize, Arc<rayon::ThreadPool>)>>;
+
+pub(crate) struct Coverage {
+    pub(crate) cells: Vec<u64>,
+    pub(crate) offsets: Vec<u64>,
+}
 
 #[derive(Clone, Copy)]
 struct Ring {
@@ -370,7 +382,7 @@ fn polygon_z_bounds(vertices: &[Vec3], edge_normals: &[Vec3]) -> (f64, f64) {
         .zip(edge_normals)
         .take(vertices.len())
     {
-        let cosine = super::dot(start, end).clamp(-1.0, 1.0);
+        let cosine = dot(start, end).clamp(-1.0, 1.0);
         let derivative_at_start = end[2] - start[2] * cosine;
         let derivative_at_end = end[2] * cosine - start[2];
         let extremum = edge_normal[0].hypot(edge_normal[1]);
@@ -508,13 +520,14 @@ fn prepare_quad(raw: &[f64], input_names: [&str; 4], allow_pinch: bool) -> Resul
     let mut vertices = [[0.0; 3]; 4];
     let mut len = 0;
     for (values, input_name) in raw.chunks_exact(3).zip(input_names) {
-        let vertex = normalize([values[0], values[1], values[2]], input_name)?;
-        if !allow_pinch || len == 0 || !super::nearly_equal(vertices[len - 1], vertex) {
+        let vertex = normalize([values[0], values[1], values[2]])
+            .map_err(|error| format!("{input_name} {error}"))?;
+        if !allow_pinch || len == 0 || !nearly_equal(vertices[len - 1], vertex) {
             vertices[len] = vertex;
             len += 1;
         }
     }
-    if len > 1 && super::nearly_equal(vertices[0], vertices[len - 1]) {
+    if len > 1 && nearly_equal(vertices[0], vertices[len - 1]) {
         len -= 1;
     }
     if len < 3 {
@@ -533,7 +546,7 @@ fn prepare_quad(raw: &[f64], input_names: [&str; 4], allow_pinch: bool) -> Resul
 impl PreparedFootprint {
     fn from_raw(raw: &[f64]) -> Result<Self, String> {
         if raw.len() == 12 {
-            return prepare_quad(raw, ["footprints_xyz"; 4], false).map(Self::Quad);
+            return prepare_quad(raw, ["vector"; 4], false).map(Self::Quad);
         }
         let raw_polygon = raw
             .chunks_exact(3)
@@ -704,6 +717,41 @@ fn merge_coverages(chunks: Vec<Coverage>) -> Coverage {
     coverage
 }
 
+fn automatic_parallel(item_count: usize) -> bool {
+    item_count >= AUTO_PARALLEL_MIN_ITEMS
+}
+
+fn explicit_pool(worker_count: usize) -> Result<Arc<rayon::ThreadPool>, String> {
+    // Explicit thread counts normally stay stable across repeated calls. Keep
+    // one pool to cover that primary workload without growing an unbounded
+    // cache for unusual alternating requests.
+    static POOL: OnceLock<CachedPool> = OnceLock::new();
+    let cache = POOL.get_or_init(|| Mutex::new(None));
+    let mut cached = cache
+        .lock()
+        .map_err(|_| "The explicit thread-pool cache is unavailable.".to_owned())?;
+    if let Some((cached_count, pool)) = cached.as_ref() {
+        if *cached_count == worker_count {
+            return Ok(Arc::clone(pool));
+        }
+    }
+    let pool = Arc::new(
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(worker_count)
+            .build()
+            .map_err(|error| format!("Could not create the requested thread pool: {error}"))?,
+    );
+    *cached = Some((worker_count, Arc::clone(&pool)));
+    Ok(pool)
+}
+
+fn install_in_pool<T: Send>(
+    worker_count: usize,
+    operation: impl FnOnce() -> T + Send,
+) -> Result<T, String> {
+    Ok(explicit_pool(worker_count)?.install(operation))
+}
+
 fn dispatch_coverage(
     item_count: usize,
     threads: Option<usize>,
@@ -785,19 +833,12 @@ fn compute_mixed_coverage(
     candidates: Option<&[u64]>,
     threads: Option<usize>,
 ) -> Result<Coverage, String> {
-    if !vertices.len().is_multiple_of(3) {
-        return Err("vertices_xyz must have shape (vertices, 3).".to_owned());
-    }
+    debug_assert!(vertices.len().is_multiple_of(3));
     let vertex_count = vertices.len() / 3;
-    if offsets.is_empty() {
-        return Err("offsets must contain at least one value.".to_owned());
-    }
-    if offsets[0] != 0 || offsets[offsets.len() - 1] != vertex_count as u64 {
-        return Err("offsets must start at 0 and end at the total vertex count.".to_owned());
-    }
-    if offsets.windows(2).any(|pair| pair[1] < pair[0]) {
-        return Err("offsets must be nondecreasing.".to_owned());
-    }
+    debug_assert!(!offsets.is_empty());
+    debug_assert_eq!(offsets[0], 0);
+    debug_assert_eq!(offsets[offsets.len() - 1], vertex_count as u64);
+    debug_assert!(offsets.windows(2).all(|pair| pair[0] <= pair[1]));
 
     let polygon_count = offsets.len() - 1;
     if let Some(candidates) = candidates {
@@ -910,18 +951,11 @@ pub(crate) fn cover_strip(
     threads: Option<usize>,
 ) -> Result<Coverage, String> {
     debug_assert!(resolution <= MAX_RESOLUTION);
-    if !left.len().is_multiple_of(3) || !right.len().is_multiple_of(3) {
-        return Err("strip edges must have shape (samples, 3).".to_owned());
-    }
-    if left.len() != right.len() {
-        return Err(
-            "left_edge_xyz and right_edge_xyz must contain the same number of samples.".to_owned(),
-        );
-    }
+    debug_assert!(left.len().is_multiple_of(3));
+    debug_assert!(right.len().is_multiple_of(3));
+    debug_assert_eq!(left.len(), right.len());
     let sample_count = left.len() / 3;
-    if sample_count < 2 {
-        return Err("cover_strip() requires at least two edge samples.".to_owned());
-    }
+    debug_assert!(sample_count >= 2);
     let segment_count = sample_count - 1;
     let candidates = candidate_cells(raw_candidates, resolution)?;
     if let Some(candidates) = candidates.as_deref() {
@@ -942,4 +976,45 @@ pub(crate) fn cover_strip(
     dispatch_coverage(segment_count, threads, |range| {
         compute_strip_chunk(left, right, range, resolution)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{integer_sqrt, ring_of_cell, ring_start, ring_to_face_xy};
+
+    #[test]
+    fn integer_sqrt_is_exact_around_square_boundaries() {
+        for root in [1_u64, 2, 3, 17, 65_535, 1_000_000, u32::MAX as u64] {
+            let square = root * root;
+            assert_eq!(integer_sqrt(square - 1), root - 1);
+            assert_eq!(integer_sqrt(square), root);
+            if square < u64::MAX {
+                assert_eq!(integer_sqrt(square + 1), root);
+            }
+        }
+    }
+
+    #[test]
+    fn cell_decoder_round_trips_ring_boundaries() {
+        for nside in [1_u64, 2, 4, 64, 4096] {
+            for ring in 1..4 * nside {
+                let start = ring_start(nside, ring);
+                let next_start = ring_start(nside, ring + 1);
+                assert_eq!(ring_of_cell(start, nside), ring);
+                assert_eq!(ring_of_cell(next_start - 1, nside), ring);
+            }
+        }
+    }
+
+    #[test]
+    fn face_decoder_stays_inside_each_healpix_face() {
+        for nside in [1_u64, 2, 4, 8] {
+            for cell in 0..12 * nside * nside {
+                let (face, x, y) = ring_to_face_xy(cell, nside);
+                assert!(face < 12);
+                assert!((0..nside as i64).contains(&x));
+                assert!((0..nside as i64).contains(&y));
+            }
+        }
+    }
 }

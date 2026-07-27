@@ -60,6 +60,7 @@ jobs:
         run: |
           pixi run --environment test cargo fmt --all -- --check
           pixi run --environment test cargo clippy --all-targets --locked -- -D warnings
+          pixi run --environment test cargo test --all-targets --locked
           pixi run --environment test lint
 
       - name: Select Python on Windows

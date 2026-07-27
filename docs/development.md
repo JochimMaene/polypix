@@ -8,8 +8,9 @@ polypix/
   _core.pyi          private compiled-extension typing stub
   py.typed            PEP 561 marker
 rust/
-  lib.rs              PyO3 module and shared validation
-  ring.rs             owned center-only HEALPix RING kernel
+  geometry.rs         convex spherical-polygon validation
+  lib.rs              PyO3 bindings and native-buffer safety
+  ring.rs             HEALPix RING coverage and threading
 tests/
   test_polypix.py     behavior tests
   test_ring_geometry.py  independent HEALPix geometry fixtures
@@ -38,6 +39,12 @@ Run tests:
 
 ```bash
 pixi run test
+```
+
+Run Rust/Python linting, formatting, typing, and stub checks:
+
+```bash
+pixi run --environment test lint
 ```
 
 Build the extension in the development environment:

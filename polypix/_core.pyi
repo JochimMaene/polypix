@@ -3,6 +3,14 @@ import numpy.typing as npt
 
 __version__: str
 _MAX_RESOLUTION: int
+__all__ = [
+    "__version__",
+    "_MAX_RESOLUTION",
+    "_boundary_many",
+    "_center",
+    "_cover",
+    "_cover_strip",
+]
 
 def _cover(
     vertices_xyz: npt.NDArray[np.float64],

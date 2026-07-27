@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "polypix"
-version = "0.3.0"
+dynamic = ["version"]
 description = "Fast HEALPix coverage for convex footprints on the sphere."
 keywords = ["healpix", "spherical-geometry", "geospatial", "astronomy", "spatial-index"]
 classifiers = [
@@ -70,6 +70,7 @@ polypix = { path = ".", editable = true }
 no-build-isolation = ["polypix"]
 
 [tool.pixi.feature.test.dependencies]
+mypy = ">=1.15"
 pytest = ">=8"
 ruff = ">=0.9"
 
@@ -81,7 +82,7 @@ zensical = "*"
 
 [tool.pixi.tasks]
 test = "python -m pytest -q tests"
-lint = "ruff check polypix tests benchmarks tools && ruff format --check polypix tests benchmarks tools"
+lint = "ruff check polypix tests benchmarks tools && ruff format --check polypix tests benchmarks tools && mypy --strict polypix && python -m mypy.stubtest polypix._core"
 bench = "python -m pytest benchmarks --codspeed"
 wheel = "maturin build --release --out dist"
 docs-build = "zensical build --strict"
@@ -92,4 +93,4 @@ twine-check = "python -m twine check dist/*"
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F", "I"]
+select = ["B", "E4", "E7", "E9", "F", "I", "UP"]
