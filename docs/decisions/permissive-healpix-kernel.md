@@ -158,10 +158,10 @@ The evidence supports integration, not a performance-leadership claim:
 
 ### Symmetric public-call comparison
 
-After integration, `benchmarks/legacy_cpp_baseline.py` was run unchanged against
-released v0.2.1 at commit `20d2df6` and Rust/CDS at commit `a746b1a`. These
-figures are medians of seven complete public calls on the same Intel i7-1165G7
-WSL2 host. Every shared workload produced the same normalized membership.
+After integration, released v0.2.1 at commit `20d2df6` and Rust/CDS at commit
+`a746b1a` were measured with the same fixed workloads. These figures are
+medians of seven complete public calls on the same Intel i7-1165G7 WSL2 host.
+Every shared workload produced the same normalized membership.
 
 | Standard workload | v0.2.1 C++ auto | Rust/CDS auto | Rust/CDS speedup |
 | --- | ---: | ---: | ---: |

@@ -1,11 +1,11 @@
-"""End-to-end correctness and performance scorecard for Polypix.
+"""End-to-end correctness and performance regression scorecard for Polypix.
 
 Run the standard corpus from a source checkout with:
 
     python -m benchmarks.scorecard --output scorecard.json
 
-Only NumPy and Polypix are required.  The healpy and cdshealpix adapters report
-themselves as unavailable when their optional packages are not installed.
+Only NumPy and Polypix are required. Cross-library comparisons belong in a
+separate benchmark repository.
 """
 
 from __future__ import annotations
@@ -22,21 +22,16 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, Literal, Sequence
+from typing import Any, Literal, Sequence
 
 import numpy as np
 
 import polypix as px
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 CENTER_EPSILON = 2.0e-14
-BackendName = Literal["polypix", "healpy", "cdshealpix"]
 WorkloadKind = Literal["footprints", "strip", "candidates"]
-
-
-class UnsupportedWorkload(RuntimeError):
-    """Raised when an installed backend cannot run an equivalent workload."""
 
 
 @dataclass(frozen=True)
@@ -60,15 +55,6 @@ class CoverageResult:
 
     cells: np.ndarray
     offsets: np.ndarray
-
-
-@dataclass(frozen=True)
-class Backend:
-    name: BackendName
-    version: str | None
-    available: bool
-    detail: str
-    run: Callable[[Workload, int | None], CoverageResult] | None
 
 
 def lonlat_to_xyz(lon_deg: float, lat_deg: float) -> np.ndarray:
@@ -336,15 +322,6 @@ def _run_polypix(workload: Workload, threads: int | None) -> CoverageResult:
     )
 
 
-def _xyz_to_lonlat_rad(vertices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    longitude = np.arctan2(vertices[:, 1], vertices[:, 0])
-    latitude = np.arctan2(
-        vertices[:, 2],
-        np.hypot(vertices[:, 0], vertices[:, 1]),
-    )
-    return longitude, latitude
-
-
 def _oriented_edge_normals(vertices: np.ndarray) -> np.ndarray:
     normalized = vertices / np.linalg.norm(vertices, axis=1)[:, np.newaxis]
     normals = np.cross(normalized, np.roll(normalized, -1, axis=0))
@@ -373,190 +350,6 @@ def _candidate_coverage(
     return CoverageResult(np.ascontiguousarray(cells), offsets)
 
 
-def _concatenate_segments(chunks: Sequence[np.ndarray]) -> CoverageResult:
-    offsets = np.empty(len(chunks) + 1, dtype=np.uint64)
-    offsets[0] = 0
-    for index, chunk in enumerate(chunks):
-        offsets[index + 1] = offsets[index] + np.uint64(chunk.size)
-    cells = np.concatenate(chunks) if chunks else np.empty(0, dtype=np.uint64)
-    return CoverageResult(
-        np.ascontiguousarray(cells, dtype=np.uint64),
-        offsets,
-    )
-
-
-def _healpy_backend() -> Backend:
-    try:
-        import healpy as hp
-    except ImportError as exc:
-        return Backend("healpy", None, False, str(exc), None)
-
-    def run(workload: Workload, threads: int | None) -> CoverageResult:
-        if threads not in (None, 1):
-            raise UnsupportedWorkload(
-                "healpy query_polygon has no thread-count control"
-            )
-        nside = 1 << workload.resolution
-        if workload.kind == "strip":
-            assert workload.left_edge is not None and workload.right_edge is not None
-            footprints: Sequence[np.ndarray] = strip_footprints(
-                workload.left_edge, workload.right_edge
-            )
-        else:
-            assert workload.footprints is not None
-            footprints = _segments(workload.footprints)
-
-        if workload.kind == "candidates":
-            assert workload.candidate_cells is not None
-            # healpy's ufunc accepts signed pixel indices.  Every valid
-            # fixed-resolution HEALPix index fits safely in int64.
-            healpy_cells = workload.candidate_cells.astype(np.int64, copy=False)
-            x, y, z = hp.pix2vec(nside, healpy_cells, nest=False)
-            centers = np.column_stack((x, y, z))
-            return _candidate_coverage(footprints, workload.candidate_cells, centers)
-
-        chunks = [
-            np.asarray(
-                hp.query_polygon(
-                    nside,
-                    np.asarray(footprint),
-                    inclusive=False,
-                    nest=False,
-                ),
-                dtype=np.uint64,
-            )
-            for footprint in footprints
-        ]
-        return _concatenate_segments(chunks)
-
-    return Backend(
-        "healpy",
-        getattr(hp, "__version__", None),
-        True,
-        "query_polygon(inclusive=False, nest=False); batch loop is timed",
-        run,
-    )
-
-
-def _cdshealpix_backend() -> Backend:
-    try:
-        import astropy.units as units
-        from astropy.coordinates import Latitude, Longitude
-        from cdshealpix import nested, ring, to_ring
-    except ImportError as exc:
-        return Backend("cdshealpix", None, False, str(exc), None)
-
-    try:
-        version = importlib.metadata.version("cdshealpix")
-    except importlib.metadata.PackageNotFoundError:
-        version = None
-
-    def vectors(lon: Any, lat: Any) -> np.ndarray:
-        lon_values = np.asarray(lon.to_value(units.rad))
-        lat_values = np.asarray(lat.to_value(units.rad))
-        cos_lat = np.cos(lat_values)
-        return np.column_stack(
-            (
-                cos_lat * np.cos(lon_values),
-                cos_lat * np.sin(lon_values),
-                np.sin(lat_values),
-            )
-        )
-
-    def nested_centers(cells: np.ndarray, resolution: int) -> np.ndarray:
-        lon, lat = nested.healpix_to_lonlat(cells, resolution)
-        return vectors(lon, lat)
-
-    def ring_centers(cells: np.ndarray, resolution: int) -> np.ndarray:
-        lon, lat = ring.healpix_to_lonlat(cells, 1 << resolution)
-        return vectors(lon, lat)
-
-    def run(workload: Workload, threads: int | None) -> CoverageResult:
-        if threads not in (None, 1):
-            raise UnsupportedWorkload(
-                "cdshealpix polygon_search has no thread-count control"
-            )
-        if workload.kind == "strip":
-            assert workload.left_edge is not None and workload.right_edge is not None
-            footprints: Sequence[np.ndarray] = strip_footprints(
-                workload.left_edge, workload.right_edge
-            )
-        else:
-            assert workload.footprints is not None
-            footprints = _segments(workload.footprints)
-
-        if workload.kind == "candidates":
-            assert workload.candidate_cells is not None
-            return _candidate_coverage(
-                footprints,
-                workload.candidate_cells,
-                ring_centers(workload.candidate_cells, workload.resolution),
-            )
-
-        chunks: list[np.ndarray] = []
-        for footprint in footprints:
-            lon, lat = _xyz_to_lonlat_rad(np.asarray(footprint))
-            ipix, depths, _ = nested.polygon_search(
-                Longitude(lon, unit=units.rad),
-                Latitude(lat, unit=units.rad),
-                workload.resolution,
-                flat=True,
-            )
-            ipix = np.asarray(ipix, dtype=np.uint64)
-            depths = np.asarray(depths)
-            at_resolution = ipix[depths == workload.resolution]
-            # polygon_search is a cell coverage/MOC operation, not a documented
-            # center-only query.  Filter its flat cover by cell center so this
-            # explicitly named adapter has semantics equivalent to Polypix.
-            if at_resolution.size:
-                normals = _oriented_edge_normals(np.asarray(footprint))
-                inside = np.all(
-                    nested_centers(at_resolution, workload.resolution) @ normals.T
-                    >= -CENTER_EPSILON,
-                    axis=1,
-                )
-                at_resolution = at_resolution[inside]
-            chunks.append(
-                np.asarray(
-                    to_ring(at_resolution, workload.resolution),
-                    dtype=np.uint64,
-                )
-            )
-        return _concatenate_segments(chunks)
-
-    return Backend(
-        "cdshealpix",
-        version,
-        True,
-        "flat NESTED polygon_search, center filter, and timed RING conversion",
-        run,
-    )
-
-
-def discover_backends(names: Sequence[BackendName]) -> list[Backend]:
-    """Discover requested adapters without making optional packages mandatory."""
-
-    backends: list[Backend] = []
-    for name in names:
-        if name == "polypix":
-            backends.append(
-                Backend(
-                    "polypix",
-                    getattr(px, "__version__", None),
-                    True,
-                    "complete public Polypix call",
-                    _run_polypix,
-                )
-            )
-        elif name == "healpy":
-            backends.append(_healpy_backend())
-        elif name == "cdshealpix":
-            backends.append(_cdshealpix_backend())
-        else:  # pragma: no cover - argparse and the type checker prevent this
-            raise ValueError(f"unknown backend: {name}")
-    return backends
-
-
 def _canonical_digest(result: CoverageResult) -> str:
     digest = hashlib.sha256()
     canonical_offsets = np.empty_like(result.offsets)
@@ -578,101 +371,50 @@ def _has_segment_duplicates(result: CoverageResult) -> bool:
     )
 
 
-def _time_backend(
-    backend: Backend,
+def _time_workload(
     workload: Workload,
     threads: int | None,
     warmup: int,
     repeats: int,
-) -> tuple[dict[str, Any], CoverageResult | None]:
+) -> tuple[dict[str, Any], CoverageResult]:
     mode = "auto" if threads is None else str(threads)
-    if not backend.available or backend.run is None:
-        return {
-            "backend": backend.name,
-            "workload": workload.name,
-            "threads": mode,
-            "status": "unavailable",
-            "detail": backend.detail,
-        }, None
-
-    try:
-        for _ in range(warmup):
-            backend.run(workload, threads)
-        timings_ns: list[int] = []
-        result: CoverageResult | None = None
-        for _ in range(repeats):
-            started = time.perf_counter_ns()
-            result = backend.run(workload, threads)
-            timings_ns.append(time.perf_counter_ns() - started)
-        assert result is not None
-        median_ns = statistics.median(timings_ns)
-        mean_ns = statistics.fmean(timings_ns)
-        return {
-            "backend": backend.name,
-            "workload": workload.name,
-            "threads": mode,
-            "status": "ok",
-            "timing_scope": "complete adapter/public workflow",
-            "samples_ns": timings_ns,
-            "median_ns": median_ns,
-            "minimum_ns": min(timings_ns),
-            "mean_ns": mean_ns,
-            "stdev_ns": statistics.pstdev(timings_ns),
-            "items_per_second": workload.item_count / (median_ns / 1.0e9),
-            "item_count": workload.item_count,
-            "cell_count": int(result.cells.size),
-            "materialized_bytes": int(result.cells.nbytes + result.offsets.nbytes),
-            "membership_sha256": _canonical_digest(result),
-            "duplicate_cells_within_segment": _has_segment_duplicates(result),
-        }, result
-    except UnsupportedWorkload as exc:
-        return {
-            "backend": backend.name,
-            "workload": workload.name,
-            "threads": mode,
-            "status": "unsupported",
-            "detail": str(exc),
-        }, None
-    except Exception as exc:  # keep a long benchmark run report-friendly
-        return {
-            "backend": backend.name,
-            "workload": workload.name,
-            "threads": mode,
-            "status": "error",
-            "detail": f"{type(exc).__name__}: {exc}",
-        }, None
+    for _ in range(warmup):
+        _run_polypix(workload, threads)
+    timings_ns: list[int] = []
+    result: CoverageResult | None = None
+    for _ in range(repeats):
+        started = time.perf_counter_ns()
+        result = _run_polypix(workload, threads)
+        timings_ns.append(time.perf_counter_ns() - started)
+    assert result is not None
+    median_ns = statistics.median(timings_ns)
+    mean_ns = statistics.fmean(timings_ns)
+    return {
+        "workload": workload.name,
+        "threads": mode,
+        "status": "ok",
+        "timing_scope": "complete public Polypix call",
+        "samples_ns": timings_ns,
+        "median_ns": median_ns,
+        "minimum_ns": min(timings_ns),
+        "mean_ns": mean_ns,
+        "stdev_ns": statistics.pstdev(timings_ns),
+        "items_per_second": workload.item_count / (median_ns / 1.0e9),
+        "item_count": workload.item_count,
+        "cell_count": int(result.cells.size),
+        "materialized_bytes": int(result.cells.nbytes + result.offsets.nbytes),
+        "membership_sha256": _canonical_digest(result),
+        "duplicate_cells_within_segment": _has_segment_duplicates(result),
+    }, result
 
 
 def _polypix_centers(cells: np.ndarray, resolution: int) -> np.ndarray:
     return np.asarray(px.centers(cells, resolution), dtype=np.float64)
 
 
-def _oracle_centers(
-    cells: np.ndarray,
-    resolution: int,
-) -> tuple[np.ndarray, str]:
-    try:
-        import healpy as hp
-    except ImportError:
-        return (
-            _polypix_centers(cells, resolution),
-            "Polypix centers plus independent NumPy containment",
-        )
-
-    x, y, z = hp.pix2vec(
-        1 << resolution,
-        cells.astype(np.int64, copy=False),
-        nest=False,
-    )
-    return (
-        np.column_stack((x, y, z)),
-        "healpy.pix2vec plus independent NumPy containment",
-    )
-
-
 def _brute_force_membership(vertices: np.ndarray, resolution: int) -> np.ndarray:
     cells = np.arange(12 * (4**resolution), dtype=np.uint64)
-    centers, _ = _oracle_centers(cells, resolution)
+    centers = _polypix_centers(cells, resolution)
     normals = _oriented_edge_normals(vertices)
     return cells[np.all(centers @ normals.T >= -CENTER_EPSILON, axis=1)]
 
@@ -762,7 +504,7 @@ def run_adversarial_correctness() -> list[dict[str, Any]]:
     """Run Polypix against an exhaustive low-resolution center oracle."""
 
     checks: list[dict[str, Any]] = []
-    _, oracle = _oracle_centers(np.asarray([0], dtype=np.uint64), 0)
+    oracle = "exhaustive Polypix centers plus independent NumPy containment"
     for name, footprint, resolution in adversarial_footprints():
         workload = Workload(
             name=name,
@@ -843,12 +585,11 @@ def run_adversarial_correctness() -> list[dict[str, Any]]:
 def build_report(
     *,
     profile: Literal["smoke", "standard"] = "standard",
-    backend_names: Sequence[BackendName] = ("polypix", "healpy", "cdshealpix"),
     warmup: int = 1,
     repeats: int = 5,
     thread_modes: Sequence[int | None] = (None, 1),
 ) -> dict[str, Any]:
-    """Execute the scorecard and return its JSON-serializable report."""
+    """Execute the Polypix scorecard and return its JSON-serializable report."""
 
     if warmup < 0:
         raise ValueError("warmup must be non-negative")
@@ -856,29 +597,21 @@ def build_report(
         raise ValueError("repeats must be positive")
 
     workloads = build_workloads(profile)
-    backends = discover_backends(backend_names)
     results: list[dict[str, Any]] = []
     references: dict[str, CoverageResult] = {}
 
-    # Polypix runs first so optional adapters can be compared by membership,
-    # independent of their native output order.
-    ordered_backends = sorted(backends, key=lambda backend: backend.name != "polypix")
-    for backend in ordered_backends:
-        modes = thread_modes if backend.name == "polypix" else (None,)
-        for workload in workloads:
-            for threads in modes:
-                record, result = _time_backend(
-                    backend, workload, threads, warmup, repeats
-                )
-                reference = references.get(workload.name)
-                if backend.name == "polypix" and threads is None and result is not None:
-                    references[workload.name] = result
-                    record["matches_polypix_auto"] = True
-                elif reference is not None and result is not None:
-                    record["matches_polypix_auto"] = _canonical_digest(
-                        result
-                    ) == _canonical_digest(reference)
-                results.append(record)
+    for workload in workloads:
+        for threads in thread_modes:
+            record, result = _time_workload(workload, threads, warmup, repeats)
+            reference = references.get(workload.name)
+            if reference is None:
+                references[workload.name] = result
+                record["matches_first_thread_mode"] = True
+            else:
+                record["matches_first_thread_mode"] = _canonical_digest(
+                    result
+                ) == _canonical_digest(reference)
+            results.append(record)
 
     try:
         numpy_version = importlib.metadata.version("numpy")
@@ -894,7 +627,7 @@ def build_report(
             "warmup_calls": warmup,
             "measured_calls": repeats,
             "fixtures_built_outside_timing": True,
-            "scope": "complete public call or explicitly described equivalent workflow",
+            "scope": "complete public Polypix call",
         },
         "environment": {
             "python": sys.version,
@@ -904,15 +637,7 @@ def build_report(
             "processor": platform.processor(),
             "numpy": numpy_version,
         },
-        "backends": [
-            {
-                "name": backend.name,
-                "version": backend.version,
-                "available": backend.available,
-                "detail": backend.detail,
-            }
-            for backend in backends
-        ],
+        "polypix_version": getattr(px, "__version__", None),
         "workloads": [
             {
                 "name": workload.name,
@@ -957,12 +682,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument(
-        "--backends",
-        nargs="+",
-        choices=("polypix", "healpy", "cdshealpix"),
-        default=("polypix", "healpy", "cdshealpix"),
-    )
-    parser.add_argument(
         "--threads",
         type=_parse_threads,
         default=(None, 1),
@@ -970,15 +689,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--output", type=Path)
     parser.add_argument(
-        "--fail-on-mismatch",
+        "--fail-on-error",
         action="store_true",
-        help="return a non-zero status for correctness failures or competitor mismatches",
+        help="return a non-zero status for correctness or determinism failures",
     )
     args = parser.parse_args(argv)
 
     report = build_report(
         profile=args.profile,
-        backend_names=args.backends,
         warmup=args.warmup,
         repeats=args.repeats,
         thread_modes=args.threads,
@@ -989,13 +707,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         args.output.write_text(payload, encoding="utf-8")
 
-    if args.fail_on_mismatch:
+    if args.fail_on_error:
         correctness_failed = any(
             check["status"] != "pass" for check in report["correctness"]
         )
         result_failed = any(
-            result.get("status") == "error"
-            or result.get("matches_polypix_auto") is False
+            result.get("status") != "ok"
+            or result.get("matches_first_thread_mode") is False
             for result in report["results"]
         )
         if correctness_failed or result_failed:

@@ -152,24 +152,19 @@ def test_sparse_candidate_workload_matches_explicit_post_filter() -> None:
     assert scorecard._canonical_digest(direct) == scorecard._canonical_digest(expected)
 
 
-def test_smoke_report_is_machine_readable_and_optional_backends_skip() -> None:
+def test_smoke_report_is_machine_readable() -> None:
     report = scorecard.build_report(
         profile="smoke",
-        backend_names=("polypix", "healpy", "cdshealpix"),
         warmup=0,
         repeats=1,
         thread_modes=(None,),
     )
     round_tripped = json.loads(json.dumps(report))
 
-    assert round_tripped["schema_version"] == 1
-    assert round_tripped["timing"]["scope"].startswith("complete public call")
-    assert all(
-        record["status"] in {"ok", "unsupported", "unavailable"}
-        for record in round_tripped["results"]
-    )
+    assert round_tripped["schema_version"] == 2
+    assert round_tripped["timing"]["scope"] == "complete public Polypix call"
+    assert all(record["status"] == "ok" for record in round_tripped["results"])
     assert all(check["status"] == "pass" for check in round_tripped["correctness"])
-    assert any(
-        record["status"] == "ok" and record["backend"] == "polypix"
-        for record in round_tripped["results"]
+    assert all(
+        record["matches_first_thread_mode"] for record in round_tripped["results"]
     )

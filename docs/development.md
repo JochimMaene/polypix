@@ -14,7 +14,7 @@ tests/
   test_polypix.py     behavior tests
   test_ring_geometry.py  independent HEALPix geometry fixtures
 benchmarks/
-  scorecard.py        correctness and performance scorecard
+  scorecard.py        Polypix correctness and performance regression report
 docs/
   *.md                Zensical documentation pages
 ```
@@ -68,35 +68,15 @@ Run the CodSpeed benchmark suite locally:
 pixi run --environment bench bench
 ```
 
-Run the end-to-end scorecard separately when comparing correctness or
-performance with optional competitor installations:
+Run the end-to-end Polypix regression scorecard:
 
 ```bash
 python -m benchmarks.scorecard --output scorecard.json
 ```
 
-### Released C++ baseline
-
-The v0.2.1 `healpix_cxx` implementation remains reproducible at commit
-`20d2df6`. The compatibility driver below runs the same fixed fixtures and
-normalizes v0.2.1's packed NESTED tokens to standard fixed-resolution RING
-indices:
-
-```bash
-git worktree add --detach /tmp/polypix-v021 20d2df6
-cd /tmp/polypix-v021
-pixi run -e test python /path/to/current/polypix/benchmarks/legacy_cpp_baseline.py \
-  --output /tmp/polypix-v021.json
-cd /path/to/current/polypix
-pixi run -e test python -m benchmarks.legacy_cpp_baseline \
-  --output /tmp/polypix-current.json
-git worktree remove /tmp/polypix-v021
-```
-
-Compare only records with identical membership digests. The driver measures
-complete public calls, but the implementations still differ in validation and
-result contracts; report the exact commit, machine, thread mode, and workload
-instead of presenting the result as a general Rust-versus-C++ claim.
+Cross-library benchmarks and their optional dependencies intentionally live in
+a separate comparison repository. This repository measures Polypix regressions
+and correctness without carrying adapters for other libraries.
 
 CodSpeed reports performance regressions through
 `.github/workflows/codspeed.yml` on pull requests and pushes to `main`.
@@ -155,4 +135,4 @@ When adding public functions, update:
 - `polypix/__init__.py`;
 - `polypix/__init__.pyi`;
 - `docs/api.md`;
-- tests and the scorecard where applicable.
+- tests and benchmarks where applicable.

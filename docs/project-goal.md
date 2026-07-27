@@ -148,7 +148,9 @@ conversion, validation, native computation, allocation, and result
 construction.
 
 Performance claims must be based on public, reproducible comparisons against
-the fastest applicable alternatives. The benchmark suite covers:
+the fastest applicable alternatives. Those cross-library comparisons live in a
+separate benchmark repository so competitor dependencies and adapters do not
+become part of Polypix. This repository's regression benchmarks cover:
 
 - representative dense and ragged footprint batches;
 - strip intervals;
@@ -157,10 +159,10 @@ the fastest applicable alternatives. The benchmark suite covers:
 - single-threaded and automatic parallel execution;
 - single-footprint latency as a guardrail, not the primary objective.
 
-The initial comparison set includes equivalent `healpy` and `cdshealpix`
-polygon-coverage workflows. Comparisons use the same grid, resolution, coverage
-rule, thread budget, and materialized output; cases with different semantics
-are labeled rather than presented as direct wins.
+The external comparison set initially includes equivalent `healpy` and
+`cdshealpix` polygon-coverage workflows. Comparisons use the same grid,
+resolution, coverage rule, thread budget, and materialized output; cases with
+different semantics are labeled rather than presented as direct wins.
 
 Polypix aims to lead the primary batch workloads, not every microbenchmark.
 Optimizations for obscure cases do not justify public complexity or regressions
@@ -194,8 +196,10 @@ NumPy is the only runtime dependency. Published wheels contain the native
 kernel and require no system HEALPix installation, compiler, or geometry
 package.
 
-Polypix follows Scientific Python SPEC 0 for its minimum Python and NumPy
-versions. The initial supported wheel matrix is:
+Scientific Python SPEC 0 informs Polypix's minimum Python and NumPy versions,
+but is not a requirement to drop an older compatible NumPy release. Polypix may
+retain inexpensive compatibility when it benefits users, and every declared
+minimum remains tested. The initial supported wheel matrix is:
 
 - Linux x86-64 and ARM64;
 - macOS Intel and Apple Silicon;
