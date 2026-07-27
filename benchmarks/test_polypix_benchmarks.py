@@ -112,10 +112,21 @@ def test_cover_footprint_single_latency(benchmark, footprints: np.ndarray) -> No
     assert coverage.offsets.shape == (2,)
 
 
-def test_cover_footprint_automatic_parallel(
-    benchmark, large_footprints: np.ndarray
+def test_cover_footprint_single_automatic_latency(
+    benchmark, footprints: np.ndarray
 ) -> None:
-    coverage = benchmark(px.cover_footprint, large_footprints, 9)
+    coverage = benchmark(px.cover_footprint, footprints[0], 7)
+
+    assert coverage.offsets.shape == (2,)
+
+
+@pytest.mark.parametrize(
+    "resolution", [6, 7, 9], ids=lambda value: f"resolution_{value}"
+)
+def test_cover_footprint_automatic_parallel(
+    benchmark, large_footprints: np.ndarray, resolution: int
+) -> None:
+    coverage = benchmark(px.cover_footprint, large_footprints, resolution)
 
     assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
 
@@ -135,19 +146,6 @@ def test_cover_footprint_explicit_pool_reuse(
     coverage = benchmark(px.cover_footprint, large_footprints, 9, threads=4)
 
     assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
-
-
-def test_cover_footprint_explicit_pool_varied_batches(
-    benchmark,
-    footprints: np.ndarray,
-) -> None:
-    def cover_two_sizes() -> px.Coverage:
-        px.cover_footprint(footprints[:3], 6, threads=4)
-        return px.cover_footprint(footprints[:64], 6, threads=4)
-
-    coverage = benchmark(cover_two_sizes)
-
-    assert coverage.offsets.shape == (65,)
 
 
 def test_cover_footprint_mixed_ragged_batch(
@@ -176,6 +174,21 @@ def test_cover_footprint_with_large_sparse_candidate_set(
         resolution,
         candidate_cells=large_sparse_resolution_12_cells,
         threads=1,
+    )
+
+    assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
+
+
+def test_cover_footprint_with_candidates_automatic_parallel(
+    benchmark,
+    large_footprints: np.ndarray,
+    large_sparse_resolution_12_cells: np.ndarray,
+) -> None:
+    coverage = benchmark(
+        px.cover_footprint,
+        large_footprints,
+        12,
+        candidate_cells=large_sparse_resolution_12_cells,
     )
 
     assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)

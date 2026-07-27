@@ -63,13 +63,16 @@ them.
 `candidate_cells` optionally restricts the result to a one-dimensional set of
 standard RING indices at the requested resolution. Duplicate candidates are
 ignored. An empty candidate set returns empty segments without dropping input
-items.
+items. Center inclusion uses a `1e-14` dot-product boundary tolerance.
+Mathematically equivalent floating-point center calculations can differ only
+inside that boundary band.
 
 `threads=None` uses the automatic native policy. `threads=1` disables internal
 parallelism; a larger positive integer sets the reusable worker-pool maximum.
-The pool is capped by the host's available parallelism; calls with fewer
-independent items simply leave surplus workers idle. Threading does not change
-membership, segment order, or cell order.
+The pool is capped by the host's available parallelism. Calls below the
+measured parallel crossover remain sequential and do not initialize a pool,
+even when a larger explicit maximum is supplied. Threading does not change
+membership, segment order, or cell order on the same build and platform.
 
 Example:
 

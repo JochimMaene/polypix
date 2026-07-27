@@ -2,7 +2,6 @@
 name = "polypix"
 version = "0.3.0"
 edition = "2021"
-rust-version = "1.81"
 description = "Fast HEALPix coverage for convex footprints on the sphere."
 homepage = "https://jochimmaene.github.io/polypix/"
 repository = "https://github.com/JochimMaene/polypix"

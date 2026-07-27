@@ -34,10 +34,6 @@ Issues = "https://github.com/JochimMaene/polypix/issues"
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
-bench = ["pytest>=8", "pytest-codspeed>=5"]
-docs = ["zensical"]
-release = ["maturin>=1.10,<2", "twine"]
-dev = ["pytest>=8", "maturin>=1.10,<2", "twine", "zensical"]
 
 [tool.maturin]
 bindings = "pyo3"
@@ -63,7 +59,7 @@ python = ">=3.12"
 numpy = ">=1.26"
 
 [tool.pixi.feature.dev.dependencies]
-rust = ">=1.81"
+rust = "*"
 maturin = ">=1.10,<2"
 twine = "*"
 

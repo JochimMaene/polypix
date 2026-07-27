@@ -70,6 +70,9 @@ product.
 Coverage may be restricted to a sparse set of `candidate_cells`. Candidate
 inputs have set semantics and use the requested resolution and RING ordering.
 The implementation may choose the fastest equivalent algorithm internally.
+Center inclusion uses one documented floating-point boundary tolerance;
+mathematically equivalent strategies may differ only inside that tolerance
+band.
 
 ### Grid And Cell IDs
 
@@ -180,9 +183,10 @@ in the primary path.
 Large batches are parallelized inside the native kernel when measurements show
 a benefit. `threads=None` selects an automatic policy, `threads=1` disables
 internal parallelism, and larger values are maximums rather than raw
-thread-spawn requests. Polypix releases the GIL, exposes no scheduler or chunk
-controls, and returns identical membership and ordering regardless of thread
-count.
+thread-spawn requests. Calls below the measured crossover remain sequential
+without initializing a worker pool. Polypix releases the GIL, exposes no
+scheduler or chunk controls, and returns identical membership and ordering
+regardless of thread count on the same build and platform.
 
 Correctness, licensing, and reliable installation are constraints rather than
 performance trade-offs. Public simplicity normally wins over marginal speed.
@@ -224,9 +228,11 @@ have been verified. Existing GPL releases remain under their published terms.
 
 ## Correctness
 
-For the same valid input, resolution, candidate set, and released version,
-Polypix returns the same membership and native order across supported platforms,
-batch partitioning, repeated execution, and thread counts.
+For the same valid input, resolution, candidate set, released version, build,
+and platform, Polypix returns the same membership and native order across batch
+partitioning, repeated execution, and thread counts. Platform `libm`
+differences may affect only centers inside the documented floating-point
+boundary tolerance.
 
 The native kernel must be tested against an independent oracle with randomized
 and adversarial footprints. Tests cover poles, longitude wraparound, cell

@@ -49,13 +49,13 @@ pixi run maturin develop
 Build documentation:
 
 ```bash
-pixi run docs-build
+pixi run --environment docs docs-build
 ```
 
 Preview documentation:
 
 ```bash
-pixi run docs-serve
+pixi run --environment docs docs-serve
 ```
 
 Build a release-mode wheel:
@@ -108,7 +108,7 @@ The documentation source lives in `docs/` and is configured by
 `zensical.toml`. Build it locally with:
 
 ```bash
-pixi run docs-build
+pixi run --environment docs docs-build
 ```
 
 The `.github/workflows/docs.yml` workflow builds the same site on pull requests

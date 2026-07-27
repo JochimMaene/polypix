@@ -9,11 +9,10 @@ use std::sync::{Arc, Mutex, OnceLock};
 mod ring;
 
 const MAX_RESOLUTION: u8 = 29;
-// The automatic policy is intentionally conservative: measurements on the
-// primary small-footprint batches show dispatch overhead dominates below both
-// 1,024 independent items and roughly one million estimated cell tests.
-const AUTO_PARALLEL_MIN_ITEMS: usize = 1024;
-const AUTO_PARALLEL_MIN_WORK: usize = 1 << 20;
+// Measurements on primary small-footprint batches show item count predicts the
+// dispatch crossover better than resolution or candidate-set size. Parallelism
+// is consistently beneficial from 2,048 independent items on supported hosts.
+const AUTO_PARALLEL_MIN_ITEMS: usize = 2048;
 const ZERO_NORM_EPSILON: f64 = 1.0e-15;
 const CONTAINMENT_EPSILON: f64 = 1.0e-14;
 
@@ -123,7 +122,13 @@ fn validate_polygon(vertices: &mut [Vec3], edge_normals: &mut [Vec3]) -> Result<
             .find(|&candidate| norm(candidate) > ZERO_NORM_EPSILON)
             .ok_or_else(|| "Footprint is degenerate.".to_owned())?;
     }
-    interior = normalize(interior, "footprints_xyz")?;
+    let interior_length = norm(interior);
+    debug_assert!(interior_length > ZERO_NORM_EPSILON);
+    interior = [
+        interior[0] / interior_length,
+        interior[1] / interior_length,
+        interior[2] / interior_length,
+    ];
 
     let mut orientation = 0.0;
     for index in 0..vertices.len() {
@@ -193,16 +198,8 @@ fn contains_center(edge_normals: &[Vec3], center: Vec3) -> bool {
         .all(|&normal| dot(normal, center) >= -CONTAINMENT_EPSILON)
 }
 
-fn automatic_parallel(item_count: usize, resolution: u8, candidate_count: Option<usize>) -> bool {
-    if item_count < AUTO_PARALLEL_MIN_ITEMS {
-        return false;
-    }
-    let work_per_item =
-        candidate_count.unwrap_or_else(|| 1_usize << usize::from(resolution.min(12)));
-    match item_count.checked_mul(work_per_item) {
-        Some(work) => work >= AUTO_PARALLEL_MIN_WORK,
-        None => true,
-    }
+fn automatic_parallel(item_count: usize) -> bool {
+    item_count >= AUTO_PARALLEL_MIN_ITEMS
 }
 
 fn explicit_pool(worker_count: usize) -> Result<Arc<rayon::ThreadPool>, String> {
@@ -395,4 +392,15 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_center, module)?)?;
     module.add_function(wrap_pyfunction!(_boundary_many, module)?)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{automatic_parallel, AUTO_PARALLEL_MIN_ITEMS};
+
+    #[test]
+    fn automatic_parallelism_uses_the_measured_item_crossover() {
+        assert!(!automatic_parallel(AUTO_PARALLEL_MIN_ITEMS - 1));
+        assert!(automatic_parallel(AUTO_PARALLEL_MIN_ITEMS));
+    }
 }

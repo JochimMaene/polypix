@@ -15,10 +15,10 @@ use super::{
 };
 
 const INDEX_UNCERTAINTY_ULPS: f64 = 128.0;
+const LONGITUDE_BOUNDS_EPSILON: f64 = 1.0e-14;
 
 #[derive(Clone, Copy)]
 struct Ring {
-    index: u64,
     start: u64,
     cells: u64,
     shift: f64,
@@ -86,17 +86,17 @@ fn longitude_bounds(vertices: &[Vec3], edge_normals: &[Vec3]) -> ([(f64, f64); 2
             if end_longitude < start_longitude {
                 end_longitude += TAU;
             }
-            if end_longitude > end + 1.0e-14 {
+            if end_longitude > end + LONGITUDE_BOUNDS_EPSILON {
                 return ([(0.0, TAU), (0.0, 0.0)], 1);
             }
         } else if direction < 0.0 {
             if end_longitude > start_longitude {
                 end_longitude -= TAU;
             }
-            if end_longitude < start - 1.0e-14 {
+            if end_longitude < start - LONGITUDE_BOUNDS_EPSILON {
                 return ([(0.0, TAU), (0.0, 0.0)], 1);
             }
-        } else if (end_longitude - start_longitude).abs() > 1.0e-14 {
+        } else if (end_longitude - start_longitude).abs() > LONGITUDE_BOUNDS_EPSILON {
             return ([(0.0, TAU), (0.0, 0.0)], 1);
         }
     }
@@ -135,7 +135,6 @@ fn ring_z(nside: u64, ring: u64) -> f64 {
 }
 
 fn ring_info(nside: u64, ring: u64) -> Ring {
-    let pixel_count = 12 * nside * nside;
     let z = ring_z(nside, ring);
     let radial = if ring < nside {
         let auxiliary = ring as f64 / (3.0_f64.sqrt() * nside as f64);
@@ -149,8 +148,7 @@ fn ring_info(nside: u64, ring: u64) -> Ring {
     };
     if ring < nside {
         Ring {
-            index: ring,
-            start: 2 * ring * (ring - 1),
+            start: ring_start(nside, ring),
             cells: 4 * ring,
             shift: 0.5,
             z,
@@ -159,8 +157,7 @@ fn ring_info(nside: u64, ring: u64) -> Ring {
     } else if ring <= 3 * nside {
         let cells = 4 * nside;
         Ring {
-            index: ring,
-            start: 2 * nside * (nside - 1) + (ring - nside) * cells,
+            start: ring_start(nside, ring),
             cells,
             shift: if (ring + nside) & 1 == 0 { 0.5 } else { 0.0 },
             z,
@@ -169,8 +166,7 @@ fn ring_info(nside: u64, ring: u64) -> Ring {
     } else {
         let south_ring = 4 * nside - ring;
         Ring {
-            index: ring,
-            start: pixel_count - 2 * south_ring * (south_ring + 1),
+            start: ring_start(nside, ring),
             cells: 4 * south_ring,
             shift: 0.5,
             z,
@@ -190,23 +186,33 @@ fn integer_sqrt(value: u64) -> u64 {
     root
 }
 
-fn ring_for_cell(cell: u64, nside: u64) -> Ring {
+fn ring_start(nside: u64, ring: u64) -> u64 {
+    if ring < nside {
+        2 * ring * (ring - 1)
+    } else if ring <= 3 * nside {
+        2 * nside * (nside - 1) + (ring - nside) * 4 * nside
+    } else {
+        let south_ring = 4 * nside - ring;
+        12 * nside * nside - 2 * south_ring * (south_ring + 1)
+    }
+}
+
+fn ring_of_cell(cell: u64, nside: u64) -> u64 {
     let cap_cells = 2 * nside * (nside - 1);
     let pixel_count = 12 * nside * nside;
-    let ring = if cell < cap_cells {
+    if cell < cap_cells {
         integer_sqrt(1 + 2 * cell).div_ceil(2)
     } else if cell < pixel_count - cap_cells {
         nside + (cell - cap_cells) / (4 * nside)
     } else {
         let reversed = pixel_count - 1 - cell;
         4 * nside - integer_sqrt(1 + 2 * reversed).div_ceil(2)
-    };
-    ring_info(nside, ring)
+    }
 }
 
 pub(crate) fn center(cell: u64, resolution: u8) -> Vec3 {
     let nside = 1_u64 << resolution;
-    let ring = ring_for_cell(cell, nside);
+    let ring = ring_info(nside, ring_of_cell(cell, nside));
     let offset = cell - ring.start;
     let longitude = (offset as f64 + ring.shift) * TAU / ring.cells as f64;
     let (sine, cosine) = longitude.sin_cos();
@@ -218,10 +224,11 @@ pub(crate) fn center(cell: u64, resolution: u8) -> Vec3 {
 // implementation; tests/test_ring_geometry.py pins it against that external
 // numerical oracle.
 fn ring_to_face_xy(cell: u64, nside: u64) -> (u8, i64, i64) {
-    let ring = ring_for_cell(cell, nside);
-    let ring_index = ring.index as i64;
+    let ring_index = ring_of_cell(cell, nside);
+    let ring_start = ring_start(nside, ring_index);
+    let ring_index = ring_index as i64;
     let nside = nside as i64;
-    let mut longitude_index = (cell - ring.start) as i64;
+    let mut longitude_index = (cell - ring_start) as i64;
 
     if ring_index <= nside {
         let face = longitude_index / ring_index;
@@ -550,6 +557,19 @@ impl PreparedFootprint {
             Self::Polygon(polygon) => contains_center(&polygon.edge_normals, point),
         }
     }
+
+    fn cover(&self, resolution: u8, cells: &mut Vec<u64>) {
+        match self {
+            Self::Quad(quad) => cover_quad_centers(quad, resolution, cells),
+            Self::Polygon(polygon) => cover_centers(
+                &polygon.vertices,
+                &polygon.edge_normals,
+                resolution,
+                cells,
+                |x, y, z| contains_center(&polygon.edge_normals, [x, y, z]),
+            ),
+        }
+    }
 }
 
 fn candidate_cells(
@@ -578,10 +598,12 @@ fn candidate_range(
     maximum_z: f64,
 ) -> Range<usize> {
     let nside = 1_u64 << resolution;
-    let start = candidates
-        .partition_point(|&cell| ring_for_cell(cell, nside).z > maximum_z + CONTAINMENT_EPSILON);
-    let end = candidates
-        .partition_point(|&cell| ring_for_cell(cell, nside).z >= minimum_z - CONTAINMENT_EPSILON);
+    let start = candidates.partition_point(|&cell| {
+        ring_z(nside, ring_of_cell(cell, nside)) > maximum_z + CONTAINMENT_EPSILON
+    });
+    let end = candidates.partition_point(|&cell| {
+        ring_z(nside, ring_of_cell(cell, nside)) >= minimum_z - CONTAINMENT_EPSILON
+    });
     start..end
 }
 
@@ -624,9 +646,11 @@ fn compute_candidate_chunk(
     candidates: &[u64],
     range: Range<usize>,
     resolution: u8,
-) -> Result<Coverage, String> {
+) -> Coverage {
     let mut coverage = Coverage {
-        cells: Vec::with_capacity(range.len() * candidates.len().min(64)),
+        // Candidate hit rates vary from empty to dense; reserving from the
+        // candidate-set size overallocates badly for sparse queries.
+        cells: Vec::new(),
         offsets: Vec::with_capacity(range.len() + 1),
     };
     coverage.offsets.push(0);
@@ -651,7 +675,7 @@ fn compute_candidate_chunk(
         }
         coverage.offsets.push(coverage.cells.len() as u64);
     }
-    Ok(coverage)
+    coverage
 }
 
 fn merge_coverages(chunks: Vec<Coverage>) -> Coverage {
@@ -682,32 +706,26 @@ fn merge_coverages(chunks: Vec<Coverage>) -> Coverage {
 
 fn dispatch_coverage(
     item_count: usize,
-    resolution: u8,
-    candidate_count: Option<usize>,
     threads: Option<usize>,
     chunk: impl Fn(std::ops::Range<usize>) -> Result<Coverage, String> + Send + Sync,
 ) -> Result<Coverage, String> {
     if item_count == 0 {
         return chunk(0..0);
     }
-    let (worker_count, parallel) = match threads {
-        Some(1) => (1, false),
+    if threads == Some(1) || !automatic_parallel(item_count) {
+        return chunk(0..item_count);
+    }
+    let worker_count = match threads {
+        Some(1) => unreachable!("handled above"),
         Some(requested) => {
             let available = std::thread::available_parallelism()
                 .map(|count| count.get())
                 .unwrap_or(1);
-            let workers = requested.min(available);
-            (workers, workers > 1 && item_count > 1)
+            requested.min(available)
         }
-        None => {
-            let workers = rayon::current_num_threads().min(item_count);
-            (
-                workers,
-                workers > 1 && automatic_parallel(item_count, resolution, candidate_count),
-            )
-        }
+        None => rayon::current_num_threads().min(item_count),
     };
-    if !parallel {
+    if worker_count <= 1 {
         return chunk(0..item_count);
     }
 
@@ -731,15 +749,20 @@ fn dispatch_coverage(
     Ok(merge_coverages(chunks))
 }
 
+fn expected_cells_per_footprint(resolution: u8) -> usize {
+    // Small-footprint measurements show this bounded estimate avoids common
+    // reallocations without scaling reservations with the full HEALPix grid.
+    1_usize << resolution.saturating_sub(3).min(6)
+}
+
 fn compute_mixed_chunk(
     vertices: &[f64],
     offsets: &[u64],
     range: Range<usize>,
     resolution: u8,
 ) -> Result<Coverage, String> {
-    let expected_cells_per_polygon = 1_usize << resolution.saturating_sub(3).min(6);
     let mut coverage = Coverage {
-        cells: Vec::with_capacity(range.len() * expected_cells_per_polygon),
+        cells: Vec::with_capacity(range.len() * expected_cells_per_footprint(resolution)),
         offsets: Vec::with_capacity(range.len() + 1),
     };
     coverage.offsets.push(0);
@@ -747,25 +770,9 @@ fn compute_mixed_chunk(
         let start = offsets[index] as usize;
         let end = offsets[index + 1] as usize;
         let raw = &vertices[start * 3..end * 3];
-        if raw.len() == 12 {
-            let quad = prepare_quad(raw, ["footprints_xyz"; 4], false)
-                .map_err(|error| format!("footprints_xyz[{index}]: {error}"))?;
-            cover_quad_centers(&quad, resolution, &mut coverage.cells);
-        } else {
-            let raw_polygon = raw
-                .chunks_exact(3)
-                .map(|value| [value[0], value[1], value[2]])
-                .collect::<Vec<_>>();
-            let polygon = prepare_polygon(&raw_polygon)
-                .map_err(|error| format!("footprints_xyz[{index}]: {error}"))?;
-            cover_centers(
-                &polygon.vertices,
-                &polygon.edge_normals,
-                resolution,
-                &mut coverage.cells,
-                |x, y, z| contains_center(&polygon.edge_normals, [x, y, z]),
-            );
-        }
+        let footprint = PreparedFootprint::from_raw(raw)
+            .map_err(|error| format!("footprints_xyz[{index}]: {error}"))?;
+        footprint.cover(resolution, &mut coverage.cells);
         coverage.offsets.push(coverage.cells.len() as u64);
     }
     Ok(coverage)
@@ -778,7 +785,7 @@ fn compute_mixed_coverage(
     candidates: Option<&[u64]>,
     threads: Option<usize>,
 ) -> Result<Coverage, String> {
-    if vertices.len() % 3 != 0 {
+    if !vertices.len().is_multiple_of(3) {
         return Err("vertices_xyz must have shape (vertices, 3).".to_owned());
     }
     let vertex_count = vertices.len() / 3;
@@ -803,15 +810,17 @@ fn compute_mixed_coverage(
             })
             .collect::<Result<Vec<_>, _>>()?;
         let plan = plan_candidates(&footprints, candidates, resolution);
-        return dispatch_coverage(
-            polygon_count,
-            resolution,
-            Some(candidates.len()),
-            threads,
-            |range| compute_candidate_chunk(&footprints, &plan, candidates, range, resolution),
-        );
+        return dispatch_coverage(polygon_count, threads, |range| {
+            Ok(compute_candidate_chunk(
+                &footprints,
+                &plan,
+                candidates,
+                range,
+                resolution,
+            ))
+        });
     }
-    dispatch_coverage(polygon_count, resolution, None, threads, |range| {
+    dispatch_coverage(polygon_count, threads, |range| {
         compute_mixed_chunk(vertices, offsets, range, resolution)
     })
 }
@@ -880,26 +889,14 @@ fn compute_strip_chunk(
     resolution: u8,
 ) -> Result<Coverage, String> {
     let count = range.len();
-    let expected_cells_per_polygon = 1_usize << resolution.saturating_sub(3).min(6);
     let mut coverage = Coverage {
-        cells: Vec::with_capacity(count * expected_cells_per_polygon),
+        cells: Vec::with_capacity(count * expected_cells_per_footprint(resolution)),
         offsets: Vec::with_capacity(count + 1),
     };
     coverage.offsets.push(0);
     for index in range {
-        let raw = strip_quad(left, right, index);
-        let quad = prepare_quad(
-            &raw,
-            [
-                "left_edge_xyz",
-                "right_edge_xyz",
-                "right_edge_xyz",
-                "left_edge_xyz",
-            ],
-            true,
-        )
-        .map_err(|error| format!("strip segment {index}: {error}"))?;
-        cover_quad_centers(&quad, resolution, &mut coverage.cells);
+        let footprint = prepare_strip_footprint(left, right, index)?;
+        footprint.cover(resolution, &mut coverage.cells);
         coverage.offsets.push(coverage.cells.len() as u64);
     }
     Ok(coverage)
@@ -913,7 +910,7 @@ pub(crate) fn cover_strip(
     threads: Option<usize>,
 ) -> Result<Coverage, String> {
     debug_assert!(resolution <= MAX_RESOLUTION);
-    if left.len() % 3 != 0 || right.len() % 3 != 0 {
+    if !left.len().is_multiple_of(3) || !right.len().is_multiple_of(3) {
         return Err("strip edges must have shape (samples, 3).".to_owned());
     }
     if left.len() != right.len() {
@@ -932,15 +929,17 @@ pub(crate) fn cover_strip(
             .map(|index| prepare_strip_footprint(left, right, index))
             .collect::<Result<Vec<_>, _>>()?;
         let plan = plan_candidates(&footprints, candidates, resolution);
-        return dispatch_coverage(
-            segment_count,
-            resolution,
-            Some(candidates.len()),
-            threads,
-            |range| compute_candidate_chunk(&footprints, &plan, candidates, range, resolution),
-        );
+        return dispatch_coverage(segment_count, threads, |range| {
+            Ok(compute_candidate_chunk(
+                &footprints,
+                &plan,
+                candidates,
+                range,
+                resolution,
+            ))
+        });
     }
-    dispatch_coverage(segment_count, resolution, None, threads, |range| {
+    dispatch_coverage(segment_count, threads, |range| {
         compute_strip_chunk(left, right, range, resolution)
     })
 }

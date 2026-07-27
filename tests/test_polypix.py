@@ -718,7 +718,7 @@ class PolypixTests(unittest.TestCase):
 
     def test_thread_counts_produce_identical_ordered_results(self) -> None:
         polygon = vectors([(-5.0, -5.0), (12.0, -4.0), (10.0, 9.0), (-6.0, 7.0)])
-        footprints = np.repeat(polygon[np.newaxis, :, :], 300, axis=0)
+        footprints = np.repeat(polygon[np.newaxis, :, :], 2048, axis=0)
         candidates = px.cover_footprint(polygon, resolution=4).cells[::2]
 
         for candidate_cells in (None, candidates):
@@ -758,7 +758,7 @@ class PolypixTests(unittest.TestCase):
                 )
 
     def test_strip_thread_counts_produce_identical_ordered_results(self) -> None:
-        latitudes = np.linspace(-50.0, 50.0, 301)
+        latitudes = np.linspace(-50.0, 50.0, 2049)
         left = np.asarray([lonlat_to_vec(-4.0, value) for value in latitudes])
         right = np.asarray([lonlat_to_vec(4.0, value) for value in latitudes])
 
@@ -783,7 +783,7 @@ class PolypixTests(unittest.TestCase):
 
     def test_concurrent_calls_are_deterministic(self) -> None:
         polygon = vectors([(-5.0, -5.0), (12.0, -4.0), (10.0, 9.0), (-6.0, 7.0)])
-        footprints = np.repeat(polygon[np.newaxis, :, :], 300, axis=0)
+        footprints = np.repeat(polygon[np.newaxis, :, :], 2048, axis=0)
         expected = px.cover_footprint(
             footprints,
             resolution=3,
@@ -858,6 +858,8 @@ class PolypixTests(unittest.TestCase):
                     px.boundaries(cells, resolution=3)
         with self.assertRaisesRegex(ValueError, "valid RING indices"):
             px.centers([12 * 4**3], resolution=3)
+        with self.assertRaises(OverflowError):
+            px.centers(np.asarray([2**64], dtype=object), resolution=3)
 
     def test_cover_rejects_invalid_array_shape(self) -> None:
         footprint = vectors([(-5.0, -5.0), (12.0, -4.0), (10.0, 9.0), (-6.0, 7.0)])
@@ -962,11 +964,13 @@ class PolypixTests(unittest.TestCase):
         self.assertFalse(first == second)
 
     def test_cover_rejects_nonempty_zero_vertex_batch(self) -> None:
-        with self.assertRaises(ValueError):
-            px.cover_footprint(
-                np.empty((1, 0, 3), dtype=np.float64),
-                resolution=1,
-            )
+        for shape in ((0, 3), (1, 0, 3)):
+            with self.subTest(shape=shape):
+                with self.assertRaises(ValueError):
+                    px.cover_footprint(
+                        np.empty(shape, dtype=np.float64),
+                        resolution=1,
+                    )
 
     def test_only_target_public_endpoints_are_exposed(self) -> None:
         self.assertEqual(

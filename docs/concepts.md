@@ -96,7 +96,17 @@ coverage = px.cover_strip(
 
 Candidates are standard RING indices at the requested resolution and have set
 semantics. The native kernel tests their centers directly; it does not first
-materialize complete global coverage.
+materialize complete global coverage. Coverage uses a `1e-14` dot-product
+boundary tolerance. Candidate filtering and complete scans may evaluate a
+center through mathematically equivalent floating-point paths, so only centers
+inside that tolerance band can be strategy-sensitive.
+
+Complete scans use one conservative longitude bound for each footprint. This
+is fast for the primary workload of small footprints and short strip segments,
+but work follows the spherical bounding box rather than output size. Large
+diagonal or pole-containing footprints can therefore cost substantially more
+per returned cell. Per-ring edge intersections remain deliberately deferred
+until such footprints become a measured primary workload.
 
 ## Parallel Execution
 
@@ -109,5 +119,6 @@ automatic = px.cover_footprint(batch, resolution=9)
 ```
 
 `threads=None` selects the automatic policy. A positive integer sets the
-reusable worker-pool maximum, capped by the host. Calls with less independent
-work leave surplus workers idle. Results are identical across thread settings.
+reusable worker-pool maximum, capped by the host. Calls below the measured
+parallel crossover remain sequential without initializing a pool. Results are
+identical across thread settings on the same build and platform.
