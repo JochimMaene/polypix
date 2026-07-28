@@ -55,7 +55,7 @@ jobs:
         with:
           target: ${{ inputs.target }}
           manylinux: ${{ inputs.manylinux }}
-          args: --release --out dist --interpreter python
+          args: --release --out dist
           sccache: true
 
       - name: Install built wheel
