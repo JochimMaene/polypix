@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.0 — Unreleased
+## 0.3.0 — 2026-07-28
 
 Version 0.3 is a deliberate pre-1.0 cleanup. It replaces the native backend,
 adopts a permissive license, and makes breaking API changes without carrying

@@ -121,6 +121,30 @@ releases and manual workflow runs build the complete platform matrix.
 Publishing is release-driven. Publishing a GitHub release builds the artifacts
 and uploads them to PyPI through trusted publishing.
 
+## Release Procedure
+
+The package version comes from `Cargo.toml`; keep its Polypix entry in
+`Cargo.lock` synchronized.
+
+1. Prepare a release pull request that sets the version, dates and completes the
+   matching `CHANGELOG.md` section, and updates license notices when needed. Run
+   the test, lint, and documentation commands above, then merge only after all
+   required workflows pass.
+2. On `main`, manually run **Build and publish** as a dry run. Manual runs build
+   and test the complete wheel matrix but do not publish to PyPI.
+3. Create a draft GitHub release tagged `v<version>` at the exact release
+   commit, using the changelog section as its notes. Publishing the release
+   rebuilds the artifacts and uploads them to PyPI through trusted publishing.
+4. When the workflow succeeds, verify the release from a clean environment:
+
+   ```bash
+   python -m pip install --no-cache-dir polypix==<version>
+   python -c "import polypix as px; print(px.__version__)"
+   ```
+
+Check the PyPI metadata and wheel set. Published files are immutable; corrections
+require a new patch release.
+
 ## Documentation Publishing
 
 The documentation source lives in `docs/` and is configured by
