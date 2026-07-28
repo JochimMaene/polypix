@@ -1,16 +1,16 @@
 # Concepts
 
-## HEALPix Resolution And IDs
+## Resolution and cell IDs
 
-Polypix uses fixed-resolution HEALPix RING ordering. The public API calls the
-HEALPix order a `resolution`:
+Polypix uses fixed-resolution HEALPix RING ordering and calls the HEALPix order
+`resolution`:
 
 ```text
-nside = 2 ** resolution
+nside      = 2 ** resolution
 cell_count = 12 * 4 ** resolution
 ```
 
-| Resolution | `nside` | Cells on the sphere |
+| Resolution | `nside` | Cells |
 | ---: | ---: | ---: |
 | 0 | 1 | 12 |
 | 1 | 2 | 48 |
@@ -18,94 +18,62 @@ cell_count = 12 * 4 ** resolution
 | 8 | 256 | 786,432 |
 | 12 | 4,096 | 201,326,592 |
 
-Polypix accepts resolutions from 0 through 29. Cell values are ordinary RING
-pixel indices between zero and `cell_count - 1`; they are not packed tokens and
-do not encode a resolution. One result contains one resolution.
+Resolutions 0 through 29 are accepted. Cell values are ordinary RING pixel
+indices in `[0, cell_count)`. They are not packed tokens and do not encode a
+resolution; one result carries one resolution.
 
-NESTED ordering, mixed-resolution cells, MOCs, neighbors, hierarchy traversal,
-and map operations are deliberately outside this focused library.
+Outside the library: NESTED ordering, mixed-resolution cells, MOCs, neighbors,
+hierarchy traversal, and map operations.
 
-## Body-Centered Geometry
+## Body-centered geometry
 
-Inputs and geometry outputs use body-centered `(x, y, z)` vectors on the unit
-sphere. Input magnitude is ignored and normalized robustly. The coordinate
-frame can represent Earth or another sphere, but Polypix does not assign WGS84,
-geodetic, ellipsoid, or CRS semantics.
+Inputs and geometry outputs are body-centered `(x, y, z)` vectors on the unit
+sphere. Input magnitude is ignored and normalized. The frame may represent Earth
+or any other sphere; Polypix attaches no WGS84, geodetic, ellipsoid, or CRS
+meaning to it.
 
-Compatible contiguous NumPy buffers are borrowed while a call runs. Because
-native work releases the GIL, callers must not mutate those input buffers from
-another thread before the call returns.
+Working in three dimensions is what makes longitude wraparound and the poles
+need no special handling.
 
-Satellite and sensor coverage are leading uses. Footprint generation—such as
-orbit propagation, attitude, sensor projection, or ellipsoid intersection—
-belongs upstream.
+Footprint generation — orbit propagation, attitude, sensor projection, ellipsoid
+intersection — belongs upstream.
 
-## Center-Sampled Coverage
+## Center-sampled coverage
 
 A cell is covered when its center lies inside a footprint or on its boundary.
-This is a representative center sample, not conservative intersection,
-full-containment, or fractional-area coverage.
+This is a single representative sample per cell, not conservative intersection,
+full containment, or fractional area:
 
-Inputs are convex spherical polygons contained in an open hemisphere. Every
-pair of adjacent vertices is joined by the unique shorter great-circle arc.
-Those rules determine the represented region: for example, longitudes
-`-179°` and `179°` are two degrees apart across the antimeridian, not 358
-degrees apart. A hemisphere or larger region cannot be represented. Polypix
-rejects detectable ambiguity such as antipodal adjacent vertices or an
-exact-hemisphere boundary, but it cannot infer that a caller intended the
-other side of an otherwise valid minor-arc polygon.
+- a large footprint whose interior misses every center returns nothing;
+- a cell straddling a footprint edge is included only if its center is inside.
 
-Longitude wraparound and poles need no special coordinate treatment because
-the kernel operates on three-dimensional vectors.
+The accepted geometry and its numerical limits are specified in the
+[geometry contract](api.md#geometry-contract).
 
-Either vertex orientation and one repeated closing vertex are accepted.
-Redundant vertices on the same great-circle edge are also accepted within
-floating-point precision. Degenerate, duplicate, antipodal, self-intersecting,
-and non-convex geometry is rejected.
+## Batches and segments
 
-Spherical validation has a numerical scale floor rather than arbitrary
-precision. Footprints below roughly `1e-8` radians in angular extent are
-unsupported and may be rejected as degenerate; the exact crossover depends on
-their vertex layout and conditioning.
-
-Validation is quadratic in vertex count because it checks duplicate pairs and
-tests every vertex against every edge. Polypix is optimized for modest convex
-footprints and short strip segments, not polygons with densely sampled
-boundaries.
-
-## Batches And Segments
-
-`cover_footprint()` accepts one footprint, a dense batch, or a ragged sequence.
+`cover_footprint()` takes one footprint, a dense batch, or a ragged sequence.
 `cover_strip()` turns consecutive pairs from two sampled edges into independent
-convex quadrilaterals.
-
-An empty sequence, a one-dimensional empty array, or a dense
-`(0, vertices, 3)` array represents an empty footprint batch. A `(0, 3)` array
-is unambiguously one footprint with zero vertices, so it is rejected.
-
-Strip samples use the same shorter-great-circle rule. Sampling is therefore
-part of the input contract: upstream code must sample densely enough that each
-consecutive arc represents the physical boundary. Steps approaching 180
-degrees bow strongly on the sphere, a step beyond 180 degrees selects the
-opposite shorter arc, and an exactly ambiguous segment is rejected. Polypix
-cannot distinguish intentional minor-arc geometry from an undersampled
-trajectory.
-
-Repeated paired samples produce a zero-area strip segment and are rejected.
-Stationary or resampled inputs should remove consecutive duplicate sample pairs
-before calling `cover_strip()`. A repeated sample on only one edge is supported
-and forms a triangular segment pinched at that edge.
-
-Both return one `Coverage` with flat cells and offsets:
+quadrilaterals. Both return one `Coverage`:
 
 ```text
 cells for item i = cells[offsets[i] : offsets[i + 1]]
 ```
 
-This representation avoids one Python object per footprint while keeping input
-item boundaries. `counts` is derived from adjacent offsets.
+One flat array plus offsets avoids allocating a Python object per footprint while
+keeping input boundaries intact.
 
-## Candidate Cells
+Strip sampling density is part of the input contract, because consecutive samples
+are joined by the shorter great-circle arc:
+
+- steps approaching 180° bow strongly on the sphere;
+- a step beyond 180° selects the opposite arc;
+- an exactly ambiguous step is rejected.
+
+Polypix cannot distinguish intentional minor-arc geometry from an undersampled
+trajectory, so sample densely enough that each arc is the boundary you mean.
+
+## Candidate cells
 
 Pass `candidate_cells` when only a sparse existing set matters:
 
@@ -118,55 +86,42 @@ coverage = px.cover_strip(
 )
 ```
 
-Candidates are standard RING indices at the requested resolution and have set
-semantics. The native kernel tests their centers directly; it does not first
-materialize complete global coverage. Strictly increasing candidate arrays are
-borrowed without copying; other inputs are sorted and deduplicated internally.
-Coverage uses a nominal `1e-14` dot-product predicate tolerance.
-Floating-point uncertainty also depends on edge length and the equivalent
-center-evaluation path, so the constant is not a strict absolute-error bound.
-Only centers numerically indistinguishable from a boundary can be
-strategy-sensitive.
+The kernel tests those centers directly instead of materializing global coverage
+first. Two costs come with it:
 
-When many footprints revisit candidates, the kernel may cache center vectors
-for the bounding candidate span used by that batch. This temporary cache costs
-24 bytes per candidate in the span. It is created only when estimated reuse is
-substantial and is capped at 64 MiB; larger spans use on-demand reconstruction.
+- Normalized vertices and edge normals are retained for the whole batch while
+  shared candidate ranges are planned, so peak memory grows with batch size as
+  well as candidate count. For very large batches this can exceed the streaming
+  full-scan path.
+- When many footprints revisit the same candidates, the kernel may cache center
+  vectors for the bounding candidate span at 24 bytes per candidate, capped at
+  64 MiB. Larger spans fall back to on-demand reconstruction.
 
-Candidate filtering prepares and retains normalized vertices and edge normals
-for the complete footprint batch while planning shared candidate ranges. Peak
-memory therefore grows with both batch size and candidate-cache size and can
-exceed the streaming complete-scan path for very large batches.
+Full scans use one conservative longitude bound per footprint. That is fast for
+small footprints and short strip segments, but work follows the spherical
+bounding box rather than the output size, so large diagonal or pole-containing
+footprints cost disproportionately more per returned cell. Per-ring edge
+intersection stays deferred until such footprints are a measured primary
+workload.
 
-Complete scans use one conservative longitude bound for each footprint. This
-is fast for the primary workload of small footprints and short strip segments,
-but work follows the spherical bounding box rather than output size. Large
-diagonal or pole-containing footprints can therefore cost substantially more
-per returned cell. Per-ring edge intersections remain deliberately deferred
-until such footprints become a measured primary workload.
+For elongated swaths, prefer `cover_strip()` with dense samples over one large
+diagonal polygon; short per-segment footprints keep the scan bounds much
+tighter.
 
-For elongated swaths, prefer `cover_strip()` with sufficiently dense samples
-over one large diagonal polygon. Its short per-segment footprints usually keep
-the conservative scan bounds much tighter.
+## Parallel execution
 
-## Parallel Execution
-
-Large batches can run across native worker threads while the Python GIL is
-released:
+Large batches run across native worker threads with the GIL released:
 
 ```python
 sequential = px.cover_footprint(batch, resolution=9, threads=1)
 automatic = px.cover_footprint(batch, resolution=9)
 ```
 
-`threads=None` selects the automatic policy. A positive integer sets the
-reusable worker-pool maximum, capped by the host. Calls below the measured
-parallel crossover remain sequential without initializing a pool. Results are
-identical across thread settings on the same build and platform.
+`threads=None` selects the automatic policy; a positive integer sets the
+worker-pool maximum, capped by the host. Calls below the measured parallel
+crossover stay sequential and never initialize a pool. Results are identical
+across thread settings on the same build and platform.
 
-Parallel execution builds ordered per-worker chunks and then concatenates
-them. While merging a very large materialized result, peak native memory can
-approach twice the final `cells` array. Use `threads=1` when that temporary
-memory is more important than throughput. Candidate filtering can additionally
-use the bounded center cache described above. A range-compressed result remains
-a documented future experiment rather than added API complexity.
+Parallel execution builds ordered per-worker chunks and concatenates them, so
+while merging a very large result peak native memory can approach twice the
+final `cells` array. Use `threads=1` when that matters more than throughput.
