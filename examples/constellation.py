@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import math
+from collections.abc import Sequence
+from io import BytesIO
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 import numpy as np
 import numpy.typing as npt
@@ -14,6 +17,32 @@ import polypix as px
 EARTH_RADIUS_KM = 6_378.137
 EARTH_MU_KM3_S2 = 398_600.4418
 EARTH_ROTATION_RAD_S = 7.2921150e-5
+
+# Figures for the documentation build are written here and copied into the
+# generated site. The path is relative to the repository root, which is the
+# working directory during a Zensical build.
+DOC_FIGURE_DIR = Path("docs/assets/generated")
+
+# Path from a page at docs/examples/<name>.md to DOC_FIGURE_DIR. Zensical
+# resolves it against the Markdown source and rewrites it for the built URL.
+DOC_FIGURE_URL = "../assets/generated"
+
+
+def write_measurements(path: Path, measurements: dict[str, Any]) -> None:
+    """Record one run's measurements next to the figures it produced."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(measurements, indent=2, sort_keys=True) + "\n")
+
+
+def read_measurements(path: Path) -> dict[str, Any]:
+    """Load measurements recorded by the documentation asset step."""
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} is missing. Run `pixi run --environment docs docs-figures` "
+            "to execute the examples before building the documentation."
+        )
+    loaded: dict[str, Any] = json.loads(path.read_text())
+    return loaded
 
 
 def constellation_centers(
@@ -122,6 +151,41 @@ def map_coordinates(
     )
 
 
+def clipped_range(
+    values: npt.NDArray[np.float64],
+    *,
+    low_percentile: float,
+    high_percentile: float,
+) -> tuple[float, float]:
+    """Return a percentile range so a thin tail cannot flatten the color scale."""
+    low = float(np.percentile(values, low_percentile))
+    high = float(np.percentile(values, high_percentile))
+    if high <= low:
+        return low, low + 1.0
+    return low, high
+
+
+def tiling_marker_size(
+    figure: object,
+    axes: object,
+    *,
+    resolution: int,
+) -> float:
+    """Return a scatter area in points² that makes cell markers tile the map.
+
+    A HEALPix cell at this resolution occupies a fixed angular width, and the
+    Mollweide axes map 360 degrees across their full width. Markers narrower
+    than that spacing leave the background visible between cells, which reads
+    as noise rather than as a coverage field.
+    """
+    figure.canvas.draw()  # type: ignore[attr-defined]
+    width_pt = axes.get_window_extent().width / figure.dpi * 72.0  # type: ignore[attr-defined]
+    cell_deg = math.degrees(math.sqrt(4.0 * math.pi / (12 * 4**resolution)))
+    spacing_pt = width_pt * cell_deg / 360.0
+    # Circular markers need to be wider than the spacing to close the gaps.
+    return float((1.45 * spacing_pt) ** 2)
+
+
 def plot_global_map(
     values: npt.NDArray[np.float64] | npt.NDArray[np.int64],
     output: Path | BinaryIO,
@@ -131,16 +195,20 @@ def plot_global_map(
         npt.NDArray[np.float64],
     ],
     visible: npt.NDArray[np.bool_],
+    resolution: int,
     title: str,
     subtitle: str,
     colorbar_label: str,
     footer: str,
     cmap: str,
     norm: object,
+    colorbar_ticks: Sequence[float] | None = None,
+    extend: str = "neither",
     dpi: int = 150,
 ) -> None:
     """Render cell values on a consistently styled global equal-area map."""
     import matplotlib.pyplot as plt
+    from matplotlib.ticker import NullLocator, ScalarFormatter
 
     longitude, latitude = coordinates
     figure = plt.figure(figsize=(12.0, 6.8), facecolor="#07111f")
@@ -152,7 +220,7 @@ def plot_global_map(
         cmap=cmap,
         norm=norm,
         marker=".",
-        s=2.2,
+        s=tiling_marker_size(figure, axes, resolution=resolution),
         linewidths=0,
         rasterized=True,
     )
@@ -180,10 +248,16 @@ def plot_global_map(
         fraction=0.055,
         pad=0.075,
         aspect=45,
+        extend=extend,
     )
     colorbar.set_label(colorbar_label, color="white", fontsize=10)
     colorbar.ax.tick_params(colors="#c6d1df", labelsize=8)
     colorbar.outline.set_edgecolor("#53657a")
+    if colorbar_ticks is not None:
+        # A logarithmic scale otherwise labels an hours axis "10^0".
+        colorbar.ax.xaxis.set_minor_locator(NullLocator())
+        colorbar.set_ticks(list(colorbar_ticks))
+        colorbar.ax.xaxis.set_major_formatter(ScalarFormatter())
     figure.text(
         0.5,
         0.035,
@@ -194,12 +268,29 @@ def plot_global_map(
     )
     figure.subplots_adjust(left=0.035, right=0.965, top=0.86, bottom=0.14)
 
+    encoded = BytesIO()
+    figure.savefig(encoded, format="png", dpi=dpi, facecolor=figure.get_facecolor())
+    plt.close(figure)
+
+    data = _quantized_png(encoded.getvalue())
     if isinstance(output, Path):
         output.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(
-        output,
-        dpi=dpi,
-        facecolor=figure.get_facecolor(),
-        pil_kwargs={"compress_level": 6},
-    )
-    plt.close(figure)
+        output.write_bytes(data)
+    else:
+        output.write(data)
+
+
+def _quantized_png(data: bytes) -> bytes:
+    """Re-encode a colormapped map to a palette PNG.
+
+    These figures draw a single colormap over a flat background, so 256 palette
+    entries are visually indistinguishable from truecolor at roughly a third of
+    the bytes.
+    """
+    from PIL import Image
+
+    image = Image.open(BytesIO(data)).convert("RGB")
+    palette = image.quantize(colors=256, dither=Image.Dither.NONE)
+    out = BytesIO()
+    palette.save(out, format="PNG", optimize=True)
+    return out.getvalue() if out.tell() < len(data) else data

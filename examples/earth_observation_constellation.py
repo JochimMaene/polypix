@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import math
 import time
 from dataclasses import dataclass
@@ -15,11 +14,20 @@ import numpy.typing as npt
 
 import polypix as px
 from examples.constellation import (
+    DOC_FIGURE_DIR,
+    DOC_FIGURE_URL,
+    clipped_range,
     constellation_centers,
     map_coordinates,
     plot_global_map,
+    read_measurements,
     swath_edges,
+    write_measurements,
 )
+
+OBSERVATIONS_FIGURE_PATH = DOC_FIGURE_DIR / "earth-observation-count.png"
+REVISIT_FIGURE_PATH = DOC_FIGURE_DIR / "earth-observation-revisit.png"
+MEASUREMENTS_PATH = DOC_FIGURE_DIR / "earth-observation.json"
 
 SATELLITE_COUNT = 10
 PLANE_COUNT = 5
@@ -203,11 +211,17 @@ def plot_observations(
     import matplotlib.colors as colors
 
     visible = result.observations > 0
+    _, high = clipped_range(
+        result.observations[visible].astype(np.float64),
+        low_percentile=0.0,
+        high_percentile=99.0,
+    )
     plot_global_map(
         result.observations,
         output,
         coordinates=coordinates,
         visible=visible,
+        resolution=HEALPIX_RESOLUTION,
         title="Ten days of Earth-observation coverage",
         subtitle=(
             "10 satellites · one-minute swept intervals · 7.5° ground half-width"
@@ -218,11 +232,8 @@ def plot_observations(
             f"observed  ·  maximum {int(result.observations.max())} observations"
         ),
         cmap="plasma",
-        norm=colors.PowerNorm(
-            gamma=0.65,
-            vmin=1,
-            vmax=int(result.observations.max()),
-        ),
+        norm=colors.PowerNorm(gamma=0.65, vmin=1, vmax=high),
+        extend="max",
         dpi=dpi,
     )
 
@@ -243,61 +254,84 @@ def plot_revisit(
     measured = np.isfinite(result.mean_revisit_s)
     revisit_hours = result.mean_revisit_s / 3_600
     finite_hours = revisit_hours[measured]
+    # A thin polar tail reaches several hours and would otherwise flatten every
+    # inhabited latitude into one color.
+    low, high = clipped_range(finite_hours, low_percentile=1.0, high_percentile=99.0)
     plot_global_map(
         revisit_hours,
         output,
         coordinates=coordinates,
         visible=measured,
+        resolution=HEALPIX_RESOLUTION,
         title="Mean Earth-observation revisit time",
         subtitle=(
             "Gap between globally merged access windows · "
             "ten-day analysis · one-minute resolution"
         ),
-        colorbar_label="Mean revisit gap (hours, logarithmic scale)",
+        colorbar_label="Mean revisit gap (hours)",
         footer=(
             f"{np.count_nonzero(measured):,} cells with measured revisit  ·  "
-            f"median {np.median(finite_hours):.2f} hours"
+            f"median {np.median(finite_hours):.2f} hours  ·  "
+            f"range {finite_hours.min():.2f}–{finite_hours.max():.2f} hours"
         ),
         cmap="viridis_r",
-        norm=colors.LogNorm(
-            vmin=float(finite_hours.min()),
-            vmax=float(finite_hours.max()),
-        ),
+        norm=colors.LogNorm(vmin=low, vmax=high),
+        colorbar_ticks=[t for t in (0.5, 0.75, 1, 1.5, 2, 3, 5, 8) if low <= t <= high],
+        extend="both",
         dpi=dpi,
     )
 
 
-def render_documentation() -> str:
-    """Run the scenario and return two live figures and measurements as HTML."""
+def build_documentation_assets() -> None:
+    """Run the scenario, write both maps, and record the measurements."""
     result = analyze()
     plotting_started = time.perf_counter()
     coordinates = map_coordinates(resolution=HEALPIX_RESOLUTION)
-
-    observations_image = BytesIO()
-    plot_observations(result, observations_image, coordinates=coordinates, dpi=80)
-    revisit_image = BytesIO()
-    plot_revisit(result, revisit_image, coordinates=coordinates, dpi=80)
-    plotting_elapsed_s = time.perf_counter() - plotting_started
-    encoded_observations = base64.b64encode(observations_image.getvalue()).decode(
-        "ascii"
+    plot_observations(
+        result, OBSERVATIONS_FIGURE_PATH, coordinates=coordinates, dpi=100
     )
-    encoded_revisit = base64.b64encode(revisit_image.getvalue()).decode("ascii")
+    plot_revisit(result, REVISIT_FIGURE_PATH, coordinates=coordinates, dpi=100)
+    plotting_elapsed_s = time.perf_counter() - plotting_started
 
     measured = np.isfinite(result.mean_revisit_s)
     revisit_hours = result.mean_revisit_s[measured] / 3_600
-    interval_count = DURATION_S // CADENCE_S * SATELLITE_COUNT
+    write_measurements(
+        MEASUREMENTS_PATH,
+        {
+            "interval_count": DURATION_S // CADENCE_S * SATELLITE_COUNT,
+            "materialized_count": result.materialized_count,
+            "swath_ms": result.swath_elapsed_s * 1_000,
+            "coverage_ms": result.coverage_elapsed_s * 1_000,
+            "reduction_ms": result.reduction_elapsed_s * 1_000,
+            "analysis_ms": result.analysis_elapsed_s * 1_000,
+            "plotting_ms": plotting_elapsed_s * 1_000,
+            "cells_observed": int(np.count_nonzero(result.observations)),
+            "cell_count": int(result.observations.size),
+            "observations_max": int(result.observations.max()),
+            "revisit_median_h": float(np.median(revisit_hours)),
+            "revisit_min_h": float(revisit_hours.min()),
+            "revisit_max_h": float(revisit_hours.max()),
+        },
+    )
+
+
+def documentation_html() -> str:
+    """Return the recorded figures and measurements as HTML for the docs page."""
+    m = read_measurements(MEASUREMENTS_PATH)
     return f"""
 <figure>
-  <img src="data:image/png;base64,{encoded_observations}"
-       alt="Global map of distinct Earth observations over ten days">
+  <img src="{DOC_FIGURE_URL}/{OBSERVATIONS_FIGURE_PATH.name}"
+       alt="Global map of distinct Earth observations over ten days"
+       loading="lazy">
   <figcaption>
     Consecutive one-minute hits by the same satellite are one observation.
   </figcaption>
 </figure>
 
 <figure>
-  <img src="data:image/png;base64,{encoded_revisit}"
-       alt="Global map of mean Earth-observation revisit time over ten days">
+  <img src="{DOC_FIGURE_URL}/{REVISIT_FIGURE_PATH.name}"
+       alt="Global map of mean Earth-observation revisit time over ten days"
+       loading="lazy">
   <figcaption>
     Mean uncovered gap between globally merged constellation access windows.
   </figcaption>
@@ -305,20 +339,20 @@ def render_documentation() -> str:
 
 <table>
   <thead>
-    <tr><th>Stage</th><th>Time in this build</th></tr>
+    <tr><th>Stage</th><th>Time</th></tr>
   </thead>
   <tbody>
     <tr><td><strong>Polypix:</strong> one <code>cover_strip()</code> call per
             satellite</td>
-        <td><strong>{result.coverage_elapsed_s * 1_000:.0f} ms</strong></td></tr>
+        <td><strong>{m["coverage_ms"]:.0f} ms</strong></td></tr>
     <tr><td>NumPy: orbits and swath edges</td>
-        <td>{result.swath_elapsed_s * 1_000:.0f} ms</td></tr>
+        <td>{m["swath_ms"]:.0f} ms</td></tr>
     <tr><td>NumPy: observation and revisit reduction</td>
-        <td>{result.reduction_elapsed_s * 1_000:.0f} ms</td></tr>
+        <td>{m["reduction_ms"]:.0f} ms</td></tr>
     <tr><td>Complete analysis</td>
-        <td>{result.analysis_elapsed_s * 1_000:.0f} ms</td></tr>
+        <td>{m["analysis_ms"]:.0f} ms</td></tr>
     <tr><td>Matplotlib: two maps and PNG encoding</td>
-        <td>{plotting_elapsed_s * 1_000:.0f} ms</td></tr>
+        <td>{m["plotting_ms"]:.0f} ms</td></tr>
   </tbody>
 </table>
 
@@ -327,18 +361,17 @@ def render_documentation() -> str:
     <tr><th>Workload and result</th><th>Value</th></tr>
   </thead>
   <tbody>
-    <tr><td>Swept intervals covered</td><td>{interval_count:,}</td></tr>
+    <tr><td>Swept intervals covered</td><td>{m["interval_count"]:,}</td></tr>
     <tr><td>Interval-cell pairs returned</td>
-        <td>{result.materialized_count:,}</td></tr>
+        <td>{m["materialized_count"]:,}</td></tr>
     <tr><td>Cells observed</td>
-        <td>{np.count_nonzero(result.observations):,} of
-            {result.observations.size:,}</td></tr>
+        <td>{m["cells_observed"]:,} of {m["cell_count"]:,}</td></tr>
     <tr><td>Distinct observations per cell, maximum</td>
-        <td>{int(result.observations.max())}</td></tr>
+        <td>{m["observations_max"]}</td></tr>
     <tr><td>Median per-cell mean revisit</td>
-        <td>{np.median(revisit_hours):.2f} hours</td></tr>
+        <td>{m["revisit_median_h"]:.2f} hours</td></tr>
     <tr><td>Per-cell mean revisit, range</td>
-        <td>{revisit_hours.min():.2f}–{revisit_hours.max():.2f} hours</td></tr>
+        <td>{m["revisit_min_h"]:.2f}–{m["revisit_max_h"]:.2f} hours</td></tr>
   </tbody>
 </table>
 """.strip()

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import base64
 import math
 import time
 from dataclasses import dataclass
@@ -15,12 +14,19 @@ import numpy.typing as npt
 
 import polypix as px
 from examples.constellation import (
+    DOC_FIGURE_DIR,
+    DOC_FIGURE_URL,
     EARTH_RADIUS_KM,
     cap_footprints,
     constellation_centers,
     map_coordinates,
     plot_global_map,
+    read_measurements,
+    write_measurements,
 )
+
+FIGURE_PATH = DOC_FIGURE_DIR / "communications-availability.png"
+MEASUREMENTS_PATH = DOC_FIGURE_DIR / "communications-availability.json"
 
 SATELLITE_COUNT = 500
 PLANE_COUNT = 20
@@ -152,6 +158,7 @@ def plot_availability(
         output,
         coordinates=coordinates,
         visible=np.ones(result.mean_visible.size, dtype=bool),
+        resolution=HEALPIX_RESOLUTION,
         title="Starlink-like communications availability",
         subtitle=(
             "500 satellites · one-hour mean · "
@@ -169,23 +176,43 @@ def plot_availability(
     )
 
 
-def render_documentation() -> str:
-    """Run the scenario and return its live figure and measurements as HTML."""
+def build_documentation_assets() -> None:
+    """Run the scenario, write its map, and record the measurements."""
     result = analyze()
     plotting_started = time.perf_counter()
     coordinates = map_coordinates(resolution=HEALPIX_RESOLUTION)
-    image = BytesIO()
-    plot_availability(result, image, coordinates=coordinates, dpi=80)
+    plot_availability(result, FIGURE_PATH, coordinates=coordinates, dpi=100)
     plotting_elapsed_s = time.perf_counter() - plotting_started
-    encoded_image = base64.b64encode(image.getvalue()).decode("ascii")
 
     snapshot_count = DURATION_S // CADENCE_S + 1
-    footprint_count = snapshot_count * SATELLITE_COUNT
+    write_measurements(
+        MEASUREMENTS_PATH,
+        {
+            "snapshot_count": snapshot_count,
+            "footprint_count": snapshot_count * SATELLITE_COUNT,
+            "materialized_count": result.materialized_count,
+            "geometry_ms": result.geometry_elapsed_s * 1_000,
+            "coverage_ms": result.coverage_elapsed_s * 1_000,
+            "reduction_ms": result.reduction_elapsed_s * 1_000,
+            "analysis_ms": result.analysis_elapsed_s * 1_000,
+            "plotting_ms": plotting_elapsed_s * 1_000,
+            "mean_visible_min": float(result.mean_visible.min()),
+            "mean_visible_max": float(result.mean_visible.max()),
+            "sample_min": int(result.minimum_visible.min()),
+            "sample_max": int(result.maximum_visible.max()),
+        },
+    )
+
+
+def documentation_html() -> str:
+    """Return the recorded figure and measurements as HTML for the docs page."""
+    m = read_measurements(MEASUREMENTS_PATH)
     return f"""
 <figure>
   <img
-    src="data:image/png;base64,{encoded_image}"
+    src="{DOC_FIGURE_URL}/{FIGURE_PATH.name}"
     alt="Global map of mean communications satellites in view over one hour"
+    loading="lazy"
   >
   <figcaption>
     Mean simultaneous satellites above a 25° elevation mask, sampled once per
@@ -195,20 +222,20 @@ def render_documentation() -> str:
 
 <table>
   <thead>
-    <tr><th>Stage</th><th>Time in this build</th></tr>
+    <tr><th>Stage</th><th>Time</th></tr>
   </thead>
   <tbody>
-    <tr><td><strong>Polypix:</strong> {snapshot_count} batched
+    <tr><td><strong>Polypix:</strong> {m["snapshot_count"]} batched
             <code>cover_footprint()</code> calls</td>
-        <td><strong>{result.coverage_elapsed_s * 1_000:.0f} ms</strong></td></tr>
+        <td><strong>{m["coverage_ms"]:.0f} ms</strong></td></tr>
     <tr><td>NumPy: orbits and footprint vertices</td>
-        <td>{result.geometry_elapsed_s * 1_000:.0f} ms</td></tr>
+        <td>{m["geometry_ms"]:.0f} ms</td></tr>
     <tr><td>NumPy: availability reduction</td>
-        <td>{result.reduction_elapsed_s * 1_000:.0f} ms</td></tr>
+        <td>{m["reduction_ms"]:.0f} ms</td></tr>
     <tr><td>Complete analysis</td>
-        <td>{result.analysis_elapsed_s * 1_000:.0f} ms</td></tr>
+        <td>{m["analysis_ms"]:.0f} ms</td></tr>
     <tr><td>Matplotlib: map and PNG encoding</td>
-        <td>{plotting_elapsed_s * 1_000:.0f} ms</td></tr>
+        <td>{m["plotting_ms"]:.0f} ms</td></tr>
   </tbody>
 </table>
 
@@ -217,13 +244,13 @@ def render_documentation() -> str:
     <tr><th>Workload and result</th><th>Value</th></tr>
   </thead>
   <tbody>
-    <tr><td>Service footprints covered</td><td>{footprint_count:,}</td></tr>
+    <tr><td>Service footprints covered</td><td>{m["footprint_count"]:,}</td></tr>
     <tr><td>Footprint-cell pairs returned</td>
-        <td>{result.materialized_count:,}</td></tr>
+        <td>{m["materialized_count"]:,}</td></tr>
     <tr><td>Mean satellites in view, global range</td>
-        <td>{result.mean_visible.min():.2f}–{result.mean_visible.max():.2f}</td></tr>
+        <td>{m["mean_visible_min"]:.2f}–{m["mean_visible_max"]:.2f}</td></tr>
     <tr><td>Satellites in view at a single sample, global range</td>
-        <td>{int(result.minimum_visible.min())}–{int(result.maximum_visible.max())}</td></tr>
+        <td>{m["sample_min"]}–{m["sample_max"]}</td></tr>
   </tbody>
 </table>
 """.strip()

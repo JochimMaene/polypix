@@ -87,8 +87,8 @@ Published at <https://jochimmaene.github.io/polypix/>:
 - [Install](https://jochimmaene.github.io/polypix/install/)
 - [Concepts](https://jochimmaene.github.io/polypix/concepts/)
 - [API reference](https://jochimmaene.github.io/polypix/api/)
-- [Project goal](https://jochimmaene.github.io/polypix/project-goal/)
 - [Development](https://jochimmaene.github.io/polypix/development/)
+- [Project goal](https://jochimmaene.github.io/polypix/project-goal/)
 
 ## License
 

@@ -20,6 +20,7 @@ examples/
   constellation.py                    shared orbit and plotting helpers
   communication_constellation.py      one-hour communications availability
   earth_observation_constellation.py  ten-day observation and revisit analysis
+  documentation_assets.py             pre-build figure and measurement step
 tools/
   generate_ring_geometry_fixtures.py  external-oracle fixture generator
 decisions/
@@ -65,15 +66,21 @@ Build documentation:
 pixi run --environment docs docs-build
 ```
 
-Run either standalone constellation example:
+Run either standalone constellation example, writing its maps to the working
+directory:
 
 ```bash
 pixi run --environment docs docs-communications
 pixi run --environment docs docs-earth-observation
 ```
 
-The documentation build executes both examples through Markdown Exec and embeds
-their current results and performance measurements in the corresponding pages.
+`docs-build` and `docs-serve` first run `docs-figures`, which executes both
+examples and writes their maps and measurements to `docs/assets/generated/`.
+The example pages then embed that output. Zensical collects the files under
+`docs/` before rendering pages, so a figure written while a page renders is
+never copied into the built site; the examples have to run first. Regenerate the
+figures with `pixi run --environment docs docs-figures` after changing an
+example, because `docs-serve` does not re-run them on reload.
 
 Preview documentation:
 

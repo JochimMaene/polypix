@@ -87,10 +87,11 @@ test = "python -m pytest -q tests"
 lint = "ruff check polypix tests benchmarks tools examples && ruff format --check polypix tests benchmarks tools examples && mypy --strict polypix && python -m mypy.stubtest polypix._core"
 bench = "python -m pytest benchmarks --codspeed"
 wheel = "maturin build --release --out dist"
-docs-build = "MPLBACKEND=Agg MPLCONFIGDIR=.cache/matplotlib zensical build --strict"
+docs-figures = "MPLBACKEND=Agg MPLCONFIGDIR=.cache/matplotlib python -m examples.documentation_assets"
+docs-build = { cmd = "zensical build --strict", depends-on = ["docs-figures"] }
+docs-serve = { cmd = "zensical serve", depends-on = ["docs-figures"] }
 docs-communications = "MPLBACKEND=Agg python examples/communication_constellation.py"
 docs-earth-observation = "MPLBACKEND=Agg python examples/earth_observation_constellation.py"
-docs-serve = "zensical serve"
 
 [tool.ruff]
 target-version = "py312"

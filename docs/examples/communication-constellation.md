@@ -8,9 +8,9 @@ Everything below is produced by running the [example source][source] during this
 documentation build.
 
 ```python exec="on" html="on" id="communication-constellation-result"
-from examples.communication_constellation import render_documentation
+from examples.communication_constellation import documentation_html
 
-print(render_documentation())
+print(documentation_html())
 ```
 
 Timings are single wall-clock measurements from the documentation builder, not

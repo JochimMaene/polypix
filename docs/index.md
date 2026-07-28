@@ -64,5 +64,5 @@ maps and timings match the code that produced them.
 | [Install](install.md) | Wheels, source builds |
 | [Concepts](concepts.md) | Cell IDs, geometry rules, batches, threading |
 | [API](api.md) | Complete public interface |
-| [Project goal](project-goal.md) | Scope and feature admission |
 | [Development](development.md) | Contributing and releases |
+| [Project goal](project-goal.md) | Scope and feature admission |
