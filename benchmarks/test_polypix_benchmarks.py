@@ -166,6 +166,7 @@ def test_cover_footprint_single_automatic_latency(
 @pytest.mark.parametrize(
     "resolution", [6, 7, 9], ids=lambda value: f"resolution_{value}"
 )
+@pytest.mark.parallel
 def test_cover_footprint_automatic_parallel(
     benchmark, large_footprints: np.ndarray, resolution: int
 ) -> None:
@@ -174,7 +175,11 @@ def test_cover_footprint_automatic_parallel(
     assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
 
 
-@pytest.mark.parametrize("threads", [1, None], ids=["serial", "automatic"])
+@pytest.mark.parametrize(
+    "threads",
+    [1, pytest.param(None, marks=pytest.mark.parallel)],
+    ids=["serial", "automatic"],
+)
 def test_cover_few_large_footprints(
     benchmark,
     few_large_footprints: np.ndarray,
@@ -211,10 +216,20 @@ def test_cover_footprint_automatic_prepass_cost(
     assert coverage.offsets.shape == (2_001,)
 
 
+@pytest.mark.parallel
 def test_cover_footprint_explicit_pool_reuse(
     benchmark, large_footprints: np.ndarray
 ) -> None:
     coverage = benchmark(px.cover_footprint, large_footprints, 9, threads=4)
+
+    assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
+
+
+def test_cover_footprint_dense_nested_list(
+    benchmark, large_footprints: np.ndarray
+) -> None:
+    nested = large_footprints.tolist()
+    coverage = benchmark(px.cover_footprint, nested, 7, threads=1)
 
     assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
 
@@ -232,6 +247,7 @@ def test_cover_footprint_mixed_ragged_batch(
     assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
 
 
+@pytest.mark.parallel
 def test_cover_footprint_mixed_ragged_batch_automatic(
     benchmark, large_footprints: np.ndarray
 ) -> None:
@@ -263,7 +279,11 @@ def test_cover_footprint_with_large_sparse_candidate_set(
     assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
 
 
-@pytest.mark.parametrize("threads", [1, None], ids=["serial", "automatic"])
+@pytest.mark.parametrize(
+    "threads",
+    [1, pytest.param(None, marks=pytest.mark.parallel)],
+    ids=["serial", "automatic"],
+)
 def test_cover_footprint_with_candidates_parallel_scaling(
     benchmark,
     large_footprints: np.ndarray,
@@ -281,7 +301,11 @@ def test_cover_footprint_with_candidates_parallel_scaling(
     assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
 
 
-@pytest.mark.parametrize("threads", [1, None], ids=["serial", "automatic"])
+@pytest.mark.parametrize(
+    "threads",
+    [1, pytest.param(None, marks=pytest.mark.parallel)],
+    ids=["serial", "automatic"],
+)
 def test_cover_footprint_with_small_sparse_candidate_set(
     benchmark,
     large_footprints: np.ndarray,
@@ -339,6 +363,7 @@ def test_cover_strip(benchmark, strip_edges: tuple[np.ndarray, np.ndarray]) -> N
     assert coverage.cells.dtype == np.uint64
 
 
+@pytest.mark.parallel
 def test_cover_strip_automatic_parallel(
     benchmark,
     large_strip_edges: tuple[np.ndarray, np.ndarray],
@@ -382,7 +407,11 @@ def test_boundaries(benchmark, cells: np.ndarray) -> None:
     assert boundaries.dtype == np.float64
 
 
-@pytest.mark.parametrize("count", [1_000, 1_000_000], ids=["small", "large"])
+@pytest.mark.parametrize(
+    "count",
+    [1_000, pytest.param(1_000_000, marks=pytest.mark.parallel)],
+    ids=["small", "large"],
+)
 def test_centers_transform_scaling(benchmark, count: int) -> None:
     cells = np.arange(count, dtype=np.uint64)
     centers = benchmark(px.centers, cells, 12)
@@ -390,7 +419,11 @@ def test_centers_transform_scaling(benchmark, count: int) -> None:
     assert centers.shape == (count, 3)
 
 
-@pytest.mark.parametrize("count", [1_000, 1_000_000], ids=["small", "large"])
+@pytest.mark.parametrize(
+    "count",
+    [1_000, pytest.param(1_000_000, marks=pytest.mark.parallel)],
+    ids=["small", "large"],
+)
 def test_boundaries_transform_scaling(benchmark, count: int) -> None:
     cells = np.arange(count, dtype=np.uint64)
     boundaries = benchmark(px.boundaries, cells, 12)

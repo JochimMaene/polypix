@@ -60,7 +60,9 @@ rejected.
 
 Vectors are finite, nonzero, body-centered `(x, y, z)` coordinates. Polypix
 normalizes their magnitudes. It assigns no datum, ellipsoid, or CRS meaning to
-them.
+them. Compatible contiguous NumPy arrays are borrowed for the duration of a
+call. Do not mutate an input or candidate array from another thread until the
+call returns.
 
 `resolution` is an integer from 0 through 29. The returned values satisfy:
 
@@ -188,6 +190,11 @@ a numerical scale floor: footprints with angular extent below roughly
 crossover depends on vertex layout and conditioning. Concavity below the same
 floating-point validation scale may be numerically indistinguishable from a
 collinear edge.
+
+Validation compares vertex pairs and each polygon edge against every vertex,
+so its cost is quadratic in the number of vertices. This is intended for
+modest convex footprints; densely sampled boundaries should normally be split
+into short `cover_strip()` segments.
 
 For `cover_strip()`, consecutive samples on each edge are joined by the same
 minor arcs. Callers must sample physical swaths densely enough that these arcs

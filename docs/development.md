@@ -94,8 +94,12 @@ python tools/generate_ring_geometry_fixtures.py
 
 `healpy` remains an external oracle, not a development or runtime dependency.
 
-CodSpeed reports performance regressions through
-`.github/workflows/codspeed.yml` on pull requests and pushes to `main`.
+CodSpeed simulation reports deterministic instruction regressions for
+single-threaded benchmarks through `.github/workflows/codspeed.yml` on pull
+requests and pushes to `main`. Benchmarks marked `parallel` are excluded
+because Valgrind simulation serializes worker threads. The same workflow runs
+`tools/check_parallel_speedup.py` natively as a coarse wall-time guard for
+actual multicore scaling.
 
 Internal architecture and licensing rationale is retained in the repository's
 `decisions/` directory rather than published as user-facing performance

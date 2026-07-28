@@ -74,6 +74,23 @@ speed claims because the removed internal CDS adapter is not a reproducible
 public alternative. Public comparative claims require the separate benchmark
 repository described in the [project goal](../docs/project-goal.md).
 
+The following component comparisons are retained as maintenance evidence, not
+as cross-library claims. They use release builds and include public-call input
+conversion. A future simplification should rerun the same A/B comparison
+before removing a load-bearing path:
+
+| Component | Internal A/B workload | July 2026 observation |
+| --- | --- | --- |
+| Fixed-quadrilateral preparation and predicate | 4,096 small quads, resolution 9, one thread | 3.33 ms enabled versus 4.57 ms through the generic polygon path: 1.37x. |
+| Shared candidate-center cache | 4,096 overlapping small quads, two million resolution-12 candidates | Disabling the cache saved about 40 MiB but regressed the serial call by 11% and the automatic call by 1.77x. |
+| Automatic scan estimator | 2,000 small quads at resolution 2, automatic versus forced serial | 1.97 ms versus 1.81 ms: about 9% dispatch overhead below the parallel crossover. |
+
+These medians came from an eight-logical-CPU Intel development host. Exact
+timings depend on host, toolchain, and the evolving kernel; the A/B workload
+and ratio are the durable evidence. A future simplification should rerun the
+comparison on its target branch rather than treating these numbers as a public
+performance promise.
+
 ## Admission Evidence
 
 The owned kernel was admitted after the evidence showed:

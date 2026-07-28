@@ -178,6 +178,12 @@ def _as_footprints(
     if len(values) == 0:
         return np.empty((0, 3), dtype=np.float64), np.zeros(1, dtype=np.uint64)
     if np.asarray(values[0]).ndim == 2:
+        try:
+            dense = np.asarray(values)
+        except ValueError:
+            return _ragged_footprints(values)
+        if dense.dtype != object:
+            return _require_dense_footprints(dense)
         return _ragged_footprints(values)
     return _require_dense_footprints(values)
 

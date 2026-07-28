@@ -237,6 +237,10 @@ class PolypixTests(unittest.TestCase):
         np.testing.assert_array_equal(ragged_quads.cells, dense_coverage.cells)
         np.testing.assert_array_equal(ragged_quads.offsets, dense_coverage.offsets)
 
+        nested_quads = px.cover_footprint(dense.tolist(), resolution=2)
+        np.testing.assert_array_equal(nested_quads.cells, dense_coverage.cells)
+        np.testing.assert_array_equal(nested_quads.offsets, dense_coverage.offsets)
+
     def test_cover_accepts_array_protocol_inputs(self) -> None:
         polygon = vectors([(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)])
         for values in (polygon, np.stack((polygon, polygon))):

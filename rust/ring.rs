@@ -1362,9 +1362,12 @@ mod tests {
                 }
             }
         }
+        let drift_budget = 0.5 * CONTAINMENT_EPSILON;
+        let budget_used = 100.0 * maximum_drift / CONTAINMENT_EPSILON;
         assert!(
-            maximum_drift <= CONTAINMENT_EPSILON,
-            "incremental center drift {maximum_drift:e} exceeds containment tolerance"
+            maximum_drift <= drift_budget,
+            "incremental center drift {maximum_drift:e} uses {budget_used:.1}% of the \
+             containment tolerance; the resynchronization budget is 50%"
         );
     }
 }

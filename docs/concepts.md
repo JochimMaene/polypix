@@ -32,6 +32,10 @@ sphere. Input magnitude is ignored and normalized robustly. The coordinate
 frame can represent Earth or another sphere, but Polypix does not assign WGS84,
 geodetic, ellipsoid, or CRS semantics.
 
+Compatible contiguous NumPy buffers are borrowed while a call runs. Because
+native work releases the GIL, callers must not mutate those input buffers from
+another thread before the call returns.
+
 Satellite and sensor coverage are leading uses. Footprint generation—such as
 orbit propagation, attitude, sensor projection, or ellipsoid intersection—
 belongs upstream.
@@ -63,6 +67,11 @@ Spherical validation has a numerical scale floor rather than arbitrary
 precision. Footprints below roughly `1e-8` radians in angular extent are
 unsupported and may be rejected as degenerate; the exact crossover depends on
 their vertex layout and conditioning.
+
+Validation is quadratic in vertex count because it checks duplicate pairs and
+tests every vertex against every edge. Polypix is optimized for modest convex
+footprints and short strip segments, not polygons with densely sampled
+boundaries.
 
 ## Batches And Segments
 
