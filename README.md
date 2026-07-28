@@ -97,6 +97,8 @@ The public documentation is published at
 <https://jochimmaene.github.io/polypix/>:
 
 - [Install guide](https://jochimmaene.github.io/polypix/install/)
+- [Communications constellation example](https://jochimmaene.github.io/polypix/examples/communication-constellation/)
+- [Earth-observation constellation example](https://jochimmaene.github.io/polypix/examples/earth-observation-constellation/)
 - [Project goal](https://jochimmaene.github.io/polypix/project-goal/)
 - [Concepts](https://jochimmaene.github.io/polypix/concepts/)
 - [API reference](https://jochimmaene.github.io/polypix/api/)

@@ -77,15 +77,19 @@ ruff = ">=0.9"
 [tool.pixi.feature.bench.dependencies]
 pytest-codspeed = ">=5"
 
-[tool.pixi.feature.docs.dependencies]
-zensical = "*"
+[tool.pixi.feature.docs.pypi-dependencies]
+zensical = ">=0.0.47"
+markdown-exec = ">=1.12"
+matplotlib = "*"
 
 [tool.pixi.tasks]
 test = "python -m pytest -q tests"
-lint = "ruff check polypix tests benchmarks tools && ruff format --check polypix tests benchmarks tools && mypy --strict polypix && python -m mypy.stubtest polypix._core"
+lint = "ruff check polypix tests benchmarks tools examples && ruff format --check polypix tests benchmarks tools examples && mypy --strict polypix && python -m mypy.stubtest polypix._core"
 bench = "python -m pytest benchmarks --codspeed"
 wheel = "maturin build --release --out dist"
-docs-build = "zensical build --strict"
+docs-build = "MPLBACKEND=Agg MPLCONFIGDIR=.cache/matplotlib zensical build --strict"
+docs-communications = "MPLBACKEND=Agg python examples/communication_constellation.py"
+docs-earth-observation = "MPLBACKEND=Agg python examples/earth_observation_constellation.py"
 docs-serve = "zensical serve"
 
 [tool.ruff]

@@ -9,6 +9,18 @@ and sensor coverage is the leading use case, but the vectors can belong to any
 spherical coordinate frame. Polypix does not model orbits, attitude, sensors,
 time, ellipsoids, datums, or coordinate reference systems.
 
+## Constellation Examples
+
+The [communications constellation example](examples/communication-constellation.md)
+maps the mean simultaneous satellites in view from a 500-satellite,
+Starlink-like constellation over one hour.
+
+The [Earth-observation constellation example](examples/earth-observation-constellation.md)
+covers ten days of swept sensor motion from ten satellites, then maps distinct
+observations and mean revisit time. Both examples execute during the
+documentation build and publish their current maps and stage-by-stage timings
+without maintaining copied results.
+
 ## Install
 
 ```bash
@@ -94,6 +106,10 @@ area coverage.
 
 - [Project Goal](project-goal.md) defines product scope and feature admission.
 - [Install](install.md) covers wheels and source builds.
+- [Communications constellation](examples/communication-constellation.md)
+  demonstrates batched instantaneous service footprints.
+- [Earth-observation constellation](examples/earth-observation-constellation.md)
+  demonstrates swept strips, distinct observations, and revisit time.
 - [Concepts](concepts.md) explains IDs, geometry, batches, and threading.
 - [API](api.md) documents the complete Python interface.
 - [Development](development.md) covers local development and releases.

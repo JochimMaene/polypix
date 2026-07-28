@@ -16,6 +16,10 @@ tests/
   test_ring_geometry.py  independent HEALPix geometry fixtures
 benchmarks/
   test_polypix_benchmarks.py  CodSpeed public-call regression benchmarks
+examples/
+  constellation.py                    shared orbit and plotting helpers
+  communication_constellation.py      one-hour communications availability
+  earth_observation_constellation.py  ten-day observation and revisit analysis
 tools/
   generate_ring_geometry_fixtures.py  external-oracle fixture generator
 decisions/
@@ -60,6 +64,16 @@ Build documentation:
 ```bash
 pixi run --environment docs docs-build
 ```
+
+Run either standalone constellation example:
+
+```bash
+pixi run --environment docs docs-communications
+pixi run --environment docs docs-earth-observation
+```
+
+The documentation build executes both examples through Markdown Exec and embeds
+their current results and performance measurements in the corresponding pages.
 
 Preview documentation:
 

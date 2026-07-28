@@ -5,8 +5,13 @@ site_author = "Jochim Maene"
 copyright = "&copy; 2026 Jochim Maene"
 docs_dir = "docs"
 site_dir = "site"
+watch = ["examples"]
 nav = [
   { "Overview" = "index.md" },
+  { "Examples" = [
+    { "Communications constellation" = "examples/communication-constellation.md" },
+    { "Earth-observation constellation" = "examples/earth-observation-constellation.md" },
+  ] },
   { "Project Goal" = "project-goal.md" },
   { "Install" = "install.md" },
   { "Concepts" = "concepts.md" },
@@ -23,3 +28,9 @@ features = [
   "navigation.footer",
   "toc.follow",
 ]
+
+[project.markdown_extensions.pymdownx.snippets]
+base_path = ["."]
+check_paths = true
+
+[project.plugins.markdown-exec]
