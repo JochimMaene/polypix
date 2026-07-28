@@ -269,7 +269,6 @@ def plot_revisit(
 
 def render_documentation() -> str:
     """Run the scenario and return two live figures and measurements as HTML."""
-    documentation_started = time.perf_counter()
     result = analyze()
     plotting_started = time.perf_counter()
     coordinates = map_coordinates(resolution=HEALPIX_RESOLUTION)
@@ -283,7 +282,6 @@ def render_documentation() -> str:
         "ascii"
     )
     encoded_revisit = base64.b64encode(revisit_image.getvalue()).decode("ascii")
-    documentation_elapsed_s = time.perf_counter() - documentation_started
 
     measured = np.isfinite(result.mean_revisit_s)
     revisit_hours = result.mean_revisit_s[measured] / 3_600
@@ -307,32 +305,39 @@ def render_documentation() -> str:
 
 <table>
   <thead>
-    <tr><th>Measurement</th><th>Result from this build</th></tr>
+    <tr><th>Stage</th><th>Time in this build</th></tr>
   </thead>
   <tbody>
-    <tr><td>Orbit and swath generation</td>
-        <td>{result.swath_elapsed_s * 1_000:.1f} ms</td></tr>
-    <tr><td>Ten sequential <code>cover_strip()</code> calls</td>
-        <td>{result.coverage_elapsed_s * 1_000:.1f} ms</td></tr>
-    <tr><td>Observation and revisit reduction</td>
-        <td>{result.reduction_elapsed_s * 1_000:.1f} ms</td></tr>
-    <tr><td>Complete numerical analysis</td>
-        <td>{result.analysis_elapsed_s * 1_000:.1f} ms</td></tr>
-    <tr><td>Coordinates, two maps, and PNG encoding</td>
-        <td>{plotting_elapsed_s * 1_000:.1f} ms</td></tr>
-    <tr><td>Complete executable example</td>
-        <td>{documentation_elapsed_s * 1_000:.1f} ms</td></tr>
+    <tr><td><strong>Polypix:</strong> one <code>cover_strip()</code> call per
+            satellite</td>
+        <td><strong>{result.coverage_elapsed_s * 1_000:.0f} ms</strong></td></tr>
+    <tr><td>NumPy: orbits and swath edges</td>
+        <td>{result.swath_elapsed_s * 1_000:.0f} ms</td></tr>
+    <tr><td>NumPy: observation and revisit reduction</td>
+        <td>{result.reduction_elapsed_s * 1_000:.0f} ms</td></tr>
+    <tr><td>Complete analysis</td>
+        <td>{result.analysis_elapsed_s * 1_000:.0f} ms</td></tr>
+    <tr><td>Matplotlib: two maps and PNG encoding</td>
+        <td>{plotting_elapsed_s * 1_000:.0f} ms</td></tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>Workload and result</th><th>Value</th></tr>
+  </thead>
+  <tbody>
     <tr><td>Swept intervals covered</td><td>{interval_count:,}</td></tr>
-    <tr><td>Materialized interval-cell observations</td>
+    <tr><td>Interval-cell pairs returned</td>
         <td>{result.materialized_count:,}</td></tr>
-    <tr><td>Observed cells</td>
+    <tr><td>Cells observed</td>
         <td>{np.count_nonzero(result.observations):,} of
             {result.observations.size:,}</td></tr>
     <tr><td>Distinct observations per cell, maximum</td>
         <td>{int(result.observations.max())}</td></tr>
     <tr><td>Median per-cell mean revisit</td>
         <td>{np.median(revisit_hours):.2f} hours</td></tr>
-    <tr><td>Range of per-cell mean revisit</td>
+    <tr><td>Per-cell mean revisit, range</td>
         <td>{revisit_hours.min():.2f}–{revisit_hours.max():.2f} hours</td></tr>
   </tbody>
 </table>

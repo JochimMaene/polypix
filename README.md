@@ -91,14 +91,29 @@ Polypix uses center-in-footprint coverage: a HEALPix cell is included when its
 center lies inside the footprint or on its boundary. Boundary-touching cells
 whose centers fall outside the footprint are excluded.
 
+## See It Work
+
+Two complete constellation studies run during every documentation build, so
+their maps and timings always match the code that produced them:
+
+- [Communications availability](https://jochimmaene.github.io/polypix/examples/communication-constellation/)
+  covers 30,500 service footprints from 500 satellites in about 0.3 s.
+- [Earth-observation revisit](https://jochimmaene.github.io/polypix/examples/earth-observation-constellation/)
+  covers 144,000 swept swath intervals from 10 satellites in about 0.2 s.
+
+Each returns roughly eight million footprint-cell pairs. The published pages
+report live measurements from the current build.
+
 ## Documentation
 
 The public documentation is published at
 <https://jochimmaene.github.io/polypix/>:
 
 - [Install guide](https://jochimmaene.github.io/polypix/install/)
-- [Communications constellation example](https://jochimmaene.github.io/polypix/examples/communication-constellation/)
-- [Earth-observation constellation example](https://jochimmaene.github.io/polypix/examples/earth-observation-constellation/)
+- Worked examples:
+  [communications availability](https://jochimmaene.github.io/polypix/examples/communication-constellation/)
+  and
+  [Earth-observation revisit](https://jochimmaene.github.io/polypix/examples/earth-observation-constellation/)
 - [Project goal](https://jochimmaene.github.io/polypix/project-goal/)
 - [Concepts](https://jochimmaene.github.io/polypix/concepts/)
 - [API reference](https://jochimmaene.github.io/polypix/api/)

@@ -171,7 +171,6 @@ def plot_availability(
 
 def render_documentation() -> str:
     """Run the scenario and return its live figure and measurements as HTML."""
-    documentation_started = time.perf_counter()
     result = analyze()
     plotting_started = time.perf_counter()
     coordinates = map_coordinates(resolution=HEALPIX_RESOLUTION)
@@ -179,7 +178,6 @@ def render_documentation() -> str:
     plot_availability(result, image, coordinates=coordinates, dpi=80)
     plotting_elapsed_s = time.perf_counter() - plotting_started
     encoded_image = base64.b64encode(image.getvalue()).decode("ascii")
-    documentation_elapsed_s = time.perf_counter() - documentation_started
 
     snapshot_count = DURATION_S // CADENCE_S + 1
     footprint_count = snapshot_count * SATELLITE_COUNT
@@ -197,30 +195,35 @@ def render_documentation() -> str:
 
 <table>
   <thead>
-    <tr><th>Measurement</th><th>Result from this build</th></tr>
+    <tr><th>Stage</th><th>Time in this build</th></tr>
   </thead>
   <tbody>
-    <tr><td>Orbit and footprint generation</td>
-        <td>{result.geometry_elapsed_s * 1_000:.1f} ms</td></tr>
-    <tr><td>Batched <code>cover_footprint()</code> calls</td>
-        <td>{result.coverage_elapsed_s * 1_000:.1f} ms</td></tr>
-    <tr><td>Availability reduction</td>
-        <td>{result.reduction_elapsed_s * 1_000:.1f} ms</td></tr>
-    <tr><td>Complete numerical analysis</td>
-        <td>{result.analysis_elapsed_s * 1_000:.1f} ms</td></tr>
-    <tr><td>Map and PNG encoding</td>
-        <td>{plotting_elapsed_s * 1_000:.1f} ms</td></tr>
-    <tr><td>Complete executable example</td>
-        <td>{documentation_elapsed_s * 1_000:.1f} ms</td></tr>
+    <tr><td><strong>Polypix:</strong> {snapshot_count} batched
+            <code>cover_footprint()</code> calls</td>
+        <td><strong>{result.coverage_elapsed_s * 1_000:.0f} ms</strong></td></tr>
+    <tr><td>NumPy: orbits and footprint vertices</td>
+        <td>{result.geometry_elapsed_s * 1_000:.0f} ms</td></tr>
+    <tr><td>NumPy: availability reduction</td>
+        <td>{result.reduction_elapsed_s * 1_000:.0f} ms</td></tr>
+    <tr><td>Complete analysis</td>
+        <td>{result.analysis_elapsed_s * 1_000:.0f} ms</td></tr>
+    <tr><td>Matplotlib: map and PNG encoding</td>
+        <td>{plotting_elapsed_s * 1_000:.0f} ms</td></tr>
+  </tbody>
+</table>
+
+<table>
+  <thead>
+    <tr><th>Workload and result</th><th>Value</th></tr>
+  </thead>
+  <tbody>
     <tr><td>Service footprints covered</td><td>{footprint_count:,}</td></tr>
-    <tr><td>Materialized footprint-cell observations</td>
+    <tr><td>Footprint-cell pairs returned</td>
         <td>{result.materialized_count:,}</td></tr>
     <tr><td>Mean satellites in view, global range</td>
         <td>{result.mean_visible.min():.2f}–{result.mean_visible.max():.2f}</td></tr>
-    <tr><td>Minimum satellites in view at any sample</td>
-        <td>{int(result.minimum_visible.min())}</td></tr>
-    <tr><td>Maximum satellites in view at any sample</td>
-        <td>{int(result.maximum_visible.max())}</td></tr>
+    <tr><td>Satellites in view at a single sample, global range</td>
+        <td>{int(result.minimum_visible.min())}–{int(result.maximum_visible.max())}</td></tr>
   </tbody>
 </table>
 """.strip()
