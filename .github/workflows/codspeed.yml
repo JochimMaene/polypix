@@ -20,9 +20,6 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    env:
-      POLYPIX_NUM_THREADS: "1"
-
     steps:
       - uses: actions/checkout@v4
 
@@ -55,4 +52,10 @@ jobs:
           PIXI_CACHE_DIR: ${{ runner.temp }}/pixi-cache
         with:
           mode: simulation
-          run: cd "$RUNNER_TEMP" && pixi run --manifest-path "$GITHUB_WORKSPACE" --environment bench python -m pytest "$GITHUB_WORKSPACE/benchmarks" --codspeed
+          run: cd "$RUNNER_TEMP" && pixi run --manifest-path "$GITHUB_WORKSPACE" --environment bench python -m pytest "$GITHUB_WORKSPACE/benchmarks" --codspeed -m "not parallel"
+
+      - name: Check native parallel scaling
+        working-directory: ${{ runner.temp }}
+        env:
+          PIXI_CACHE_DIR: ${{ runner.temp }}/pixi-cache
+        run: pixi run --manifest-path "$GITHUB_WORKSPACE" --environment bench python "$GITHUB_WORKSPACE/tools/check_parallel_speedup.py"

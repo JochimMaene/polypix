@@ -1,16 +1,13 @@
 # Polypix
 
-Polypix computes HEALPix cells whose centers fall inside convex footprints on
-the sphere. It is a small Python package for coverage simulations and indexing
-pipelines that already have clean spherical footprints and need fast,
-NumPy-friendly results.
+Polypix converts large batches of convex spherical footprints into the HEALPix
+RING cells whose centers lie inside them. It is a deliberately small,
+NumPy-first engine for coverage simulations and spatial indexing.
 
-Typical inputs are sensor footprints, beam contours, access regions, and swath
-edges from satellite, aerial, astronomy, or other spherical-domain simulations.
-Use Polypix when you want deterministic center-sampled coverage for convex
-regions. Do not use it when you need planar geometry semantics, holes,
-non-convex footprints, every HEALPix cell that touches a footprint boundary, or
-footprint generation from orbit, attitude, sensor, or beam models.
+Use it when footprint geometry already exists and throughput matters. Satellite
+and sensor coverage is the leading use case, but the vectors can belong to any
+spherical coordinate frame. Polypix does not model orbits, attitude, sensors,
+time, ellipsoids, datums, or coordinate reference systems.
 
 ## Install
 
@@ -18,8 +15,8 @@ footprint generation from orbit, attitude, sensor, or beam models.
 python -m pip install polypix
 ```
 
-Published wheels are available for Python 3.12 and newer on Linux x86_64 and
-macOS 11 or newer on Intel and Apple Silicon.
+Wheels target CPython 3.12 and newer on Linux x86-64 and ARM64, macOS Intel and
+Apple Silicon, and Windows x86-64. NumPy is the only runtime dependency.
 
 ## Quick Start
 
@@ -48,79 +45,55 @@ footprint = np.asarray(
 )
 
 coverage = px.cover_footprint(footprint, resolution=8)
-centers = px.centers(coverage.cell_ids)
-boundaries = px.boundaries(coverage.cell_ids[:3])
+center_vectors = px.centers(coverage.cells, coverage.resolution)
+corner_vectors = px.boundaries(coverage.cells[:3], coverage.resolution)
 ```
 
-`coverage.cell_ids` is a one-dimensional `uint64` array. Each value is a packed
-Polypix cell token that stores the HEALPix resolution and NESTED pixel index.
-Treat these values as opaque IDs; use `centers()` or `boundaries()` when you
-need longitude/latitude geometry.
+`coverage.cells` contains standard fixed-resolution HEALPix RING indices.
+`coverage.offsets` divides that flat `uint64` array into one segment per input
+footprint.
 
-## Batch Coverage
+## Batches
 
-For many footprints, pass a dense array with shape `(footprints, vertices, 3)`.
-The result stores one flat cell array plus output offsets.
+A dense batch has shape `(footprints, vertices, 3)`. A sequence of
+`(vertices, 3)` arrays supports footprints with different vertex counts:
 
 ```python
-footprint_a = np.asarray(
-    [
-        lonlat_to_xyz(-5.0, -5.0),
-        lonlat_to_xyz(12.0, -4.0),
-        lonlat_to_xyz(10.0, 9.0),
-        lonlat_to_xyz(-6.0, 7.0),
-    ],
-    dtype=np.float64,
-)
-footprint_b = np.asarray(
-    [
-        lonlat_to_xyz(20.0, -10.0),
-        lonlat_to_xyz(33.0, -10.0),
-        lonlat_to_xyz(33.0, 0.0),
-        lonlat_to_xyz(20.0, 0.0),
-    ],
-    dtype=np.float64,
+coverage = px.cover_footprint(
+    [triangle_xyz, quadrilateral_xyz, pentagon_xyz],
+    resolution=9,
 )
 
-coverage = px.cover_footprint(np.stack([footprint_a, footprint_b]), resolution=8)
 cells_by_footprint = [
-    coverage.cell_ids[start:stop]
+    coverage.cells[start:stop]
     for start, stop in zip(coverage.offsets[:-1], coverage.offsets[1:])
 ]
 ```
 
-## Coordinate Systems
+Inputs are finite, nonzero body-centered vectors. Polypix normalizes their
+magnitudes and accepts either polygon orientation.
 
-Polypix accepts normalized unit vectors as `(x, y, z)`.
+## Strips
 
-Footprint edges are interpreted as great-circle segments. Vertex orientation
-does not matter; Polypix normalizes orientation internally. A repeated final
-vertex is accepted as a closed-ring marker.
-
-## Swath Coverage
-
-For strip-like coverage, pass the sampled left and right footprint edges
-directly:
+For a sampled strip, pass its paired edges:
 
 ```python
-coverage = px.cover_swath(left_edge_xyz, right_edge_xyz, resolution=8)
+coverage = px.cover_strip(left_edge_xyz, right_edge_xyz, resolution=8)
 ```
 
-Both edge arrays must have shape `(samples, 3)`. Polypix covers each
-consecutive interval as one quadrilateral.
+Each consecutive sample pair forms one convex quadrilateral and one result
+segment. Polypix does not implicitly union the intervals.
 
 ## Coverage Rule
 
-Polypix uses center-in-footprint coverage: a HEALPix cell is included only if
-its center lies inside the spherical footprint. Boundary-touching cells whose
-centers fall outside the footprint are not included.
-
-This rule is compact and deterministic, but it is not a conservative overlap
-cover.
+A cell is included when its center lies inside the convex spherical footprint
+or on its boundary. This is not conservative cell intersection or fractional
+area coverage.
 
 ## More Information
 
-- [Install](install.md) describes supported wheels and source builds.
-- [Concepts](concepts.md) explains resolutions, packed cell IDs, and geometry assumptions.
-- [API](api.md) documents the public Python interface.
-- [Development](development.md) covers local development, releases, and documentation publishing.
+- [Project Goal](project-goal.md) defines product scope and feature admission.
+- [Install](install.md) covers wheels and source builds.
+- [Concepts](concepts.md) explains IDs, geometry, batches, and threading.
+- [API](api.md) documents the complete Python interface.
+- [Development](development.md) covers local development and releases.

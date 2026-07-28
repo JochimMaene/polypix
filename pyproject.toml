@@ -1,25 +1,28 @@
 [build-system]
-requires = ["scikit-build-core[rich]>=0.10", "nanobind>=2.0"]
-build-backend = "scikit_build_core.build"
+requires = ["maturin>=1.10,<2"]
+build-backend = "maturin"
 
 [project]
 name = "polypix"
-version = "0.2.1"
+dynamic = ["version"]
 description = "Fast HEALPix coverage for convex footprints on the sphere."
 keywords = ["healpix", "spherical-geometry", "geospatial", "astronomy", "spatial-index"]
 classifiers = [
+  "Development Status :: 4 - Beta",
   "Operating System :: MacOS",
   "Operating System :: POSIX :: Linux",
+  "Operating System :: Microsoft :: Windows",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: 3.13",
   "Programming Language :: Python :: 3.14",
   "Programming Language :: Python :: Implementation :: CPython",
   "Topic :: Scientific/Engineering :: Astronomy",
+  "Typing :: Typed",
 ]
 readme = "README.md"
-license = "GPL-3.0-or-later"
-license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md", "ci/licenses/*"]
+license = "Apache-2.0"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 authors = [
   { name = "Jochim Maene" },
 ]
@@ -33,42 +36,13 @@ Issues = "https://github.com/JochimMaene/polypix/issues"
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
-bench = ["numpy>=1.26", "pytest-codspeed>=5"]
-docs = ["zensical"]
-release = ["build", "twine", "cibuildwheel>=3"]
-dev = ["pytest>=8", "build", "twine", "zensical", "cibuildwheel>=3"]
 
-[tool.scikit-build]
-wheel.packages = []
-# Pixi passes its environment name through PEP 517 config settings for editable
-# installs; scikit-build-core should ignore that frontend-specific key.
-strict-config = false
-cmake.build-type = "Release"
-build-dir = "build/{wheel_tag}"
-sdist.exclude = [
-  ".github/**",
-  "**/__pycache__/**",
-  "**/*.pyc",
-  ".pytest_cache/**",
-  "build/**",
-  "dist/**",
-  "polypix/_core*.so",
-  "polypix/_core*.pyd",
-  "site/**",
-  "venv*/**",
-]
-
-[tool.cibuildwheel]
-skip = "*musllinux*"
-manylinux-x86_64-image = "manylinux_2_34"
-test-requires = ["pytest"]
-test-command = "python -m pytest {project}/tests"
-
-[tool.cibuildwheel.linux]
-repair-wheel-command = "LD_LIBRARY_PATH=$POLYPIX_DEPS_PREFIX/lib auditwheel repair -w {dest_dir} {wheel}"
-
-[tool.cibuildwheel.macos]
-repair-wheel-command = "DYLD_LIBRARY_PATH=$POLYPIX_DEPS_PREFIX/lib delocate-wheel --require-archs {delocate_archs} -w {dest_dir} -v {wheel}"
+[tool.maturin]
+bindings = "pyo3"
+features = ["pyo3/extension-module"]
+module-name = "polypix._core"
+python-source = "."
+strip = true
 
 [tool.pixi.workspace]
 channels = ["conda-forge"]
@@ -80,28 +54,14 @@ dev = { features = ["dev"], solve-group = "default" }
 test = { features = ["dev", "test"], solve-group = "default" }
 bench = { features = ["dev", "test", "bench"], solve-group = "default" }
 docs = { features = ["dev", "docs"], solve-group = "default" }
-release = { features = ["dev"], solve-group = "default" }
-wheel-deps = { features = ["wheel-deps"], no-default-feature = true }
 
 [tool.pixi.dependencies]
 python = ">=3.12"
 numpy = ">=1.26"
 
-[tool.pixi.activation.env]
-CMAKE_PREFIX_PATH = "$CONDA_PREFIX"
-PKG_CONFIG_PATH = "$CONDA_PREFIX/lib/pkgconfig"
-
 [tool.pixi.feature.dev.dependencies]
-cmake = ">=3.21"
-ninja = "*"
-cxx-compiler = "*"
-pkg-config = "*"
-nanobind = ">=2.0"
-scikit-build-core = ">=0.10"
-python-build = "*"
-twine = "*"
-cibuildwheel = ">=3"
-healpix_cxx = "*"
+rust = "*"
+maturin = ">=1.10,<2"
 
 [tool.pixi.feature.dev.pypi-dependencies]
 polypix = { path = ".", editable = true }
@@ -110,7 +70,9 @@ polypix = { path = ".", editable = true }
 no-build-isolation = ["polypix"]
 
 [tool.pixi.feature.test.dependencies]
+mypy = ">=1.15"
 pytest = ">=8"
+ruff = ">=0.9"
 
 [tool.pixi.feature.bench.dependencies]
 pytest-codspeed = ">=5"
@@ -118,30 +80,21 @@ pytest-codspeed = ">=5"
 [tool.pixi.feature.docs.dependencies]
 zensical = "*"
 
-[tool.pixi.feature.wheel-deps.dependencies]
-healpix_cxx = "==3.83"
-cfitsio = "==4.6.3"
-pkg-config = "*"
-
-[tool.pixi.feature.wheel-deps.target.linux-64.dependencies]
-# Newer libcurl builds pull in ICU with a newer C++ ABI than manylinux_2_34.
-libcurl = "==8.20.0"
-
 [tool.pixi.tasks]
 test = "python -m pytest -q tests"
+lint = "ruff check polypix tests benchmarks tools && ruff format --check polypix tests benchmarks tools && mypy --strict polypix && python -m mypy.stubtest polypix._core"
 bench = "python -m pytest benchmarks --codspeed"
-wheel = "python -m build --wheel --no-isolation --config-setting=cmake.define.POLYPIX_BUNDLE_RUNTIME_DEPS=ON"
+wheel = "maturin build --release --out dist"
 docs-build = "zensical build --strict"
 docs-serve = "zensical serve"
-twine-check = "python -m twine check dist/*"
 
-[tool.pixi.feature.dev.tasks.configure]
-cmd = "cmake -GNinja -S. -Bbuild/python -DSKBUILD_PROJECT_NAME=polypix -DSKBUILD_PROJECT_VERSION=0.0.0"
-inputs = ["CMakeLists.txt"]
-outputs = ["build/python/CMakeFiles/"]
+[tool.ruff]
+target-version = "py312"
 
-[tool.pixi.feature.dev.tasks.compile]
-cmd = "cmake --build build/python --config Debug"
-depends-on = ["configure"]
-inputs = ["src/polypix/**", "polypix/_core.pyi"]
-outputs = ["build/python/polypix/_core*"]
+[tool.ruff.lint]
+select = ["B", "E4", "E7", "E9", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+markers = [
+  "parallel: native wall-time benchmark expected to use multiple worker threads",
+]
