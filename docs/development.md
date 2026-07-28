@@ -18,6 +18,8 @@ benchmarks/
   test_polypix_benchmarks.py  CodSpeed public-call regression benchmarks
 tools/
   generate_ring_geometry_fixtures.py  external-oracle fixture generator
+decisions/
+  owned-healpix-kernel.md  internal architecture and licensing evidence
 docs/
   *.md                Zensical documentation pages
 ```
@@ -94,6 +96,10 @@ python tools/generate_ring_geometry_fixtures.py
 
 CodSpeed reports performance regressions through
 `.github/workflows/codspeed.yml` on pull requests and pushes to `main`.
+
+Internal architecture and licensing rationale is retained in the repository's
+`decisions/` directory rather than published as user-facing performance
+documentation.
 
 ## Release Builds
 

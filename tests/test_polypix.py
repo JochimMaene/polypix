@@ -167,17 +167,21 @@ class PolypixTests(unittest.TestCase):
             )
             self.assertCellsEqual(actual_segment, expected_segment)
 
-    def test_centers_match_independent_ring_equations_through_resolution_6(
+    def test_centers_match_independent_ring_equations_through_resolution_7(
         self,
     ) -> None:
-        for resolution in range(7):
+        for resolution in range(8):
             expected = reference_ring_centers(resolution)
             cells = np.arange(expected.shape[0], dtype=np.uint64)
+            # The independent scalar oracle uses sqrt(1 - z*z), whose polar
+            # cancellation becomes visible one resolution before the production
+            # kernel's factored formulation.
+            tolerance = 6e-15 if resolution == 7 else 2e-15
             np.testing.assert_allclose(
                 px.centers(cells, resolution),
                 expected,
                 rtol=0.0,
-                atol=2e-15,
+                atol=tolerance,
             )
 
     def test_cover_accepts_single_xyz_array(self) -> None:
@@ -731,6 +735,22 @@ class PolypixTests(unittest.TestCase):
         )
         np.testing.assert_array_equal(coverage.cells, [])
         np.testing.assert_array_equal(coverage.offsets, [0, 0])
+
+    def test_footprint_below_the_documented_validation_floor_fails_safely(
+        self,
+    ) -> None:
+        polygon = regular_spherical_polygon(
+            np.asarray([1.0, 0.0, 0.0]),
+            5.0e-9,
+            4,
+        )
+        with self.assertRaisesRegex(ValueError, "degenerate"):
+            px.cover_footprint(
+                polygon,
+                resolution=29,
+                candidate_cells=np.empty(0, dtype=np.uint64),
+                threads=1,
+            )
 
     def test_small_high_latitude_quad_is_not_rejected_by_endpoint_roundoff(
         self,

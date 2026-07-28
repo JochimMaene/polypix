@@ -199,6 +199,18 @@ def test_cover_footprint_automatic_light_batch(
     assert coverage.offsets.shape == (301,)
 
 
+@pytest.mark.parametrize("threads", [1, None], ids=["serial", "automatic"])
+def test_cover_footprint_automatic_prepass_cost(
+    benchmark,
+    large_footprints: np.ndarray,
+    threads: int | None,
+) -> None:
+    footprints = large_footprints[:2_000]
+    coverage = benchmark(px.cover_footprint, footprints, 2, threads=threads)
+
+    assert coverage.offsets.shape == (2_001,)
+
+
 def test_cover_footprint_explicit_pool_reuse(
     benchmark, large_footprints: np.ndarray
 ) -> None:
@@ -368,3 +380,19 @@ def test_boundaries(benchmark, cells: np.ndarray) -> None:
 
     assert boundaries.shape == (min(cells.size, 256), 4, 3)
     assert boundaries.dtype == np.float64
+
+
+@pytest.mark.parametrize("count", [1_000, 1_000_000], ids=["small", "large"])
+def test_centers_transform_scaling(benchmark, count: int) -> None:
+    cells = np.arange(count, dtype=np.uint64)
+    centers = benchmark(px.centers, cells, 12)
+
+    assert centers.shape == (count, 3)
+
+
+@pytest.mark.parametrize("count", [1_000, 1_000_000], ids=["small", "large"])
+def test_boundaries_transform_scaling(benchmark, count: int) -> None:
+    cells = np.arange(count, dtype=np.uint64)
+    boundaries = benchmark(px.boundaries, cells, 12)
+
+    assert boundaries.shape == (count, 4, 3)

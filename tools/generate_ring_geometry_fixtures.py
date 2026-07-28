@@ -1,4 +1,4 @@
-"""Regenerate the broad HEALPix C++ audit signatures used by the test suite.
+"""Regenerate the broad and exact HEALPix C++ fixtures used by the test suite.
 
 Run this in an environment that provides ``healpy``; it is deliberately not a
 Polypix development or runtime dependency.
@@ -43,3 +43,23 @@ for resolution in RESOLUTIONS:
         2,
     )
     print(f"{resolution}: ({signature(centers)!r}, {signature(corners)!r}),")
+
+for resolution in (8, 16):
+    nside = 2**resolution
+    pixel_count = 12 * nside * nside
+    north_end = 2 * nside * (nside - 1) - 1
+    equator_start = north_end + 1
+    south_start = pixel_count - 2 * nside * (nside + 1)
+    cells = np.asarray(
+        [0, north_end, equator_start, pixel_count // 2, south_start, pixel_count - 1],
+        dtype=np.int64,
+    )
+    centers = np.stack(healpy.pix2vec(nside, cells, nest=False), axis=-1)
+    corners = np.moveaxis(
+        healpy.boundaries(nside, cells, step=1, nest=False),
+        1,
+        2,
+    )
+    print(f"resolution {resolution} exact cells: {cells.tolist()!r}")
+    print(f"resolution {resolution} exact centers: {centers.tolist()!r}")
+    print(f"resolution {resolution} exact boundaries: {corners.tolist()!r}")

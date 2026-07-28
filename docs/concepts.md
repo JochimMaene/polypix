@@ -59,6 +59,11 @@ Redundant vertices on the same great-circle edge are also accepted within
 floating-point precision. Degenerate, duplicate, antipodal, self-intersecting,
 and non-convex geometry is rejected.
 
+Spherical validation has a numerical scale floor rather than arbitrary
+precision. Footprints below roughly `1e-8` radians in angular extent are
+unsupported and may be rejected as degenerate; the exact crossover depends on
+their vertex layout and conditioning.
+
 ## Batches And Segments
 
 `cover_footprint()` accepts one footprint, a dense batch, or a ragged sequence.
@@ -79,7 +84,8 @@ trajectory.
 
 Repeated paired samples produce a zero-area strip segment and are rejected.
 Stationary or resampled inputs should remove consecutive duplicate sample pairs
-before calling `cover_strip()`.
+before calling `cover_strip()`. A repeated sample on only one edge is supported
+and forms a triangular segment pinched at that edge.
 
 Both return one `Coverage` with flat cells and offsets:
 
@@ -118,12 +124,21 @@ for the bounding candidate span used by that batch. This temporary cache costs
 24 bytes per candidate in the span. It is created only when estimated reuse is
 substantial and is capped at 64 MiB; larger spans use on-demand reconstruction.
 
+Candidate filtering prepares and retains normalized vertices and edge normals
+for the complete footprint batch while planning shared candidate ranges. Peak
+memory therefore grows with both batch size and candidate-cache size and can
+exceed the streaming complete-scan path for very large batches.
+
 Complete scans use one conservative longitude bound for each footprint. This
 is fast for the primary workload of small footprints and short strip segments,
 but work follows the spherical bounding box rather than output size. Large
 diagonal or pole-containing footprints can therefore cost substantially more
 per returned cell. Per-ring edge intersections remain deliberately deferred
 until such footprints become a measured primary workload.
+
+For elongated swaths, prefer `cover_strip()` with sufficiently dense samples
+over one large diagonal polygon. Its short per-segment footprints usually keep
+the conservative scan bounds much tighter.
 
 ## Parallel Execution
 

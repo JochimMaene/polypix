@@ -6,7 +6,8 @@ const ZERO_NORM_EPSILON: f64 = 1.0e-15;
 // This small absolute guard absorbs the observed last-bit residual for an
 // exactly collinear spherical midpoint without the short-edge amplification
 // caused by normalizing the edge cross product. Keeping it below one epsilon
-// also preserves valid centimetre-scale footprints at resolution 29.
+// also preserves well-conditioned footprints at the documented ~1e-8-radian
+// validation floor.
 const VALIDATION_TRIPLE_EPSILON: f64 = 0.5 * f64::EPSILON;
 const VERTEX_EQUALITY_EPSILON: f64 = 1.0e-12;
 

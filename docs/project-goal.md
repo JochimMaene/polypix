@@ -47,15 +47,20 @@ A footprint is a convex spherical polygon:
   floating-point precision;
 - degenerate, antipodal, self-intersecting, and non-convex geometry is rejected.
 
+Validation is subject to a documented numerical scale floor. Footprints below
+roughly `1e-8` radians in angular extent are unsupported and may be rejected as
+degenerate; the exact threshold depends on vertex layout and conditioning.
+
 Validation is mandatory. There is no unsafe or validation-free mode.
 Validation rejects detectable ambiguity such as antipodal edges and
 exact-hemisphere boundaries. It cannot infer an unexpressed intention to use
 the longer arc or the other side of an otherwise valid minor-arc boundary.
 
 `cover_strip()` accepts two equally sampled boundary curves. Each consecutive
-sample pair forms one convex quadrilateral. For `N` paired samples, the result
-contains `N - 1` segments. Polypix does not implicitly merge or deduplicate the
-complete strip.
+sample pair normally forms one convex quadrilateral; a one-sided repeated
+sample forms a pinched triangular segment. Repeating both samples is a
+zero-area error. For `N` paired samples, the result contains `N - 1` segments.
+Polypix does not implicitly merge or deduplicate the complete strip.
 
 The paired curves must be sampled densely enough that each shorter great-circle
 arc between consecutive samples represents the intended physical boundary.

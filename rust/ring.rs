@@ -30,6 +30,11 @@ const CANDIDATE_PREPARATION_WORK: usize = 1 << 8;
 const CANDIDATE_RANGE_PROBE_WORK: usize = 1 << 5;
 const CANDIDATE_CENTER_CACHE_REUSE: usize = 3;
 const CANDIDATE_CENTER_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
+// Public transform measurements include allocation and pool startup. Boundaries
+// cross over earlier because each cell computes four face-coordinate corners.
+const CENTER_PARALLEL_MIN_CELLS: usize = 1 << 16;
+const BOUNDARY_PARALLEL_MIN_CELLS: usize = 1 << 14;
+const SCAN_WORK_SAMPLE_SIZE: usize = 64;
 const ROTATION_RESYNC_STEPS: u64 = 64;
 const INDEX_UNCERTAINTY_ULPS: f64 = 128.0;
 const LONGITUDE_BOUNDS_EPSILON: f64 = 1.0e-14;
@@ -611,6 +616,45 @@ pub(crate) fn validate_cell_range(
     Ok(())
 }
 
+pub(crate) fn centers(cells: &[u64], resolution: u8) -> Vec<f64> {
+    if cells.len() < CENTER_PARALLEL_MIN_CELLS {
+        let mut values = Vec::with_capacity(cells.len() * 3);
+        for &cell in cells {
+            values.extend(center(cell, resolution));
+        }
+        return values;
+    }
+    let mut values = vec![0.0; cells.len() * 3];
+    values
+        .par_chunks_mut(3)
+        .zip(cells.par_iter())
+        .for_each(|(output, &cell)| output.copy_from_slice(&center(cell, resolution)));
+    values
+}
+
+pub(crate) fn boundaries(cells: &[u64], resolution: u8) -> Vec<f64> {
+    if cells.len() < BOUNDARY_PARALLEL_MIN_CELLS {
+        let mut values = Vec::with_capacity(cells.len() * 12);
+        for &cell in cells {
+            for corner in boundary(cell, resolution) {
+                values.extend(corner);
+            }
+        }
+        return values;
+    }
+    let mut values = vec![0.0; cells.len() * 12];
+    let fill = |output: &mut [f64], cell| {
+        for (corner_output, corner) in output.chunks_exact_mut(3).zip(boundary(cell, resolution)) {
+            corner_output.copy_from_slice(&corner);
+        }
+    };
+    values
+        .par_chunks_mut(12)
+        .zip(cells.par_iter())
+        .for_each(|(output, &cell)| fill(output, cell));
+    values
+}
+
 fn candidate_cells<'a>(
     raw_candidates: Option<&'a [u64]>,
     resolution: u8,
@@ -821,11 +865,21 @@ fn accumulated_scan_work(
     if work >= SCAN_PARALLEL_MIN_WORK {
         return work;
     }
-    for index in 0..item_count {
-        work = work.saturating_add(estimate_item(index));
-        if work >= SCAN_PARALLEL_MIN_WORK {
-            break;
-        }
+    let sample_count = item_count.min(SCAN_WORK_SAMPLE_SIZE);
+    let sampled_work = (0..sample_count).fold(0_usize, |sampled_work, sample_index| {
+        let index = if sample_count == 1 {
+            0
+        } else {
+            sample_index * (item_count - 1) / (sample_count - 1)
+        };
+        sampled_work.saturating_add(estimate_item(index))
+    });
+    if sample_count > 0 {
+        work = work.saturating_add(
+            sampled_work
+                .saturating_mul(item_count)
+                .div_ceil(sample_count),
+        );
     }
     work
 }
@@ -934,6 +988,8 @@ fn dispatch_coverage(
     threads: Option<usize>,
     chunk: impl Fn(std::ops::Range<usize>) -> Result<Coverage, String> + Send + Sync,
 ) -> Result<Coverage, String> {
+    // The outer result covers pool creation; `?` leaves the chunk computation
+    // result returned by the selected execution context.
     run_with_parallelism(item_count, parallel_worthwhile, threads, |parallel| {
         compute_coverage_chunks(item_count, parallel, chunk)
     })?
@@ -1186,9 +1242,10 @@ pub(crate) fn cover_strip(
 #[cfg(test)]
 mod tests {
     use super::{
-        candidate_cache_range, integer_sqrt, ring_info, ring_of_cell, ring_start, ring_to_face_xy,
-        CandidatePlan, CANDIDATE_CENTER_CACHE_MAX_BYTES, CANDIDATE_CENTER_CACHE_REUSE,
-        ROTATION_RESYNC_STEPS, TAU,
+        accumulated_scan_work, candidate_cache_range, integer_sqrt, ring_info, ring_of_cell,
+        ring_start, ring_to_face_xy, CandidatePlan, CANDIDATE_CENTER_CACHE_MAX_BYTES,
+        CANDIDATE_CENTER_CACHE_REUSE, ROTATION_RESYNC_STEPS, SCAN_PREPARATION_WORK,
+        SCAN_WORK_SAMPLE_SIZE, TAU,
     };
     use crate::geometry::CONTAINMENT_EPSILON;
 
@@ -1232,6 +1289,21 @@ mod tests {
             Some(0..100)
         );
         assert!(candidate_cache_range(&plan(maximum_centers + 1, usize::MAX)).is_none());
+    }
+
+    #[test]
+    fn scan_work_uses_a_bounded_evenly_distributed_sample() {
+        let item_count = 2_000;
+        let mut sampled_indices = Vec::new();
+        let work = accumulated_scan_work(item_count, None, |index| {
+            sampled_indices.push(index);
+            100
+        });
+
+        assert_eq!(sampled_indices.len(), SCAN_WORK_SAMPLE_SIZE);
+        assert_eq!(sampled_indices[0], 0);
+        assert_eq!(sampled_indices[SCAN_WORK_SAMPLE_SIZE - 1], item_count - 1);
+        assert_eq!(work, item_count * SCAN_PREPARATION_WORK + item_count * 100);
     }
 
     #[test]

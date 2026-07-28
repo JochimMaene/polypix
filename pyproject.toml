@@ -54,7 +54,6 @@ dev = { features = ["dev"], solve-group = "default" }
 test = { features = ["dev", "test"], solve-group = "default" }
 bench = { features = ["dev", "test", "bench"], solve-group = "default" }
 docs = { features = ["dev", "docs"], solve-group = "default" }
-release = { features = ["dev"], solve-group = "default" }
 
 [tool.pixi.dependencies]
 python = ">=3.12"
@@ -63,7 +62,6 @@ numpy = ">=1.26"
 [tool.pixi.feature.dev.dependencies]
 rust = "*"
 maturin = ">=1.10,<2"
-twine = "*"
 
 [tool.pixi.feature.dev.pypi-dependencies]
 polypix = { path = ".", editable = true }
@@ -89,7 +87,6 @@ bench = "python -m pytest benchmarks --codspeed"
 wheel = "maturin build --release --out dist"
 docs-build = "zensical build --strict"
 docs-serve = "zensical serve"
-twine-check = "python -m twine check dist/*"
 
 [tool.ruff]
 target-version = "py312"

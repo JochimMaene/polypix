@@ -142,7 +142,8 @@ same meaning as in `cover_footprint()`.
 
 Consecutive paired samples must describe a nonzero-area segment. Repeating both
 edge samples at the same step is rejected; remove stationary duplicate samples
-upstream before calling `cover_strip()`.
+upstream before calling `cover_strip()`. Repeating a sample on only one edge is
+accepted and produces a triangular segment pinched at that edge.
 
 ## centers
 
@@ -152,7 +153,9 @@ px.centers(cells, resolution)
 
 Returns normalized body-centered center vectors with shape `(n, 3)` and dtype
 `float64`. A scalar cell is treated as a one-cell input and returns shape
-`(1, 3)`. Empty input returns shape `(0, 3)`.
+`(1, 3)`. Empty input returns shape `(0, 3)`. Large arrays are parallelized
+automatically inside the native kernel; this does not add threading controls to
+the supporting utility.
 
 ## boundaries
 
@@ -163,6 +166,7 @@ px.boundaries(cells, resolution)
 Returns the four normalized HEALPix corner vectors per cell with shape
 `(n, 4, 3)` and dtype `float64`. A scalar cell retains its leading cell axis
 and returns shape `(1, 4, 3)`. The first corner is not repeated.
+Large arrays are parallelized automatically inside the native kernel.
 
 ## Geometry Contract
 
@@ -178,10 +182,16 @@ closing vertex are accepted. A cell center on an edge is included.
 Polypix rejects footprints with fewer than three unique vertices, duplicate or
 antipodal vertices, degenerate edges, non-finite coordinates, self
 intersections, or non-convex geometry. Redundant vertices on the same
-great-circle edge are accepted within floating-point precision.
+great-circle edge are accepted within floating-point precision. Validation has
+a numerical scale floor: footprints with angular extent below roughly
+`1e-8` radians are unsupported and may be rejected as degenerate. The precise
+crossover depends on vertex layout and conditioning. Concavity below the same
+floating-point validation scale may be numerically indistinguishable from a
+collinear edge.
 
 For `cover_strip()`, consecutive samples on each edge are joined by the same
 minor arcs. Callers must sample physical swaths densely enough that these arcs
 are the intended boundary. Near-180-degree steps can bow toward a pole, and a
 step beyond 180 degrees selects the opposite shorter arc. Repeating both paired
-samples creates a zero-area segment and is rejected.
+samples creates a zero-area segment and is rejected. If only one edge repeats,
+the segment is accepted as a triangle pinched at that edge.

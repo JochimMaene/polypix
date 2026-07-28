@@ -11,10 +11,8 @@ nav = [
   { "Install" = "install.md" },
   { "Concepts" = "concepts.md" },
   { "API" = "api.md" },
+  { "Changelog" = "https://github.com/JochimMaene/polypix/blob/main/CHANGELOG.md" },
   { "Development" = "development.md" },
-  { "Architecture decisions" = [
-    { "Owned HEALPix kernel" = "decisions/owned-healpix-kernel.md" },
-  ] },
 ]
 
 [project.theme]

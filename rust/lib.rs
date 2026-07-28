@@ -123,11 +123,7 @@ fn _center<'py>(
     let values = py
         .detach(|| {
             ring::validate_cell_range(cells, resolution, "cells")?;
-            let mut values = Vec::with_capacity(cells.len() * 3);
-            for &cell in cells {
-                values.extend(ring::center(cell, resolution));
-            }
-            Ok::<Vec<f64>, String>(values)
+            Ok::<Vec<f64>, String>(ring::centers(cells, resolution))
         })
         .map_err(PyValueError::new_err)?;
     Ok(Array2::from_shape_vec((cells.len(), 3), values)
@@ -148,13 +144,7 @@ fn _boundary_many<'py>(
     let values = py
         .detach(|| {
             ring::validate_cell_range(cells, resolution, "cells")?;
-            let mut values = Vec::with_capacity(cells.len() * 12);
-            for &cell in cells {
-                for corner in ring::boundary(cell, resolution) {
-                    values.extend(corner);
-                }
-            }
-            Ok::<Vec<f64>, String>(values)
+            Ok::<Vec<f64>, String>(ring::boundaries(cells, resolution))
         })
         .map_err(PyValueError::new_err)?;
     Ok(Array3::from_shape_vec((cells.len(), 4, 3), values)

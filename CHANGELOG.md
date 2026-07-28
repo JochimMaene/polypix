@@ -24,6 +24,8 @@ separate repository.
   Rust kernel that emits center-sampled HEALPix RING indices directly.
 - Standardized the public surface on fixed-resolution RING indices, NumPy
   arrays, segmented `Coverage` results, and optional bounded native threading.
+- Added automatic native parallelism for large `centers()` and `boundaries()`
+  arrays while retaining the sequential latency path for smaller inputs.
 - Changed the project license to Apache-2.0. Releases through 0.2.1 remain
   available under the license terms with which they were originally published.
 - Removed NESTED compatibility and backend-selection machinery. Breaking

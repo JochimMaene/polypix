@@ -5,8 +5,9 @@ Status: **accepted; owned RING-first production kernel**
 ## Decision
 
 Polypix adopted an owned, center-only HEALPix RING kernel after a direct scan
-prototype materially improved the primary dense quadrilateral, ragged, and
-strip workloads. The production kernel implements only:
+prototype met the project's internal admission gates for the primary dense
+quadrilateral, ragged, and strip workloads. The production kernel implements
+only:
 
 - fixed-resolution RING center coordinates;
 - four boundary vertices;
@@ -34,9 +35,9 @@ The unreleased CDS adapter prompted the kernel experiment for two reasons:
 The briefly selected `cdshealpix` adapter was never released. It remained
 correct by using CDS overlap results only as candidates and retaining Polypix's
 own validation, side selection, center filtering, ordering, and threading.
-The mixed performance and 53-crate dependency breadth above justified
-replacing it with the measured direct RING traversal. Its thin-southern-
-footprint side-selection finding remains a named regression test.
+The semantic mismatch and dependency breadth above motivated replacing it with
+the direct RING traversal. Its thin-southern-footprint side-selection finding
+remains a named regression test.
 
 The BSD-3-Clause `healpix_bare` subset provides cell conversion but not polygon
 coverage. It would leave Polypix responsible for traversal while adding a
@@ -71,7 +72,7 @@ Internal prototype comparisons were used to decide whether owning the kernel
 earned its maintenance cost. They are deliberately not published as product
 speed claims because the removed internal CDS adapter is not a reproducible
 public alternative. Public comparative claims require the separate benchmark
-repository described in the [project goal](../project-goal.md).
+repository described in the [project goal](../docs/project-goal.md).
 
 ## Admission Evidence
 
@@ -82,8 +83,8 @@ The owned kernel was admitted after the evidence showed:
    much larger fixed-seed randomized corpus;
 2. agreement with independent HEALPix center and boundary fixtures through
    resolution 29, including faces, seams, and poles;
-3. material improvements on the primary fixed-quad, strip, and documented
-   ragged public-call workloads, with no primary workload slower;
+3. internal measurements meeting the predeclared gates for the primary
+   fixed-quad, strip, and documented ragged public-call workloads;
 4. retained improvements with automatic threading and improved, rather than
    further regressed, single-footprint latency;
 5. an x86-64 and ARM64 wheel smoke matrix as a release gate;
@@ -150,9 +151,10 @@ The repository also pins a broad audit against HEALPix C++ through
 `healpy==1.19.0`. `tests/test_ring_geometry.py` selects 257 evenly spaced RING
 indices at each of resolutions 0, 1, 3, 8, 16, and 29 and checks three
 deterministic projections of their centers and corners. Targeted fixtures
-retain near-machine-precision checks, while a separate scalar implementation
-checks every center through resolution 6. The broad reference values can be
-regenerated with the checked-in oracle script:
+retain near-machine-precision checks at transition rings through resolution 29,
+while a separate scalar implementation checks every center through resolution
+7. The broad and exact reference values can be regenerated with the checked-in
+oracle script:
 
 ```bash
 python tools/generate_ring_geometry_fixtures.py
