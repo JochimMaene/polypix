@@ -1202,16 +1202,14 @@ fn candidate_centers(
     centers.try_reserve_exact(cells.len()).map_err(|_| {
         NativeError::materialization("Coverage result is too large to materialize.")
     })?;
-    centers.resize(cells.len(), [0.0; 3]);
     if parallel {
+        centers.resize(cells.len(), [0.0; 3]);
         centers
             .par_iter_mut()
             .zip(cells.par_iter())
             .for_each(|(output, &cell)| *output = center(cell, resolution));
     } else {
-        for (output, &cell) in centers.iter_mut().zip(cells) {
-            *output = center(cell, resolution);
-        }
+        centers.extend(cells.iter().map(|&cell| center(cell, resolution)));
     }
     Ok(Some(centers))
 }
