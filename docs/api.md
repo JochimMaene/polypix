@@ -4,7 +4,7 @@
 import polypix as px
 ```
 
-For task-oriented examples see [Guide and recipes](guide.md); for allocation
+For task-oriented examples see [Getting started](guide.md); for allocation
 and threading trade-offs see [Performance and memory](performance.md); for
 HEALPix and NumPy handoff conventions see [Interoperability](interoperability.md).
 
@@ -77,7 +77,8 @@ Threading does not change membership, segment order, or cell order on the same
 build and platform.
 
 See [Geometry contract](#geometry-contract) for the accepted polygons and
-[Candidate cells](concepts.md#candidate-cells) for the performance trade-offs.
+[Restricting coverage to known cells](concepts.md#restricting-coverage-to-known-cells)
+for the performance trade-offs.
 
 ## cover_cap
 

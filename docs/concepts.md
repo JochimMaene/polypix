@@ -1,4 +1,4 @@
-# Concepts
+# User guide
 
 ## Resolution and cell IDs
 
@@ -28,8 +28,9 @@ one dense `int64` value per cell. Much higher resolutions remain useful for
 sparse transforms and selected-cell queries, not complete dense maps. See
 [Performance and memory](performance.md) for sizing guidance.
 
-Outside the library: NESTED ordering, mixed-resolution cells, MOCs, neighbors,
-hierarchy traversal, and map operations.
+Polypix does not convert ordering schemes or provide hierarchy, neighbor, map,
+or mixed-resolution operations. Standard RING IDs can be handed to a broader
+HEALPix library when those operations are needed.
 
 ## Direction geometry
 
@@ -52,10 +53,9 @@ API does not promise which adjacent cell owns an exact boundary direction
 across platforms. This point transform does not change the center-sampling rule
 for regions.
 
-Orbit propagation, attitude, sensor projection, and ellipsoid intersection
-belong upstream. Polypix can represent an already-derived circular angular
-region directly as an exact spherical cap; arbitrary footprints still arrive
-as their spherical boundary vectors.
+Physical models such as orbit propagation, attitude, sensor projection, and
+ellipsoid intersection produce this geometry upstream. Polypix begins once the
+spherical directions or region boundaries are known.
 
 ## Center-sampled coverage
 
@@ -67,9 +67,8 @@ full containment, or fractional area:
 - a small or thin region whose interior misses every center returns nothing;
 - a cell straddling a footprint edge is included only if its center is inside.
 
-This is not a conservative spatial index. It may miss cells that merely
-intersect a region, so it cannot by itself provide a no-false-negative
-candidate set for arbitrary points or scenes.
+It is therefore not a conservative spatial index: cells that intersect only at
+their area can be absent.
 
 The accepted geometry and its numerical limits are specified in the
 [geometry contract](api.md#geometry-contract).
@@ -113,17 +112,15 @@ for each source, then merges all sources to measure the uncovered bins between
 occupied windows. Hits in bins 0 and 2 therefore have one uncovered gap bin;
 this is not a start-to-start acquisition period.
 
-The reducer deliberately stops at ordinal steps. It does not require equal bin
-durations and does not own timestamps, calendars, propagation,
-variable-duration integration, or physical units. Equal duration is a caller
-assertion only when converting gap steps to physical time; another application
-can retain the ordinal counts.
+Gap values are counts of bins. Polypix does not attach timestamps or physical
+units, and equal bin duration is required only when the caller converts those
+counts to elapsed time.
 
 The result is sparse and sorted by observed RING ID. At moderate resolutions a
 bounded dense state machine gives maximum throughput; large sparse grids switch
 to state keyed only by touched cells without changing semantics.
 
-## Candidate cells
+## Restricting coverage to known cells
 
 Pass `candidate_cells` when only a sparse existing set matters:
 
@@ -142,23 +139,12 @@ and does not become a conservative spatial index. Dense candidate sets can be
 slower than unrestricted RING scanning.
 
 See [Performance and memory](performance.md) for candidate planning, geometry
-shape, chunking, and output sizing.
+shape, chunking, output sizing, and threads.
 
-## Parallel execution
+```{toctree}
+:hidden:
+:maxdepth: 1
 
-Large batches run across native worker threads with the GIL released:
-
-```python
-sequential = px.cover_footprint(batch, resolution=9, threads=1)
-automatic = px.cover_footprint(batch, resolution=9)
+performance
+interoperability
 ```
-
-`threads=None` selects the automatic policy; a positive integer sets the
-worker-pool maximum, capped by the host. Calls below the measured parallel
-crossover stay sequential and never initialize a pool. Results are identical
-across thread settings on the same build and platform.
-
-If an outer executor already runs several calls, use `threads=1` inside each
-call to avoid nested oversubscription. `cell_at()`, `centers()`, and `corners()`
-auto-parallelize large arrays without exposing thread controls. Detailed memory
-and batching guidance lives in [Performance and memory](performance.md).

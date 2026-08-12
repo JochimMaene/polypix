@@ -1,8 +1,8 @@
 # Interoperability
 
-Polypix uses ordinary NumPy arrays and standard fixed-resolution HEALPix RING
-IDs as its ecosystem boundary. It deliberately does not introduce frame-aware
-objects or require another astronomy or geospatial package at runtime.
+Polypix exchanges two simple things with the rest of the Python ecosystem:
+`(N, 3)` NumPy direction arrays and fixed-resolution HEALPix RING IDs. It does
+not require Astropy, a coordinate-frame object model, or a geospatial runtime.
 
 ## Grid conventions
 
@@ -16,8 +16,8 @@ of HEALPix RING grids. Cell arrays use `uint64`; the resolution is carried by
 the result object, not encoded in each ID. NESTED ordering and mixed-resolution
 representations remain outside the library.
 
-Every valid Polypix cell ID fits signed `int64`. Convert deliberately when a
-downstream API requires signed IDs:
+Every valid Polypix cell ID fits signed `int64`. When another API requires
+signed IDs:
 
 ```python
 signed_cells = coverage.cells.astype(np.int64, copy=False)
@@ -64,9 +64,9 @@ file formats.
 so those points are not a sampled boundary and must not be treated as an exact
 great-circle polygon for round-tripping.
 
-Turning center-selected fixed-resolution cells into a MOC changes the
-representation to whole-cell area. It does not retroactively give the original
-operation conservative intersection semantics.
+A MOC represents the area of whole cells. Converting center-selected cells to a
+MOC therefore changes the spatial meaning; it does not turn the original query
+into an intersection query.
 
 ## Imported segmented membership
 

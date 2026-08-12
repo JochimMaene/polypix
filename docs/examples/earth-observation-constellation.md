@@ -1,57 +1,36 @@
-# Earth-observation constellation coverage
+# Earth-observation coverage and revisit
 
-How many distinct observations does each cell receive, and how long is the
-revisit gap? This example models ten satellites over ten days as swept
-one-minute sensor intervals and maps both answers.
+This case study follows ten idealized satellites for ten days. Each one-minute
+interval becomes a quadrilateral between two sampled swath edges. Polypix first
+rasterizes those intervals, then summarizes per-satellite observation runs and
+constellation-wide revisit gaps.
 
-Everything below is produced by running the [example source][source] during this
-documentation build.
+The orbit and sensor model is intentionally simple: a circular orbit, spherical
+rotating Earth, and constant 7.5° ground half-width. A mission analysis would
+supply propagated sensor edges from its own physical model.
+
+## Results
 
 ```{raw} html
 :file: ../assets/generated/earth-observation.html
 ```
 
-Timings are single wall-clock measurements from the documentation builder, not
-controlled benchmarks. Plotting is listed separately because Matplotlib, not
-Polypix, dominates it.
+The timing table is one wall-clock run on the documentation builder, not a
+controlled benchmark.
 
-## Model
+## Method
 
 | Parameter | Value |
 | --- | ---: |
-| Satellites | 10 |
-| Orbital planes | 5 |
-| Orbit | Circular, 550 km |
-| Inclination | 53° |
-| Duration | 10 days |
-| Edge-sampling cadence | 60 s |
-| Edge samples per satellite | 14,401 |
-| Swept intervals per satellite | 14,400 |
-| Ground-swath half-width | 7.5° |
-| HEALPix resolution | 6 (49,152 cells) |
+| Constellation | 10 satellites in 5 planes |
+| Orbit | Circular, 550 km, 53° inclination |
+| Analysis window | 10 days |
+| Edge cadence | 60 seconds |
+| Sweep intervals | 144,000 |
+| Ground half-width | 7.5° |
+| Grid | HEALPix resolution 6, 49,152 cells |
 
-Spherical rotating Earth, constant spherical ground half-width. Operational
-analysis should supply propagated sensor edges instead.
-
-## What counts as an observation
-
-For each pair of adjacent samples, `cover_sweep()` covers the swept quadrilateral
-`[left[i], right[i], right[i+1], left[i+1]]`. This fills the motion between
-samples rather than approximating a moving sensor with disconnected circles.
-
-Consecutive covered intervals for the same satellite and cell are one
-observation. A later pass is another observation, and satellites count
-separately.
-
-Revisit merges all satellites: overlapping or consecutive hits form one
-constellation occupancy window, and revisit is the uncovered gap between
-windows. The map shows mean gaps over the ten days, omits cells with fewer than
-two windows, excludes gaps that extend past either end of the analysis window,
-and samples time in one-minute bins.
-
-## Swaths and coverage
-
-The ten-day tracks and their paired sensor edges are vectorized:
+The vectorized orbit model produces a left and right edge for every sample:
 
 ```{literalinclude} ../../examples/earth_observation_constellation.py
 :language: python
@@ -60,7 +39,7 @@ The ten-day tracks and their paired sensor edges are vectorized:
 :end-before: "--8<-- [end:eo-swaths]"
 ```
 
-One `cover_sweep()` call then covers all 14,400 intervals of a satellite:
+One `cover_sweep()` call covers all 14,400 intervals for a satellite:
 
 ```{literalinclude} ../../examples/earth_observation_constellation.py
 :language: python
@@ -69,11 +48,9 @@ One `cover_sweep()` call then covers all 14,400 intervals of a satellite:
 :end-before: "--8<-- [end:eo-cover]"
 ```
 
-## Reducing to observations and revisit
-
-`summarize_occupancy()` uses integer last-seen steps to detect source-specific
-observation starts, merge simultaneous hits, and accumulate revisit gaps in a
-native chronological pass:
+Consecutive occupied intervals for the same satellite and cell form one
+observation. Revisit gaps are measured after merging occupancy from all ten
+satellites:
 
 ```{literalinclude} ../../examples/earth_observation_constellation.py
 :language: python
@@ -82,12 +59,10 @@ native chronological pass:
 :end-before: "--8<-- [end:eo-reduce]"
 ```
 
-This avoids sorting nine million sparse observations, crossing the Python/NumPy
-boundary once per interval and satellite, or allocating a dense
-`(satellites, intervals, cells)` visibility cube. The returned summary is sparse;
-the example scatters its 42,912 observed cells into dense plotting arrays.
+The native reducer avoids sorting the nine million interval–cell hits or
+crossing the Python boundary once per interval.
 
-## Running it
+## Run the example
 
 ```bash
 pixi run --environment docs docs-earth-observation
@@ -95,4 +70,4 @@ python examples/earth_observation_constellation.py \
     --observations-output PATH --revisit-output PATH
 ```
 
-[source]: https://github.com/JochimMaene/polypix/blob/main/examples/earth_observation_constellation.py
+[Full source](https://github.com/JochimMaene/polypix/blob/main/examples/earth_observation_constellation.py)

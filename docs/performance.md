@@ -1,10 +1,10 @@
 # Performance and memory
 
-Polypix optimizes complete public-call throughput: conversion, validation,
-native computation, allocation, and result construction. The output shape is
-often more important than the arithmetic kernel.
+Timing a Polypix call includes input normalization, geometry validation, native
+work, and output allocation. For large jobs, the size of the requested result
+often matters more than the cost of the geometric predicate.
 
-## Choose a resolution deliberately
+## Resolution and grid size
 
 Polypix defines `nside = 2**resolution`. Increasing resolution by one
 quadruples the grid and halves the nominal linear cell scale.
@@ -97,8 +97,8 @@ counting:
 | `cells=` | Positional cap-count query | Preserves order and duplicates |
 
 Candidate filtering is useful for a sparse existing AOI. A dense candidate set
-can be slower than unrestricted RING scanning. It remains center sampled and
-does not create a conservative no-false-negative spatial index.
+can be slower than unrestricted RING scanning. Selection still happens at cell
+centers, so cells that only intersect the AOI by area can be absent.
 
 Candidate planning retains normalized geometry for the batch and may cache a
 bounded span of candidate centers. Chunk very large batches when this retained

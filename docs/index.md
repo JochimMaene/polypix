@@ -1,119 +1,89 @@
+{.polypix-title}
 # Polypix
 
-Polypix maps directions to HEALPix RING cells and rasterizes exact spherical
-caps, convex footprints, and paired-edge sweeps by center inclusion. Fused cap
-counts and segmented occupancy summaries avoid enormous intermediate arrays in
-measured workloads.
+:::{container} polypix-hero
+<p class="tagline">Fast batch rasterization of spherical regions onto the HEALPix RING grid.</p>
 
-Use it when the spherical region geometry already exists and throughput matters.
-Satellite and sensor coverage is the leading application, though the vectors
-may belong to any spherical frame. Polypix does not model orbits, attitude,
-sensors, clocks, ellipsoids, or coordinate reference systems.
+<p class="scope">Pass Cartesian directions, caps, convex footprints, or sampled sweep edges. Polypix returns NumPy arrays with deterministic cell-center membership.</p>
 
-## Install
+<p class="polypix-actions"><a href="guide.html">Get started</a><a href="api.html">API reference</a></p>
+:::
 
-```bash
-python -m pip install polypix
-```
+<div class="polypix-install"><span>python -m pip install polypix</span></div>
 
-Wheels cover CPython 3.12+ on Linux, macOS, and Windows. See
-[Install](install.md).
-
-## Quick start
+Polypix is a small native Python library for workloads where many spherical
+regions must be mapped to a fixed-resolution grid. Geometry preparation stays
+with the caller; Polypix handles validation, HEALPix traversal, parallel batch
+execution, and result allocation.
 
 ```python
 import numpy as np
 import polypix as px
 
-lon, lat = np.radians([[-5.0, 12.0, 10.0, -6.0], [-5.0, -4.0, 9.0, 7.0]])
-footprint = np.stack(
-    [np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)],
-    axis=-1,
-)
+centers = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+radii = np.deg2rad([5.0, 8.0])
 
-coverage = px.cover_footprint(footprint, resolution=8)
+coverage = px.cover_cap(centers, radii, resolution=8)
+coverage.counts
+# array([1502, 3824])
 ```
 
-```pycon
->>> coverage.cells
-array([332313, 332314, 332315, ...], dtype=uint64)
->>> coverage.offsets
-array([   0, 3992], dtype=uint64)
->>> px.centers(coverage.cells, coverage.resolution).shape
-(3992, 3)
-```
+<div class="polypix-paths">
+  <div>
+    <h3><a href="guide.html">Start with a region</a></h3>
+    <p>Caps, convex footprints, sampled sweeps, and direction-to-cell indexing.</p>
+  </div>
+  <div>
+    <h3><a href="concepts.html">Understand the result</a></h3>
+    <p>Center sampling, RING cell IDs, segmented batches, and occupancy bins.</p>
+  </div>
+  <div>
+    <h3><a href="performance.html">Plan a large run</a></h3>
+    <p>Resolution, output size, sparse queries, batching, and native threads.</p>
+  </div>
+</div>
 
-`cells` holds standard HEALPix RING indices at one resolution. `offsets` splits
-it into one segment per input footprint, so a batch of 10,000 footprints returns
-two arrays rather than 10,000 objects. See [Concepts](concepts.md) for batches,
-sweeps, candidate cells, and threading.
+## Why Polypix?
 
-## Choose an operation
+- **Batch first.** One call can cover thousands of regions while preserving
+  their boundaries in a compact `cells` and `offsets` representation.
+- **Exact spherical primitives.** Caps and convex great-circle polygons are
+  evaluated directly in direction space, including poles and longitude seams.
+- **Useful fused operations.** Per-cell cap counts avoid materializing every
+  cap–cell pair when explicit membership is not the result you need.
+- **Small runtime surface.** NumPy is the only runtime dependency. Coordinate
+  frames, propagation, plotting, interpolation, and map algebra stay in their
+  established libraries.
 
-| Input and desired result | Operation |
-| --- | --- |
-| Directions → RING cells | `cell_at()` |
-| Circular regions → explicit membership | `cover_cap()` |
-| Convex boundaries → explicit membership | `cover_footprint()` |
-| Paired sampled edges → interval membership | `cover_sweep()` |
-| Many caps → per-cell counts | `count_caps_per_cell()` |
-| Imported segmented arrays → validated result | `Coverage.from_arrays()` |
-| Aligned occupancy bins → run/gap aggregates | `summarize_occupancy()` (provisional in 0.x) |
+## Case studies
 
-See [Guide and recipes](guide.md) for small dependency-free examples. The two
-constellation studies below are executable performance case studies, not the
-starting point for learning the API.
+The documentation build runs two larger examples from pinned inputs. Their
+figures and measurements are regenerated from the checked-in source.
 
-## Examples
-
-Two constellation studies execute during every documentation build, so their
-maps and timings match the code that produced them.
-
-- [Starlink snapshot visibility](examples/communication-constellation.md) —
-  657,031 exact service caps from a pinned catalog of 10,771 objects.
-- [Earth-observation revisit](examples/earth-observation-constellation.md) —
-  observation counts and revisit gaps over ten days, 144,000 swept intervals.
-
-## Documentation
-
-| Page | Contents |
-| --- | --- |
-| [Install](install.md) | Wheels, source builds |
-| [Guide and recipes](guide.md) | Operation chooser and small worked examples |
-| [Concepts](concepts.md) | Cell IDs, geometry rules, batches, threading |
-| [API](api.md) | Complete public interface |
-| [Performance and memory](performance.md) | Resolution, output sizing, candidates, threading |
-| [Interoperability](interoperability.md) | HEALPix conventions and NumPy ecosystem seams |
-| [Development](development.md) | Contributing and releases |
-| [Project goal](project-goal.md) | Scope and feature admission |
+<div class="example-gallery">
+  <a class="example-card" href="examples/communication-constellation.html">
+    <img src="generated/communications-availability.png" alt="Global Starlink visibility map">
+    <div>
+      <h2>Snapshot visibility</h2>
+      <p>657,031 exact caps reduced directly to per-cell counts.</p>
+    </div>
+  </a>
+  <a class="example-card" href="examples/earth-observation-constellation.html">
+    <img src="generated/earth-observation-count.png" alt="Global Earth-observation count map">
+    <div>
+      <h2>Earth-observation revisit</h2>
+      <p>144,000 swept intervals summarized into observations and revisit gaps.</p>
+    </div>
+  </a>
+</div>
 
 ```{toctree}
 :hidden:
 :maxdepth: 2
 
-install
 guide
 concepts
+examples/index
 api
-performance
-interoperability
-```
-
-```{toctree}
-:caption: Examples
-:hidden:
-:maxdepth: 1
-
-examples/communication-constellation
-examples/earth-observation-constellation
-```
-
-```{toctree}
-:caption: Project
-:hidden:
-:maxdepth: 1
-
 development
-project-goal
-decisions
 ```

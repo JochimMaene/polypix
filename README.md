@@ -15,15 +15,9 @@ Fast batch HEALPix rasterization and occupancy reduction for spherical regions.
 [Repository](https://github.com/JochimMaene/polypix) |
 [Issues](https://github.com/JochimMaene/polypix/issues)
 
-Polypix maps directions to HEALPix RING cells and rasterizes exact spherical
-caps, convex footprints, and paired-edge sweeps by cell-center inclusion. It
-also provides focused reductions where materializing and reducing every
-repeated cell ID would dominate the geometry itself. Typical inputs are survey
-tiles, sensor footprints, beam contours, access regions, and swept edges.
-
-It is not a fit for holes, non-convex footprints, planar geometry semantics,
-conservative cell-intersection coverage, or generating geometry from orbit,
-attitude, sensor, or beam models.
+Polypix maps Cartesian directions and spherical regions to fixed-resolution
+HEALPix RING cells. Its native batch kernels cover exact caps, convex
+great-circle polygons, and sampled sweeps, returning NumPy arrays throughout.
 
 ## Install
 
@@ -40,47 +34,41 @@ Apple Silicon, and Windows x86-64. NumPy is the only runtime dependency.
 import numpy as np
 import polypix as px
 
-lon, lat = np.radians([[-5.0, 12.0, 10.0, -6.0], [-5.0, -4.0, 9.0, 7.0]])
-footprint = np.stack(
-    [np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)],
-    axis=-1,
-)
+centers = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+radii = np.deg2rad([5.0, 8.0])
 
-coverage = px.cover_footprint(footprint, resolution=8)
-centers = px.centers(coverage.cells, coverage.resolution)
-round_trip_cells = px.cell_at(centers, coverage.resolution)
+coverage = px.cover_cap(centers, radii, resolution=8)
+print(coverage.counts)  # [1502 3824]
 ```
 
 `coverage.cells` holds standard HEALPix RING indices as `uint64`;
-`coverage.offsets` splits that flat array into one segment per input footprint.
-Geometry helpers return unit direction vectors in the caller's Cartesian
-frame, never longitude/latitude or datum-specific coordinates.
+`coverage.offsets` splits the flat array into one segment per input cap.
 
-Circular regions should use `cover_cap()` directly. If only the number of caps
-containing each cell matters, `count_caps_per_cell()` accumulates exact RING
-spans without constructing the much larger segmented cell list. Ordered sweep
-results can be reduced into source runs and merged occupancy gaps with
-`summarize_occupancy()`.
+## What it provides
 
-## Inputs
+- direction-to-cell indexing with `cell_at()`;
+- explicit membership for caps, convex footprints, and paired-edge sweeps;
+- dense or selected-cell cap counts without materializing cap membership;
+- a compact `Coverage` result for large and ragged batches;
+- native threading with deterministic result order.
 
-- convex spherical footprints with great-circle edges;
-- finite Cartesian direction vectors `(x, y, z)` in one caller-defined frame,
-  normalized by Polypix;
-- dense batches of shape `(footprints, vertices, 3)`;
-- ragged batches as sequences of `(vertices, 3)` arrays;
-- sweeps from sampled left and right edge vectors;
-- exact spherical caps from center vectors and angular radii.
-
-Vertex orientation does not matter. A repeated final vertex is accepted as a
-closed-ring marker.
+Polypix expects geometry in one caller-defined Cartesian frame. Coordinate
+transforms, propagation, sensor models, interpolation, plotting, and map algebra
+belong in the surrounding scientific Python ecosystem.
 
 ## Coverage rule
 
 A cell is included when its center lies inside the cap or footprint, or on its
 boundary. Boundary-touching cells whose centers fall outside are excluded.
 
-## Examples
+## Documentation
+
+Start with the [getting-started guide](https://jochimmaene.github.io/polypix/guide/),
+then use the [API reference](https://jochimmaene.github.io/polypix/api/) for the
+complete call contracts. Resolution, batching, memory, and threading are covered
+in [Performance and memory](https://jochimmaene.github.io/polypix/performance/).
+
+Two executable case studies are rebuilt with the documentation:
 
 Two constellation studies run during every documentation build, so their maps
 and timings match the code that produced them:
@@ -89,24 +77,6 @@ and timings match the code that produced them:
   — 657,031 exact service caps from a pinned catalog of 10,771 objects.
 - [Earth-observation revisit](https://jochimmaene.github.io/polypix/examples/earth-observation-constellation/)
   — 144,000 swept swath intervals from 10 satellites.
-
-For small dependency-free examples, begin with the
-[Guide and recipes](https://jochimmaene.github.io/polypix/guide/). Resolution,
-output-memory, candidate, and threading guidance is collected in
-[Performance and memory](https://jochimmaene.github.io/polypix/performance/).
-
-## Documentation
-
-Published at <https://jochimmaene.github.io/polypix/>:
-
-- [Install](https://jochimmaene.github.io/polypix/install/)
-- [Guide and recipes](https://jochimmaene.github.io/polypix/guide/)
-- [Concepts](https://jochimmaene.github.io/polypix/concepts/)
-- [API reference](https://jochimmaene.github.io/polypix/api/)
-- [Performance and memory](https://jochimmaene.github.io/polypix/performance/)
-- [Interoperability](https://jochimmaene.github.io/polypix/interoperability/)
-- [Development](https://jochimmaene.github.io/polypix/development/)
-- [Project goal](https://jochimmaene.github.io/polypix/project-goal/)
 
 ## License
 

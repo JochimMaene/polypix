@@ -213,3 +213,11 @@ When adding public functions, update:
 - `polypix/__init__.py`;
 - `docs/api.md`;
 - tests and benchmarks where applicable.
+
+```{toctree}
+:hidden:
+:maxdepth: 1
+
+project-goal
+decisions
+```

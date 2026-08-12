@@ -192,15 +192,7 @@ def plot_observations(
         coordinates=coordinates,
         visible=visible,
         resolution=HEALPIX_RESOLUTION,
-        title="Ten days of Earth-observation coverage",
-        subtitle=(
-            "10 satellites · one-minute swept intervals · 7.5° ground half-width"
-        ),
         colorbar_label="Distinct satellite observations per cell",
-        footer=(
-            f"{np.count_nonzero(visible):,} of {result.observations.size:,} cells "
-            f"observed  ·  maximum {int(result.observations.max())} observations"
-        ),
         cmap="plasma",
         norm=colors.PowerNorm(gamma=0.65, vmin=1, vmax=high),
         extend="max",
@@ -233,17 +225,7 @@ def plot_revisit(
         coordinates=coordinates,
         visible=measured,
         resolution=HEALPIX_RESOLUTION,
-        title="Mean Earth-observation revisit time",
-        subtitle=(
-            "Gap between globally merged access windows · "
-            "ten-day analysis · one-minute resolution"
-        ),
         colorbar_label="Mean revisit gap (hours)",
-        footer=(
-            f"{np.count_nonzero(measured):,} cells with measured revisit  ·  "
-            f"median {np.median(finite_hours):.2f} hours  ·  "
-            f"range {finite_hours.min():.2f}–{finite_hours.max():.2f} hours"
-        ),
         cmap="viridis_r",
         norm=colors.LogNorm(vmin=low, vmax=high),
         colorbar_ticks=[t for t in (0.5, 0.75, 1, 1.5, 2, 3, 5, 8) if low <= t <= high],
@@ -289,7 +271,7 @@ def documentation_html() -> str:
     """Return the recorded figures and measurements as HTML for the docs page."""
     m = read_measurements(MEASUREMENTS_PATH)
     return f"""
-<figure>
+<figure class="example-figure">
   <img src="{DOC_FIGURE_URL}/{OBSERVATIONS_FIGURE_PATH.name}"
        alt="Global map of distinct Earth observations over ten days"
        loading="lazy">
@@ -298,7 +280,7 @@ def documentation_html() -> str:
   </figcaption>
 </figure>
 
-<figure>
+<figure class="example-figure">
   <img src="{DOC_FIGURE_URL}/{REVISIT_FIGURE_PATH.name}"
        alt="Global map of mean Earth-observation revisit time over ten days"
        loading="lazy">
@@ -307,41 +289,28 @@ def documentation_html() -> str:
   </figcaption>
 </figure>
 
-<table>
+<div class="example-metrics">
+  <div><strong>{m["interval_count"]:,}</strong><span>swept intervals</span></div>
+  <div><strong>{m["materialized_count"]:,}</strong><span>interval–cell hits</span></div>
+  <div><strong>{m["cells_observed"]:,}</strong><span>cells observed</span></div>
+</div>
+
+<table class="example-timings">
+  <caption>One measured run</caption>
   <thead>
     <tr><th>Stage</th><th>Time</th></tr>
   </thead>
   <tbody>
-    <tr><td><strong>Polypix:</strong> one <code>cover_sweep()</code> call per
-            satellite</td>
+    <tr><td>Ten <code>cover_sweep()</code> calls</td>
         <td><strong>{m["coverage_ms"]:.0f} ms</strong></td></tr>
-    <tr><td>NumPy: orbits and swath edges</td>
+    <tr><td>Orbits and swath edges</td>
         <td>{m["swath_ms"]:.0f} ms</td></tr>
-    <tr><td>Polypix: occupancy summary + NumPy scatter</td>
+    <tr><td>Occupancy summary and scatter</td>
         <td>{m["reduction_ms"]:.0f} ms</td></tr>
     <tr><td>Complete analysis</td>
         <td>{m["analysis_ms"]:.0f} ms</td></tr>
-    <tr><td>Matplotlib: two maps and PNG encoding</td>
+    <tr><td>Two plots and PNG encoding</td>
         <td>{m["plotting_ms"]:.0f} ms</td></tr>
-  </tbody>
-</table>
-
-<table>
-  <thead>
-    <tr><th>Workload and result</th><th>Value</th></tr>
-  </thead>
-  <tbody>
-    <tr><td>Swept intervals covered</td><td>{m["interval_count"]:,}</td></tr>
-    <tr><td>Interval-cell pairs returned</td>
-        <td>{m["materialized_count"]:,}</td></tr>
-    <tr><td>Cells observed</td>
-        <td>{m["cells_observed"]:,} of {m["cell_count"]:,}</td></tr>
-    <tr><td>Distinct observations per cell, maximum</td>
-        <td>{m["observations_max"]}</td></tr>
-    <tr><td>Median per-cell mean revisit</td>
-        <td>{m["revisit_median_h"]:.2f} hours</td></tr>
-    <tr><td>Per-cell mean revisit, range</td>
-        <td>{m["revisit_min_h"]:.2f}–{m["revisit_max_h"]:.2f} hours</td></tr>
   </tbody>
 </table>
 """.strip()

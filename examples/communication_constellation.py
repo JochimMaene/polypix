@@ -169,17 +169,7 @@ def plot_availability(
         coordinates=coordinates,
         visible=np.ones(result.mean_visible.size, dtype=bool),
         resolution=HEALPIX_RESOLUTION,
-        title="Starlink snapshot visibility",
-        subtitle=(
-            f"{result.satellite_count:,} catalogued objects · one-hour mean · "
-            "25° minimum elevation · one-minute samples"
-        ),
         colorbar_label="Mean catalogued objects in view",
-        footer=(
-            f"Minimum sampled visibility: {int(result.minimum_visible.min())}  ·  "
-            f"Peak sampled visibility: {int(result.maximum_visible.max())}  ·  "
-            f"HEALPix resolution {HEALPIX_RESOLUTION}"
-        ),
         cmap="plasma",
         norm=colors.PowerNorm(gamma=0.75, vmin=0.0, vmax=maximum),
         dpi=dpi,
@@ -220,7 +210,7 @@ def documentation_html() -> str:
     """Return the recorded figure and measurements as HTML for the docs page."""
     m = read_measurements(MEASUREMENTS_PATH)
     return f"""
-<figure>
+<figure class="example-figure">
   <img
     src="{DOC_FIGURE_URL}/{FIGURE_PATH.name}"
     alt="Global map of mean catalogued Starlink objects geometrically visible"
@@ -233,43 +223,32 @@ def documentation_html() -> str:
   </figcaption>
 </figure>
 
-<table>
+<div class="example-metrics">
+  <div><strong>{m["satellite_count"]:,}</strong><span>catalogued objects</span></div>
+  <div><strong>{m["cap_count"]:,}</strong><span>caps evaluated</span></div>
+  <div><strong>{m["covered_pair_count"]:,}</strong><span>cap–cell hits counted without materializing</span></div>
+</div>
+
+<table class="example-timings">
+  <caption>One measured run</caption>
   <thead>
     <tr><th>Stage</th><th>Time</th></tr>
   </thead>
   <tbody>
-    <tr><td>Astroz: parse the pinned TLE snapshot</td>
+    <tr><td>Parse pinned TLE snapshot</td>
         <td>{m["tle_parsing_ms"]:.0f} ms</td></tr>
-    <tr><td>Astroz: SGP4 propagation</td>
+    <tr><td>SGP4 propagation</td>
         <td>{m["propagation_ms"]:.0f} ms</td></tr>
-    <tr><td>NumPy: exact service-cap geometry</td>
+    <tr><td>Service-cap geometry</td>
         <td>{m["cap_geometry_ms"]:.0f} ms</td></tr>
-    <tr><td><strong>Polypix:</strong> {m["snapshot_count"]} fused
-            <code>count_caps_per_cell()</code> calls</td>
+    <tr><td>{m["snapshot_count"]} <code>count_caps_per_cell()</code> calls</td>
         <td><strong>{m["coverage_ms"]:.0f} ms</strong></td></tr>
-    <tr><td>NumPy: availability reduction</td>
+    <tr><td>Availability reduction</td>
         <td>{m["reduction_ms"]:.0f} ms</td></tr>
     <tr><td>Complete analysis</td>
         <td>{m["analysis_ms"]:.0f} ms</td></tr>
-    <tr><td>Matplotlib: map and PNG encoding</td>
+    <tr><td>Plot and PNG encoding</td>
         <td>{m["plotting_ms"]:.0f} ms</td></tr>
-  </tbody>
-</table>
-
-<table>
-  <thead>
-    <tr><th>Workload and result</th><th>Value</th></tr>
-  </thead>
-  <tbody>
-    <tr><td>Catalogued Starlink objects</td>
-        <td>{m["satellite_count"]:,}</td></tr>
-    <tr><td>Exact service caps evaluated</td><td>{m["cap_count"]:,}</td></tr>
-    <tr><td>Cap-cell pairs counted without materializing</td>
-        <td>{m["covered_pair_count"]:,}</td></tr>
-    <tr><td>Mean objects in view, global range</td>
-        <td>{m["mean_visible_min"]:.2f}–{m["mean_visible_max"]:.2f}</td></tr>
-    <tr><td>Objects in view at a single sample, global range</td>
-        <td>{m["sample_min"]}–{m["sample_max"]}</td></tr>
   </tbody>
 </table>
 """.strip()
