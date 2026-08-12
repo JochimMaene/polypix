@@ -295,9 +295,7 @@ pub(crate) fn summarize(
     let cell_count = 12_u64 << (2 * resolution);
     // This budget covers the five full-grid state arrays live during the
     // union pass. Sparse result arrays are the unavoidable public output.
-    let dense_bytes = cell_count
-        .checked_mul(5 * std::mem::size_of::<u64>() as u64)
-        .unwrap_or(u64::MAX);
+    let dense_bytes = cell_count.saturating_mul(5 * std::mem::size_of::<u64>() as u64);
     let summary = if dense_bytes <= DENSE_STATE_MAX_BYTES {
         summarize_dense(
             cell_arrays,

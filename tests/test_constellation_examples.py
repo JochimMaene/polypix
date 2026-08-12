@@ -1,15 +1,24 @@
 import math
+import sys
+from pathlib import Path
 
 import numpy as np
 
 import polypix as px
-from examples.constellation import (
+
+# Wheel tests run from outside the checkout. These tests intentionally exercise
+# the repository's example modules, which are not part of the installed wheel.
+_REPOSITORY_ROOT = str(Path(__file__).resolve().parents[1])
+if _REPOSITORY_ROOT not in sys.path:
+    sys.path.insert(0, _REPOSITORY_ROOT)
+
+from examples.constellation import (  # noqa: E402
     EARTH_RADIUS_KM,
     constellation_centers,
     service_caps,
     swath_edges,
 )
-from examples.earth_observation_constellation import (
+from examples.earth_observation_constellation import (  # noqa: E402
     SWATH_HALF_WIDTH_RAD,
     reduce_coverage,
 )

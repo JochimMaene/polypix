@@ -788,7 +788,7 @@ fn visit_cap_ranges(cap: &Cap, resolution: u8, mut visit: impl FnMut(Range<u64>)
         for &(interval_start, interval_end) in intervals.iter().take(interval_count) {
             if let Some(range) = cap_interval_range(
                 cap,
-                &ring,
+                ring,
                 step,
                 interval_start,
                 interval_end,
@@ -1245,9 +1245,11 @@ fn compute_candidate_chunk(
                 |values| values[candidate_index - plan.center_start],
             );
             if footprints[index].contains(point) {
-                coverage.cells.try_reserve(1).map_err(|_| {
-                    NativeError::materialization("Coverage result is too large to materialize.")
-                })?;
+                if coverage.cells.len() == coverage.cells.capacity() {
+                    coverage.cells.try_reserve(1).map_err(|_| {
+                        NativeError::materialization("Coverage result is too large to materialize.")
+                    })?;
+                }
                 coverage.cells.push(candidates[candidate_index]);
             }
         }
@@ -1734,9 +1736,11 @@ fn compute_cap_candidate_chunk(
                 |values| values[candidate_index - plan.center_start],
             );
             if caps[index].contains(point) {
-                coverage.cells.try_reserve(1).map_err(|_| {
-                    NativeError::materialization("Coverage result is too large to materialize.")
-                })?;
+                if coverage.cells.len() == coverage.cells.capacity() {
+                    coverage.cells.try_reserve(1).map_err(|_| {
+                        NativeError::materialization("Coverage result is too large to materialize.")
+                    })?;
+                }
                 coverage.cells.push(candidates[candidate_index]);
             }
         }
