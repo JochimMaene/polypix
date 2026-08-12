@@ -102,6 +102,22 @@ def independent_cover_xyz(vertices_xyz: np.ndarray, resolution: int) -> np.ndarr
     return cells[np.all(cell_centers @ normals.T >= -1e-14, axis=1)]
 
 
+def independent_cover_cap(
+    center_xyz: np.ndarray,
+    radius_rad: float,
+    resolution: int,
+) -> np.ndarray:
+    """Brute-force spherical-cap coverage using independent RING centers."""
+    center = np.asarray(center_xyz, dtype=np.float64)
+    center /= np.linalg.norm(center)
+    cells = np.arange(12 * (4**resolution), dtype=np.uint64)
+    cell_centers = reference_ring_centers(resolution)
+    cross_norm = np.linalg.norm(np.cross(cell_centers, center), axis=1)
+    angular_distance = np.arctan2(cross_norm, cell_centers @ center)
+    contained = angular_distance <= radius_rad + 1e-14
+    return cells[contained]
+
+
 def regular_spherical_polygon(
     axis: np.ndarray,
     radius: float,
@@ -205,6 +221,548 @@ class PolypixTests(unittest.TestCase):
             brute_force_cover(polygon, resolution=2),
         )
 
+    def test_cover_cap_accepts_one_center_and_batched_radii(self) -> None:
+        centers = np.asarray(
+            [
+                lonlat_to_vec(15.0, 25.0),
+                7.0 * lonlat_to_vec(179.0, -30.0),
+                lonlat_to_vec(-45.0, 89.0),
+            ]
+        )
+        radii = np.radians([0.0, 12.5, 35.0])
+
+        batch = px.cover_cap(centers, radii, resolution=5, threads=1)
+        expected = [
+            independent_cover_cap(center, float(radius), resolution=5)
+            for center, radius in zip(centers, radii, strict=True)
+        ]
+        self.assertSegmentsEqual(batch, expected)
+
+        single = px.cover_cap(centers[1], radii[1], resolution=5, threads=1)
+        self.assertSegmentsEqual(single, [expected[1]])
+
+        shared_radius = px.cover_cap(centers, radii[1], resolution=5, threads=1)
+        self.assertSegmentsEqual(
+            shared_radius,
+            [
+                independent_cover_cap(center, float(radii[1]), resolution=5)
+                for center in centers
+            ],
+        )
+
+    def test_cover_cap_matches_random_bruteforce_and_candidates(self) -> None:
+        random = np.random.default_rng(20260811)
+        resolution = 5
+        centers = random.normal(size=(64, 3))
+        radii = random.uniform(0.0, math.pi, size=centers.shape[0])
+
+        actual = px.cover_cap(centers, radii, resolution, threads=1)
+        expected = [
+            independent_cover_cap(center, float(radius), resolution)
+            for center, radius in zip(centers, radii, strict=True)
+        ]
+        self.assertSegmentsEqual(actual, expected)
+
+        candidates = np.unique(actual.cells[::7])[::-1]
+        restricted = px.cover_cap(
+            centers,
+            radii,
+            resolution,
+            candidate_cells=candidates,
+            threads=1,
+        )
+        self.assertSegmentsEqual(
+            restricted,
+            post_filter_coverage(actual, candidates),
+        )
+
+    def test_cover_cap_handles_exact_boundaries_and_full_sphere(self) -> None:
+        resolution = 4
+        boundary_cell = np.uint64(321)
+        boundary_center = px.centers(boundary_cell, resolution)[0]
+        axis = lonlat_to_vec(35.0, -20.0)
+        radius = math.atan2(
+            float(np.linalg.norm(np.cross(axis, boundary_center))),
+            float(np.dot(axis, boundary_center)),
+        )
+
+        on_boundary = px.cover_cap(axis, radius, resolution, threads=1)
+        just_outside = px.cover_cap(axis, radius - 1e-12, resolution, threads=1)
+        point = px.cover_cap(boundary_center, 0.0, resolution, threads=1)
+        whole_sphere = px.cover_cap(axis, math.pi, resolution, threads=1)
+
+        self.assertIn(boundary_cell, on_boundary.cells)
+        self.assertNotIn(boundary_cell, just_outside.cells)
+        self.assertIn(boundary_cell, point.cells)
+        np.testing.assert_array_equal(
+            np.sort(whole_sphere.cells),
+            np.arange(12 * 4**resolution, dtype=np.uint64),
+        )
+
+    def test_cover_cap_handles_empty_batches_poles_and_the_longitude_seam(self) -> None:
+        resolution = 4
+        empty = np.empty((0, 3), dtype=np.float64)
+        for radii in (0.2, np.empty(0, dtype=np.float64)):
+            with self.subTest(radii=np.asarray(radii).shape):
+                coverage = px.cover_cap(empty, radii, resolution)
+                np.testing.assert_array_equal(coverage.cells, [])
+                np.testing.assert_array_equal(coverage.offsets, [0])
+                np.testing.assert_array_equal(
+                    px.count_caps_per_cell(empty, radii, resolution),
+                    np.zeros(12 * 4**resolution, dtype=np.int64),
+                )
+                np.testing.assert_array_equal(
+                    px.count_caps_per_cell(
+                        empty,
+                        radii,
+                        resolution,
+                        cells=[7, 1, 7],
+                    ),
+                    [0, 0, 0],
+                )
+
+        centers = np.asarray(([0.0, 0.0, 1.0], [0.0, 0.0, -1.0], [-1.0, 0.0, 0.0]))
+        radii = np.asarray([0.2, 0.35, 0.4])
+        actual = px.cover_cap(centers, radii, resolution, threads=1)
+        self.assertSegmentsEqual(
+            actual,
+            [
+                independent_cover_cap(center, float(radius), resolution)
+                for center, radius in zip(centers, radii, strict=True)
+            ],
+        )
+
+    def test_cap_candidates_have_set_semantics(self) -> None:
+        resolution = 4
+        center = lonlat_to_vec(179.0, 20.0)
+        unfiltered = px.cover_cap(center, 0.5, resolution)
+        selected = unfiltered.cells[::3]
+        candidates = np.concatenate((selected[::-1], selected, selected[:2]))
+
+        restricted = px.cover_cap(
+            center,
+            0.5,
+            resolution,
+            candidate_cells=candidates,
+        )
+
+        np.testing.assert_array_equal(restricted.cells, np.unique(selected))
+        empty = px.cover_cap(center, 0.5, resolution, candidate_cells=[])
+        np.testing.assert_array_equal(empty.cells, [])
+        np.testing.assert_array_equal(empty.offsets, [0, 0])
+
+    def test_count_caps_per_cell_matches_materialized_coverage(self) -> None:
+        random = np.random.default_rng(20260812)
+        resolution = 4
+        centers = random.normal(size=(128, 3))
+        radii = random.uniform(0.0, math.pi / 3.0, size=centers.shape[0])
+        coverage = px.cover_cap(centers, radii, resolution, threads=1)
+        expected = np.bincount(
+            coverage.cells.astype(np.int64, copy=False),
+            minlength=12 * 4**resolution,
+        ).astype(np.int64, copy=False)
+
+        serial = px.count_caps_per_cell(centers, radii, resolution, threads=1)
+        parallel = px.count_caps_per_cell(centers, radii, resolution, threads=4)
+
+        self.assertEqual(serial.dtype, np.dtype("int64"))
+        np.testing.assert_array_equal(serial, expected)
+        np.testing.assert_array_equal(parallel, expected)
+        requested = np.asarray([7, 1, 7, 100, 0], dtype=np.uint64)
+        queried = px.count_caps_per_cell(
+            centers,
+            radii,
+            resolution,
+            cells=requested,
+            threads=1,
+        )
+        np.testing.assert_array_equal(
+            queried, expected[requested.astype(np.int64, copy=False)]
+        )
+
+    def test_count_caps_per_cell_handles_endpoint_radii_and_high_resolution_queries(
+        self,
+    ) -> None:
+        resolution = 3
+        centers = px.centers(np.asarray([3, 17, 42, 71], dtype=np.uint64), resolution)
+        radii = np.asarray([0.0, math.pi / 2.0, 3.0 * math.pi / 4.0, math.pi])
+        coverage = px.cover_cap(centers, radii, resolution, threads=1)
+        expected = np.bincount(
+            coverage.cells.astype(np.int64, copy=False),
+            minlength=12 * 4**resolution,
+        ).astype(np.int64, copy=False)
+        np.testing.assert_array_equal(
+            px.count_caps_per_cell(centers, radii, resolution, threads=1),
+            expected,
+        )
+        self.assertTrue(np.all(expected >= 1))
+
+        high_resolution = 29
+        high_cells = np.asarray([12 * 4**29 - 1, 0, 6 * 4**29, 0], dtype=np.uint64)
+        np.testing.assert_array_equal(
+            px.count_caps_per_cell(
+                [-1.0, 0.0, 0.0],
+                math.pi,
+                high_resolution,
+                cells=high_cells,
+            ),
+            np.ones(high_cells.size, dtype=np.int64),
+        )
+        queried_empty = px.count_caps_per_cell(
+            [1.0, 0.0, 0.0], 0.1, high_resolution, cells=[]
+        )
+        self.assertEqual(queried_empty.shape, (0,))
+        self.assertEqual(queried_empty.dtype, np.dtype("int64"))
+        with self.assertRaisesRegex(MemoryError, "too large"):
+            px.count_caps_per_cell([1.0, 0.0, 0.0], 0.1, high_resolution)
+        with self.assertRaisesRegex(MemoryError, "too large"):
+            px.cover_cap([1.0, 0.0, 0.0], math.pi, high_resolution)
+
+    def test_cap_inputs_are_validated(self) -> None:
+        center = lonlat_to_vec(0.0, 0.0)
+        for invalid in (-1.0, math.nextafter(math.pi, math.inf), np.nan, np.inf):
+            with self.subTest(radius=invalid):
+                with self.assertRaises((TypeError, ValueError)):
+                    px.cover_cap(center, invalid, resolution=3)
+
+        with self.assertRaisesRegex(ValueError, "centers_xyz"):
+            px.cover_cap(np.zeros(3), 0.1, resolution=3)
+        with self.assertRaisesRegex(ValueError, "one radius per center"):
+            px.cover_cap(np.stack((center, center)), [0.1], resolution=3)
+        with self.assertRaisesRegex(ValueError, "shape"):
+            px.cover_cap(np.zeros((2, 2)), 0.1, resolution=3)
+        with self.assertRaisesRegex(ValueError, "valid RING indices"):
+            px.count_caps_per_cell(
+                center,
+                0.1,
+                resolution=3,
+                cells=[12 * 4**3],
+            )
+
+    def test_cover_cap_thread_counts_are_deterministic(self) -> None:
+        random = np.random.default_rng(20260813)
+        centers = random.normal(size=(4096, 3))
+        radii = random.uniform(0.01, 0.2, size=centers.shape[0])
+        serial = px.cover_cap(centers, radii, resolution=5, threads=1)
+        for threads in (4, None):
+            with self.subTest(threads=threads):
+                actual = px.cover_cap(centers, radii, resolution=5, threads=threads)
+                np.testing.assert_array_equal(actual.cells, serial.cells)
+                np.testing.assert_array_equal(actual.offsets, serial.offsets)
+
+        serial_counts = px.count_caps_per_cell(centers, radii, resolution=5, threads=1)
+        query_cells = np.arange(300, dtype=np.uint64)
+        serial_query = px.count_caps_per_cell(
+            centers,
+            radii,
+            resolution=5,
+            cells=query_cells,
+            threads=1,
+        )
+        for threads in (4, None):
+            with self.subTest(count_threads=threads):
+                np.testing.assert_array_equal(
+                    px.count_caps_per_cell(
+                        centers, radii, resolution=5, threads=threads
+                    ),
+                    serial_counts,
+                )
+                np.testing.assert_array_equal(
+                    px.count_caps_per_cell(
+                        centers,
+                        radii,
+                        resolution=5,
+                        cells=query_cells,
+                        threads=threads,
+                    ),
+                    serial_query,
+                )
+
+    def test_summarize_occupancy_counts_source_runs_and_merged_gaps(self) -> None:
+        first = px.Coverage.from_arrays(
+            cells=np.asarray([1, 2, 1, 1, 2], dtype=np.uint64),
+            offsets=np.asarray([0, 2, 3, 3, 5], dtype=np.uint64),
+            resolution=1,
+        )
+        second = px.Coverage.from_arrays(
+            cells=np.asarray([1, 2, 2], dtype=np.uint64),
+            offsets=np.asarray([0, 1, 1, 2, 3], dtype=np.uint64),
+            resolution=1,
+        )
+
+        summary = px.summarize_occupancy([first, second])
+
+        np.testing.assert_array_equal(summary.cells, [1, 2])
+        np.testing.assert_array_equal(summary.run_counts, [3, 3])
+        np.testing.assert_array_equal(summary.merged_gap_counts, [1, 1])
+        np.testing.assert_array_equal(summary.merged_gap_steps_sum, [1, 1])
+        np.testing.assert_array_equal(summary.mean_merged_gap_steps, [1.0, 1.0])
+        for values in (
+            summary.cells,
+            summary.run_counts,
+            summary.merged_gap_steps_sum,
+            summary.merged_gap_counts,
+        ):
+            self.assertEqual(values.dtype, np.dtype("uint64"))
+            self.assertFalse(values.flags.writeable)
+        self.assertEqual(summary.mean_merged_gap_steps.dtype, np.dtype("float64"))
+        self.assertEqual(summary.resolution, 1)
+        self.assertEqual(summary.segment_count, 4)
+        self.assertEqual(len(summary), 2)
+
+        permuted = px.summarize_occupancy([second, first])
+        np.testing.assert_array_equal(permuted.cells, summary.cells)
+        np.testing.assert_array_equal(permuted.run_counts, summary.run_counts)
+        np.testing.assert_array_equal(
+            permuted.merged_gap_steps_sum, summary.merged_gap_steps_sum
+        )
+        np.testing.assert_array_equal(
+            permuted.merged_gap_counts, summary.merged_gap_counts
+        )
+
+    def test_summarize_occupancy_accumulates_multiple_gaps_and_nan_means(self) -> None:
+        source = px.Coverage.from_arrays(
+            cells=np.asarray([5, 6, 5, 6, 5], dtype=np.uint64),
+            offsets=np.asarray([0, 1, 2, 4, 4, 4, 5], dtype=np.uint64),
+            resolution=1,
+        )
+
+        summary = px.summarize_occupancy(source)
+
+        np.testing.assert_array_equal(summary.cells, [5, 6])
+        np.testing.assert_array_equal(summary.run_counts, [3, 1])
+        np.testing.assert_array_equal(summary.merged_gap_counts, [2, 0])
+        np.testing.assert_array_equal(summary.merged_gap_steps_sum, [3, 0])
+        self.assertEqual(summary.mean_merged_gap_steps[0], 1.5)
+        self.assertTrue(np.isnan(summary.mean_merged_gap_steps[1]))
+
+    def test_summarize_occupancy_merges_adjacent_source_switches(self) -> None:
+        first = px.Coverage.from_arrays(
+            cells=np.asarray([7], dtype=np.uint64),
+            offsets=np.asarray([0, 1, 1, 1, 1, 1], dtype=np.uint64),
+            resolution=2,
+        )
+        second = px.Coverage.from_arrays(
+            cells=np.asarray([7, 7], dtype=np.uint64),
+            offsets=np.asarray([0, 0, 1, 1, 1, 2], dtype=np.uint64),
+            resolution=2,
+        )
+
+        summary = px.summarize_occupancy((first, second))
+
+        np.testing.assert_array_equal(summary.cells, [7])
+        np.testing.assert_array_equal(summary.run_counts, [3])
+        # The t0 -> t1 source switch is one merged window; t4 starts another.
+        np.testing.assert_array_equal(summary.merged_gap_counts, [1])
+        np.testing.assert_array_equal(summary.merged_gap_steps_sum, [2])
+
+    def test_summarize_occupancy_handles_empty_and_resolution_29_inputs(self) -> None:
+        empty = px.Coverage.from_arrays(
+            cells=np.empty(0, dtype=np.uint64),
+            offsets=np.asarray([0], dtype=np.uint64),
+            resolution=29,
+        )
+        empty_summary = px.summarize_occupancy(empty)
+        np.testing.assert_array_equal(empty_summary.cells, [])
+        self.assertEqual(empty_summary.segment_count, 0)
+
+        empty_intervals = px.Coverage.from_arrays(
+            cells=np.empty(0, dtype=np.uint64),
+            offsets=np.zeros(101, dtype=np.uint64),
+            resolution=9,
+        )
+        self.assertEqual(
+            px.summarize_occupancy([empty_intervals] * 8).segment_count,
+            100,
+        )
+
+        sparse_empty = px.Coverage.from_arrays(
+            cells=np.empty(0, dtype=np.uint64),
+            offsets=np.asarray([0, 0], dtype=np.uint64),
+            resolution=8,
+        )
+        one_hit = px.Coverage.from_arrays(
+            cells=np.asarray([123], dtype=np.uint64),
+            offsets=np.asarray([0, 1], dtype=np.uint64),
+            resolution=8,
+        )
+        many_source_summary = px.summarize_occupancy([sparse_empty] * 1_024 + [one_hit])
+        np.testing.assert_array_equal(many_source_summary.cells, [123])
+        np.testing.assert_array_equal(many_source_summary.run_counts, [1])
+
+        high_cell = np.uint64(12 * 4**29 - 1)
+        sparse = px.Coverage.from_arrays(
+            cells=np.asarray([high_cell, high_cell], dtype=np.uint64),
+            offsets=np.asarray([0, 1, 1, 2], dtype=np.uint64),
+            resolution=29,
+        )
+        summary = px.summarize_occupancy(sparse)
+        np.testing.assert_array_equal(summary.cells, [high_cell])
+        np.testing.assert_array_equal(summary.run_counts, [2])
+        np.testing.assert_array_equal(summary.merged_gap_steps_sum, [1])
+
+        other_cell = np.uint64(12 * 4**29 - 9)
+        sparse_first = px.Coverage.from_arrays(
+            cells=np.asarray([high_cell, other_cell, high_cell, high_cell]),
+            offsets=np.asarray([0, 2, 3, 3, 4], dtype=np.uint64),
+            resolution=29,
+        )
+        sparse_second = px.Coverage.from_arrays(
+            cells=np.asarray([high_cell, high_cell, other_cell]),
+            offsets=np.asarray([0, 1, 2, 2, 3], dtype=np.uint64),
+            resolution=29,
+        )
+        sparse_summary = px.summarize_occupancy([sparse_first, sparse_second])
+        np.testing.assert_array_equal(
+            sparse_summary.cells, np.sort([high_cell, other_cell])
+        )
+        np.testing.assert_array_equal(sparse_summary.run_counts, [2, 3])
+        np.testing.assert_array_equal(sparse_summary.merged_gap_counts, [1, 1])
+        np.testing.assert_array_equal(sparse_summary.merged_gap_steps_sum, [2, 1])
+
+    def test_summarize_occupancy_validates_coverage_contract(self) -> None:
+        valid = px.Coverage.from_arrays(
+            cells=np.asarray([1], dtype=np.uint64),
+            offsets=np.asarray([0, 1], dtype=np.uint64),
+            resolution=1,
+        )
+        with self.assertRaisesRegex(ValueError, "at least one"):
+            px.summarize_occupancy([])
+        with self.assertRaisesRegex(ValueError, "same resolution"):
+            px.summarize_occupancy(
+                [
+                    valid,
+                    px.Coverage.from_arrays(valid.cells, valid.offsets, resolution=2),
+                ]
+            )
+        with self.assertRaisesRegex(TypeError, "resolution"):
+            px.summarize_occupancy(
+                [
+                    valid,
+                    px.Coverage.from_arrays(
+                        valid.cells, valid.offsets, resolution=True
+                    ),
+                ]
+            )
+        with self.assertRaisesRegex(ValueError, "same number of segments"):
+            px.summarize_occupancy(
+                [
+                    valid,
+                    px.Coverage.from_arrays(
+                        cells=np.asarray([1], dtype=np.uint64),
+                        offsets=np.asarray([0, 0, 1], dtype=np.uint64),
+                        resolution=1,
+                    ),
+                ]
+            )
+        with self.assertRaisesRegex(ValueError, "offsets"):
+            px.summarize_occupancy(
+                px.Coverage.from_arrays(
+                    cells=np.asarray([1], dtype=np.uint64),
+                    offsets=np.asarray([1, 1], dtype=np.uint64),
+                    resolution=1,
+                )
+            )
+        with self.assertRaisesRegex(ValueError, "offsets"):
+            px.summarize_occupancy(
+                px.Coverage.from_arrays(
+                    cells=np.empty(0, dtype=np.uint64),
+                    offsets=np.empty(0, dtype=np.uint64),
+                    resolution=1,
+                )
+            )
+        with self.assertRaisesRegex(ValueError, "offsets"):
+            px.summarize_occupancy(
+                px.Coverage.from_arrays(
+                    cells=[1],  # type: ignore[arg-type]
+                    offsets=[0, 2],  # type: ignore[arg-type]
+                    resolution=1,
+                )
+            )
+        with self.assertRaisesRegex(ValueError, "valid RING indices"):
+            px.summarize_occupancy(
+                px.Coverage.from_arrays(
+                    cells=np.asarray([48], dtype=np.uint64),
+                    offsets=np.asarray([0, 1], dtype=np.uint64),
+                    resolution=1,
+                )
+            )
+
+    def test_summarize_occupancy_matches_random_python_oracle(self) -> None:
+        random = np.random.default_rng(20260814)
+        resolution = 2
+        cell_count = 12 * 4**resolution
+        for case in range(32):
+            source_count = int(random.integers(1, 5))
+            segment_count = int(random.integers(1, 24))
+            sources: list[px.Coverage] = []
+            source_segments: list[list[np.ndarray]] = []
+            for _ in range(source_count):
+                segments = [
+                    np.unique(
+                        random.integers(
+                            0,
+                            cell_count,
+                            size=int(random.integers(0, 12)),
+                            dtype=np.uint64,
+                        )
+                    )
+                    for _ in range(segment_count)
+                ]
+                counts = np.asarray(
+                    [segment.size for segment in segments], dtype=np.uint64
+                )
+                offsets = np.concatenate(
+                    (np.zeros(1, dtype=np.uint64), np.cumsum(counts, dtype=np.uint64))
+                )
+                cells = (
+                    np.concatenate(segments)
+                    if any(segment.size for segment in segments)
+                    else np.empty(0, dtype=np.uint64)
+                )
+                sources.append(px.Coverage.from_arrays(cells, offsets, resolution))
+                source_segments.append(segments)
+
+            expected_observations = np.zeros(cell_count, dtype=np.uint64)
+            expected_gap_sum = np.zeros(cell_count, dtype=np.uint64)
+            expected_gap_counts = np.zeros(cell_count, dtype=np.uint64)
+            for segments in source_segments:
+                last_seen = np.full(cell_count, -2, dtype=np.int64)
+                for interval, cells in enumerate(segments):
+                    starts = last_seen[cells] < interval - 1
+                    expected_observations[cells[starts]] += 1
+                    last_seen[cells] = interval
+            union_last_seen = np.full(cell_count, -2, dtype=np.int64)
+            for interval in range(segment_count):
+                observed = np.unique(
+                    np.concatenate([segments[interval] for segments in source_segments])
+                )
+                previous = union_last_seen[observed]
+                revisited = (previous >= 0) & (previous < interval - 1)
+                cells = observed[revisited]
+                gaps = (interval - previous[revisited] - 1).astype(np.uint64)
+                expected_gap_sum[cells] += gaps
+                expected_gap_counts[cells] += 1
+                union_last_seen[observed] = interval
+
+            summary = px.summarize_occupancy(sources)
+            expected_cells = np.flatnonzero(expected_observations).astype(np.uint64)
+            with self.subTest(case=case):
+                np.testing.assert_array_equal(summary.cells, expected_cells)
+                indices = expected_cells.astype(np.int64, copy=False)
+                np.testing.assert_array_equal(
+                    summary.run_counts,
+                    expected_observations[indices],
+                )
+                np.testing.assert_array_equal(
+                    summary.merged_gap_steps_sum,
+                    expected_gap_sum[indices],
+                )
+                np.testing.assert_array_equal(
+                    summary.merged_gap_counts,
+                    expected_gap_counts[indices],
+                )
+
     def test_cover_accepts_dense_and_ragged_batches(self) -> None:
         polygons = [
             [(-5.0, -5.0), (12.0, -4.0), (10.0, 9.0), (-6.0, 7.0)],
@@ -283,7 +841,7 @@ class PolypixTests(unittest.TestCase):
                 actual = px.cover_footprint(densified, resolution=12, threads=1)
                 np.testing.assert_array_equal(actual.cells, expected.cells)
 
-    def test_cover_strip_covers_consecutive_edge_intervals(self) -> None:
+    def test_cover_sweep_covers_consecutive_edge_intervals(self) -> None:
         left = np.asarray(
             [
                 lonlat_to_vec(-5.0, -5.0),
@@ -306,12 +864,12 @@ class PolypixTests(unittest.TestCase):
         )
 
         expected = px.cover_footprint(footprints, resolution=3)
-        actual = px.cover_strip(left, right, resolution=3)
+        actual = px.cover_sweep(left, right, resolution=3)
 
         np.testing.assert_array_equal(actual.offsets, expected.offsets)
         np.testing.assert_array_equal(actual.cells, expected.cells)
 
-    def test_cover_strip_matches_independent_oracle(self) -> None:
+    def test_cover_sweep_matches_independent_oracle(self) -> None:
         left = np.asarray(
             [lonlat_to_vec(-14.0, latitude) for latitude in (-40.0, -5.0, 35.0)]
         )
@@ -319,7 +877,7 @@ class PolypixTests(unittest.TestCase):
             [lonlat_to_vec(11.0, latitude) for latitude in (-40.0, -5.0, 35.0)]
         )
 
-        actual = px.cover_strip(left, right, resolution=5, threads=1)
+        actual = px.cover_sweep(left, right, resolution=5, threads=1)
         expected = [
             independent_cover_xyz(
                 np.asarray(
@@ -331,18 +889,18 @@ class PolypixTests(unittest.TestCase):
         ]
         self.assertSegmentsEqual(actual, expected)
 
-    def test_cover_strip_accepts_a_pinch_on_either_edge(self) -> None:
+    def test_cover_sweep_accepts_a_pinch_on_either_edge(self) -> None:
         pivot = lonlat_to_vec(0.0, 0.0)
         left = np.asarray([pivot, pivot])
         right = np.asarray([lonlat_to_vec(-8.0, 6.0), lonlat_to_vec(8.0, 6.0)])
 
-        left_pinched = px.cover_strip(left, right, resolution=3)
-        right_pinched = px.cover_strip(right, left, resolution=3)
+        left_pinched = px.cover_sweep(left, right, resolution=3)
+        right_pinched = px.cover_sweep(right, left, resolution=3)
 
         np.testing.assert_array_equal(right_pinched.cells, left_pinched.cells)
         np.testing.assert_array_equal(right_pinched.offsets, left_pinched.offsets)
 
-    def test_cover_strip_uses_minor_arcs_between_samples(self) -> None:
+    def test_cover_sweep_uses_minor_arcs_between_samples(self) -> None:
         def edges(step: float) -> tuple[np.ndarray, np.ndarray]:
             return (
                 np.asarray([lonlat_to_vec(0.0, -5.0), lonlat_to_vec(step, -5.0)]),
@@ -355,7 +913,7 @@ class PolypixTests(unittest.TestCase):
         ):
             with self.subTest(step=step):
                 left, right = edges(step)
-                actual = px.cover_strip(left, right, resolution=3, threads=1)
+                actual = px.cover_sweep(left, right, resolution=3, threads=1)
                 quad = np.asarray([left[0], right[0], right[1], left[1]])
                 expected = px.cover_footprint(quad, resolution=3, threads=1)
                 np.testing.assert_array_equal(actual.cells, expected.cells)
@@ -365,7 +923,7 @@ class PolypixTests(unittest.TestCase):
 
         left, right = edges(180.0)
         with self.assertRaises(ValueError):
-            px.cover_strip(left, right, resolution=3, threads=1)
+            px.cover_sweep(left, right, resolution=3, threads=1)
 
     def test_strip_errors_name_the_invalid_edge(self) -> None:
         left = np.asarray([lonlat_to_vec(-5.0, -5.0), lonlat_to_vec(-5.0, 5.0)])
@@ -379,7 +937,7 @@ class PolypixTests(unittest.TestCase):
                 invalid_right[0, 0] = np.inf
             with self.subTest(name=name):
                 with self.assertRaisesRegex(ValueError, name):
-                    px.cover_strip(invalid_left, invalid_right, resolution=3)
+                    px.cover_sweep(invalid_left, invalid_right, resolution=3)
 
     def test_candidate_coverage_matches_post_filtering(self) -> None:
         footprints = np.asarray(
@@ -446,10 +1004,10 @@ class PolypixTests(unittest.TestCase):
                 lonlat_to_vec(6.0, 12.0),
             ]
         )
-        unfiltered = px.cover_strip(left, right, resolution=4)
+        unfiltered = px.cover_sweep(left, right, resolution=4)
         candidates = unfiltered.cells[::2][::-1]
 
-        actual = px.cover_strip(
+        actual = px.cover_sweep(
             left,
             right,
             resolution=4,
@@ -843,9 +1401,9 @@ class PolypixTests(unittest.TestCase):
         left = np.asarray([lonlat_to_vec(-4.0, value) for value in latitudes])
         right = np.asarray([lonlat_to_vec(4.0, value) for value in latitudes])
 
-        single_threaded = px.cover_strip(left, right, resolution=5, threads=1)
-        parallel = px.cover_strip(left, right, resolution=5, threads=4)
-        automatic = px.cover_strip(left, right, resolution=5)
+        single_threaded = px.cover_sweep(left, right, resolution=5, threads=1)
+        parallel = px.cover_sweep(left, right, resolution=5, threads=4)
+        automatic = px.cover_sweep(left, right, resolution=5)
         for actual in (parallel, automatic):
             np.testing.assert_array_equal(actual.cells, single_threaded.cells)
             np.testing.assert_array_equal(actual.offsets, single_threaded.offsets)
@@ -854,10 +1412,10 @@ class PolypixTests(unittest.TestCase):
         latitudes = np.linspace(-50.0, 50.0, 2049)
         left = np.asarray([lonlat_to_vec(-4.0, value) for value in latitudes])
         right = np.asarray([lonlat_to_vec(4.0, value) for value in latitudes])
-        full = px.cover_strip(left, right, resolution=5, threads=1)
+        full = px.cover_sweep(left, right, resolution=5, threads=1)
         candidates = np.unique(full.cells[::2])
 
-        single_threaded = px.cover_strip(
+        single_threaded = px.cover_sweep(
             left,
             right,
             resolution=5,
@@ -866,7 +1424,7 @@ class PolypixTests(unittest.TestCase):
         )
         for threads in (4, None):
             with self.subTest(threads=threads):
-                actual = px.cover_strip(
+                actual = px.cover_sweep(
                     left,
                     right,
                     resolution=5,
@@ -913,13 +1471,13 @@ class PolypixTests(unittest.TestCase):
             np.testing.assert_array_equal(result.cells, expected.cells)
             np.testing.assert_array_equal(result.offsets, expected.offsets)
 
-    def test_centers_and_boundaries_return_unit_xyz(self) -> None:
+    def test_centers_and_corners_return_unit_xyz(self) -> None:
         cells = np.asarray([0, 17, 123], dtype=np.uint64)
 
         center_vectors = px.centers(cells, resolution=3)
-        boundary_vectors = px.boundaries(cells, resolution=3)
+        boundary_vectors = px.corners(cells, resolution=3)
         scalar_center = px.centers(int(cells[0]), resolution=3)
-        scalar_boundary = px.boundaries(int(cells[0]), resolution=3)
+        scalar_boundary = px.corners(int(cells[0]), resolution=3)
 
         self.assertEqual(center_vectors.shape, (3, 3))
         self.assertEqual(boundary_vectors.shape, (3, 4, 3))
@@ -933,10 +1491,32 @@ class PolypixTests(unittest.TestCase):
             1.0,
         )
 
-    def test_empty_centers_and_boundaries_have_stable_shapes(self) -> None:
+    def test_cell_at_accepts_scalar_batches_and_strided_inputs(self) -> None:
+        cells = np.asarray([0, 7, 31, 191], dtype=np.uint64)
+        vectors = px.centers(cells, resolution=2)
+        padded = np.zeros((vectors.shape[0], 6), dtype=np.float64)
+        padded[:, ::2] = vectors
+
+        actual = px.cell_at(padded[:, ::2], resolution=2)
+        self.assertEqual(actual.dtype, np.dtype("uint64"))
+        self.assertEqual(actual.shape, cells.shape)
+        np.testing.assert_array_equal(actual, cells)
+        np.testing.assert_array_equal(px.cell_at(vectors[0] * 1e200, 2), cells[:1])
+        self.assertEqual(px.cell_at(np.empty((0, 3)), 2).shape, (0,))
+
+        for invalid in ([0.0, 0.0, 0.0], [np.nan, 0.0, 1.0]):
+            with self.subTest(invalid=invalid):
+                with self.assertRaisesRegex(ValueError, "vectors_xyz"):
+                    px.cell_at(invalid, resolution=2)
+        with self.assertRaisesRegex(ValueError, "shape"):
+            px.cell_at(np.empty((3, 1)), resolution=2)
+        with self.assertRaises(TypeError):
+            px.cell_at([True, False, True], resolution=2)
+
+    def test_empty_centers_and_corners_have_stable_shapes(self) -> None:
         cells = np.empty(0, dtype=np.uint64)
         self.assertEqual(px.centers(cells, resolution=3).shape, (0, 3))
-        self.assertEqual(px.boundaries(cells, resolution=3).shape, (0, 4, 3))
+        self.assertEqual(px.corners(cells, resolution=3).shape, (0, 4, 3))
 
     def test_resolution_requires_an_integer_in_range(self) -> None:
         footprint = vectors([(-5.0, -5.0), (12.0, -4.0), (10.0, 9.0), (-6.0, 7.0)])
@@ -962,7 +1542,7 @@ class PolypixTests(unittest.TestCase):
         for cells in (-1, [-1], np.asarray([-1], dtype=np.int64)):
             with self.subTest(cells=cells):
                 with self.assertRaises(ValueError):
-                    px.boundaries(cells, resolution=3)
+                    px.corners(cells, resolution=3)
         with self.assertRaisesRegex(ValueError, "valid RING indices"):
             px.centers([12 * 4**3], resolution=3)
         with self.assertRaises(OverflowError):
@@ -1088,6 +1668,52 @@ class PolypixTests(unittest.TestCase):
         self.assertIsNot(first, second)
         self.assertFalse(first == second)
 
+    def test_coverage_is_a_validated_read_only_segmented_array(self) -> None:
+        imported_cells = np.asarray([1, 4, 7], dtype=np.uint64)
+        imported_offsets = np.asarray([0, 2, 3], dtype=np.uint64)
+        coverage = px.Coverage.from_arrays(
+            imported_cells,
+            imported_offsets,
+            resolution=1,
+        )
+
+        imported_cells[0] = 9
+        imported_offsets[1] = 1
+        np.testing.assert_array_equal(coverage.cells, [1, 4, 7])
+        np.testing.assert_array_equal(coverage.offsets, [0, 2, 3])
+        self.assertFalse(coverage.cells.flags.writeable)
+        self.assertFalse(coverage.offsets.flags.writeable)
+        self.assertEqual(len(coverage), 2)
+        self.assertEqual(coverage.segment_count, 2)
+        np.testing.assert_array_equal(coverage[0], [1, 4])
+        np.testing.assert_array_equal(coverage[-1], [7])
+        self.assertTrue(np.shares_memory(coverage[0], coverage.cells))
+        with self.assertRaises(IndexError):
+            _ = coverage[2]
+
+        unsorted = px.Coverage.from_arrays([4, 1, 7], [0, 2, 3], resolution=1)
+        np.testing.assert_array_equal(unsorted[0], [4, 1])
+
+        invalid = (
+            ([1, 1], [0, 2], "unique"),
+            ([1], [1, 1], "start at zero"),
+            ([1], [0, 2], "offsets"),
+            ([48], [0, 1], "valid RING indices"),
+        )
+        for cells, offsets, message in invalid:
+            with self.subTest(cells=cells, offsets=offsets):
+                with self.assertRaisesRegex(ValueError, message):
+                    px.Coverage.from_arrays(cells, offsets, resolution=1)
+
+        with self.assertRaisesRegex(TypeError, "not bool"):
+            _ = coverage[True]
+        with self.assertRaisesRegex(TypeError, "from_arrays"):
+            px.Coverage([1], [0, 1], resolution=1)  # type: ignore[call-arg]
+
+        native = px.cover_footprint([], resolution=1)
+        self.assertFalse(native.cells.flags.writeable)
+        self.assertFalse(native.offsets.flags.writeable)
+
     def test_cover_rejects_nonempty_zero_vertex_batch(self) -> None:
         for shape in ((0, 3), (1, 0, 3)):
             with self.subTest(shape=shape):
@@ -1102,11 +1728,16 @@ class PolypixTests(unittest.TestCase):
             px.__all__,
             [
                 "Coverage",
+                "OccupancySummary",
                 "__version__",
-                "boundaries",
+                "cell_at",
+                "corners",
                 "centers",
+                "count_caps_per_cell",
+                "cover_cap",
                 "cover_footprint",
-                "cover_strip",
+                "cover_sweep",
+                "summarize_occupancy",
             ],
         )
         for name in [

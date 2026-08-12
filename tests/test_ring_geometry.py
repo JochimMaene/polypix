@@ -25,11 +25,11 @@ RESOLUTION_0_CENTERS = np.asarray(
     ]
 )
 
-RESOLUTION_1_BOUNDARY_CELLS = np.asarray(
+RESOLUTION_1_CORNER_CELLS = np.asarray(
     [0, 4, 12, 27, 44, 47],
     dtype=np.uint64,
 )
-RESOLUTION_1_BOUNDARIES = np.asarray(
+RESOLUTION_1_CORNERS = np.asarray(
     [
         [
             [0.0, 0.0, 1.0],
@@ -292,6 +292,21 @@ def _geometry_signature(values: np.ndarray) -> np.ndarray:
 
 
 class RingGeometryTests(unittest.TestCase):
+    def test_direction_index_matches_independent_center_fixtures(self) -> None:
+        fixtures = [(0, np.arange(12, dtype=np.uint64), RESOLUTION_0_CENTERS)]
+        fixtures.extend(
+            (resolution, cells, centers)
+            for resolution, (cells, centers, _corners) in HEALPY_EXACT_FIXTURES.items()
+        )
+        fixtures.append((29, RESOLUTION_29_CELLS, RESOLUTION_29_CENTERS))
+
+        for resolution, expected, vectors in fixtures:
+            with self.subTest(resolution=resolution):
+                np.testing.assert_array_equal(
+                    px.cell_at(vectors * 7.5, resolution),
+                    expected,
+                )
+
     def test_ring_centers_match_independent_base_resolution_fixture(self) -> None:
         actual = px.centers(np.arange(12, dtype=np.uint64), resolution=0)
 
@@ -302,12 +317,12 @@ class RingGeometryTests(unittest.TestCase):
             atol=2e-15,
         )
 
-    def test_ring_boundaries_match_independent_fixtures(self) -> None:
-        actual = px.boundaries(RESOLUTION_1_BOUNDARY_CELLS, resolution=1)
+    def test_ring_corners_match_independent_fixtures(self) -> None:
+        actual = px.corners(RESOLUTION_1_CORNER_CELLS, resolution=1)
 
         np.testing.assert_allclose(
             actual,
-            RESOLUTION_1_BOUNDARIES,
+            RESOLUTION_1_CORNERS,
             rtol=0.0,
             atol=3e-15,
         )
@@ -323,7 +338,7 @@ class RingGeometryTests(unittest.TestCase):
         )
 
     def test_ring_geometry_matches_exact_transition_fixtures(self) -> None:
-        for resolution, (cells, centers, boundaries) in HEALPY_EXACT_FIXTURES.items():
+        for resolution, (cells, centers, corners) in HEALPY_EXACT_FIXTURES.items():
             with self.subTest(resolution=resolution):
                 np.testing.assert_allclose(
                     px.centers(cells, resolution),
@@ -332,8 +347,8 @@ class RingGeometryTests(unittest.TestCase):
                     atol=4e-15,
                 )
                 np.testing.assert_allclose(
-                    px.boundaries(cells, resolution),
-                    boundaries,
+                    px.corners(cells, resolution),
+                    corners,
                     rtol=0.0,
                     atol=4e-15,
                 )
@@ -341,7 +356,7 @@ class RingGeometryTests(unittest.TestCase):
     def test_ring_geometry_matches_broad_healpix_cpp_audit(self) -> None:
         for resolution, (
             center_signature,
-            boundary_signature,
+            corner_signature,
         ) in HEALPY_AUDIT_SIGNATURES.items():
             pixel_count = 12 * 4**resolution
             cells = np.asarray(
@@ -356,26 +371,26 @@ class RingGeometryTests(unittest.TestCase):
                 atol=1e-15,
             )
             np.testing.assert_allclose(
-                _geometry_signature(px.boundaries(cells, resolution)),
-                boundary_signature,
+                _geometry_signature(px.corners(cells, resolution)),
+                corner_signature,
                 rtol=0.0,
                 atol=1e-15,
             )
 
-    def test_exhaustive_low_resolution_boundary_topology(self) -> None:
+    def test_exhaustive_low_resolution_corner_topology(self) -> None:
         for resolution in range(7):
             cell_count = 12 * 4**resolution
             cells = np.arange(cell_count, dtype=np.uint64)
             centers = px.centers(cells, resolution)
-            boundaries = px.boundaries(cells, resolution)
+            corners = px.corners(cells, resolution)
 
             np.testing.assert_allclose(
-                np.linalg.norm(boundaries, axis=2),
+                np.linalg.norm(corners, axis=2),
                 1.0,
                 rtol=0.0,
                 atol=3e-16,
             )
-            normals = np.cross(boundaries, np.roll(boundaries, -1, axis=1))
+            normals = np.cross(corners, np.roll(corners, -1, axis=1))
             orientation = np.einsum("nvc,nc->n", normals, centers)
             sides = np.einsum("nvc,nc->nv", normals, centers)
             self.assertTrue(
@@ -383,7 +398,7 @@ class RingGeometryTests(unittest.TestCase):
             )
 
             _, sharing = np.unique(
-                np.round(boundaries.reshape(-1, 3), decimals=13),
+                np.round(corners.reshape(-1, 3), decimals=13),
                 axis=0,
                 return_counts=True,
             )
