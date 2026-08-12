@@ -12,10 +12,8 @@ gateways, terrain, atmosphere, or user terminals.
 Everything below is produced by running the [example source][source] during this
 documentation build.
 
-```python exec="on" html="on" id="communication-constellation-result"
-from examples.communication_constellation import documentation_html
-
-print(documentation_html())
+```{raw} html
+:file: ../assets/generated/communications-availability.html
 ```
 
 Timings are single wall-clock measurements from the documentation builder, not
@@ -56,8 +54,11 @@ Earth-centered distance and a spherical Earth.
 Astroz parses the pinned TLE catalog and propagates all 61 timestamps into one
 small dense batch of Earth-fixed positions:
 
-```python title="examples/communication_constellation.py"
---8<-- "examples/communication_constellation.py:communications-orbits"
+```{literalinclude} ../../examples/communication_constellation.py
+:language: python
+:caption: examples/communication_constellation.py
+:start-after: "--8<-- [start:communications-orbits]"
+:end-before: "--8<-- [end:communications-orbits]"
 ```
 
 ## Counting visibility
@@ -67,8 +68,11 @@ It accumulates analytic RING spans directly into a 49,152-cell count array,
 without materializing the roughly 2.25 million repeated cap-cell IDs at that
 timestamp. Peak analysis memory therefore stays small across all 657,031 caps:
 
-```python title="examples/communication_constellation.py"
---8<-- "examples/communication_constellation.py:communications-coverage"
+```{literalinclude} ../../examples/communication_constellation.py
+:language: python
+:caption: examples/communication_constellation.py
+:start-after: "--8<-- [start:communications-coverage]"
+:end-before: "--8<-- [end:communications-coverage]"
 ```
 
 ## Running it

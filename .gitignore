@@ -23,3 +23,4 @@ polypix/_vendor/
 # Figures generated during the documentation build
 docs/assets/generated/*.png
 docs/assets/generated/*.json
+docs/assets/generated/*.html

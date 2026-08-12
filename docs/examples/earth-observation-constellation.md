@@ -7,10 +7,8 @@ one-minute sensor intervals and maps both answers.
 Everything below is produced by running the [example source][source] during this
 documentation build.
 
-```python exec="on" html="on" id="earth-observation-constellation-result"
-from examples.earth_observation_constellation import documentation_html
-
-print(documentation_html())
+```{raw} html
+:file: ../assets/generated/earth-observation.html
 ```
 
 Timings are single wall-clock measurements from the documentation builder, not
@@ -55,14 +53,20 @@ and samples time in one-minute bins.
 
 The ten-day tracks and their paired sensor edges are vectorized:
 
-```python title="examples/earth_observation_constellation.py"
---8<-- "examples/earth_observation_constellation.py:eo-swaths"
+```{literalinclude} ../../examples/earth_observation_constellation.py
+:language: python
+:caption: examples/earth_observation_constellation.py
+:start-after: "--8<-- [start:eo-swaths]"
+:end-before: "--8<-- [end:eo-swaths]"
 ```
 
 One `cover_sweep()` call then covers all 14,400 intervals of a satellite:
 
-```python title="examples/earth_observation_constellation.py"
---8<-- "examples/earth_observation_constellation.py:eo-cover"
+```{literalinclude} ../../examples/earth_observation_constellation.py
+:language: python
+:caption: examples/earth_observation_constellation.py
+:start-after: "--8<-- [start:eo-cover]"
+:end-before: "--8<-- [end:eo-cover]"
 ```
 
 ## Reducing to observations and revisit
@@ -71,8 +75,11 @@ One `cover_sweep()` call then covers all 14,400 intervals of a satellite:
 observation starts, merge simultaneous hits, and accumulate revisit gaps in a
 native chronological pass:
 
-```python title="examples/earth_observation_constellation.py"
---8<-- "examples/earth_observation_constellation.py:eo-reduce"
+```{literalinclude} ../../examples/earth_observation_constellation.py
+:language: python
+:caption: examples/earth_observation_constellation.py
+:start-after: "--8<-- [start:eo-reduce]"
+:end-before: "--8<-- [end:eo-reduce]"
 ```
 
 This avoids sorting nine million sparse observations, crossing the Python/NumPy

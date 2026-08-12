@@ -86,3 +86,34 @@ maps and timings match the code that produced them.
 | [Interoperability](interoperability.md) | HEALPix conventions and NumPy ecosystem seams |
 | [Development](development.md) | Contributing and releases |
 | [Project goal](project-goal.md) | Scope and feature admission |
+
+```{toctree}
+:hidden:
+:maxdepth: 2
+
+install
+guide
+concepts
+api
+performance
+interoperability
+```
+
+```{toctree}
+:caption: Examples
+:hidden:
+:maxdepth: 1
+
+examples/communication-constellation
+examples/earth-observation-constellation
+```
+
+```{toctree}
+:caption: Project
+:hidden:
+:maxdepth: 1
+
+development
+project-goal
+decisions
+```

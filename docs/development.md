@@ -177,7 +177,8 @@ require a new patch release.
 ## Documentation publishing
 
 The documentation source lives in `docs/` and is configured by
-`zensical.toml`. Build it locally with:
+`docs/conf.py`. Sphinx renders the Markdown through MyST using the PyData
+Sphinx Theme. Build it locally with:
 
 ```bash
 pixi run --environment docs docs-build

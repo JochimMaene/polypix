@@ -10,7 +10,6 @@ on:
       - "examples/**"
       - "pyproject.toml"
       - "pixi.lock"
-      - "zensical.toml"
   pull_request:
     paths:
       - ".github/workflows/docs.yml"
@@ -18,7 +17,6 @@ on:
       - "examples/**"
       - "pyproject.toml"
       - "pixi.lock"
-      - "zensical.toml"
 
 permissions:
   contents: read

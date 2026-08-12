@@ -20,11 +20,10 @@ EARTH_ROTATION_RAD_S = 7.2921150e-5
 
 # Figures for the documentation build are written here and copied into the
 # generated site. The path is relative to the repository root, which is the
-# working directory during a Zensical build.
+# working directory during a Sphinx build.
 DOC_FIGURE_DIR = Path("docs/assets/generated")
 
-# Path from a page at docs/examples/<name>.md to DOC_FIGURE_DIR. Zensical
-# resolves it against the Markdown source and rewrites it for the built URL.
+# Path from a built page at examples/<name>.html to the assets copied by Sphinx.
 DOC_FIGURE_URL = "../assets/generated"
 
 
