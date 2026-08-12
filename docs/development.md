@@ -8,6 +8,7 @@ polypix/
   _core.pyi          private compiled-extension typing stub
   py.typed            PEP 561 marker
 rust/
+  access.rs           segmented occupancy run and gap reduction
   geometry.rs         convex spherical-polygon validation
   lib.rs              PyO3 bindings and native-buffer safety
   ring.rs             HEALPix RING coverage and threading
@@ -18,13 +19,16 @@ benchmarks/
   test_polypix_benchmarks.py  CodSpeed public-call regression benchmarks
 examples/
   constellation.py                    shared orbit and plotting helpers
-  communication_constellation.py      one-hour communications availability
+  communication_constellation.py      one-hour Starlink snapshot visibility
+  data/                                permanent example input snapshots
   earth_observation_constellation.py  ten-day observation and revisit analysis
   documentation_assets.py             pre-build figure and measurement step
 tools/
   generate_ring_geometry_fixtures.py  external-oracle fixture generator
 decisions/
-  owned-healpix-kernel.md  internal architecture and licensing evidence
+  owned-healpix-kernel.md          architecture and licensing evidence
+  cap-and-occupancy-primitives.md  measured cap/occupancy scope evidence
+  api-surface-beyond-constellations.md  pre-1.0 API discovery gate
 docs/
   *.md                Zensical documentation pages
 ```
@@ -66,6 +70,10 @@ Build documentation:
 pixi run --environment docs docs-build
 ```
 
+The communications example uses the docs-only Astroz binary dependency. The
+published documentation build runs on supported Linux x86-64 with glibc 2.36
+or newer; this does not change Polypix's runtime platform support.
+
 Run either standalone constellation example, writing its maps to the working
 directory:
 
@@ -106,8 +114,8 @@ is linked here, this repository makes no public cross-library performance
 claim; it keeps only focused CodSpeed regression benchmarks and product
 correctness tests.
 
-The broad independent boundary fixtures can be regenerated in a temporary
-environment containing `healpy`:
+The broad independent center-and-corner fixtures can be regenerated in a
+temporary environment containing `healpy`:
 
 ```bash
 python tools/generate_ring_geometry_fixtures.py
@@ -122,9 +130,9 @@ because Valgrind simulation serializes worker threads. The same workflow runs
 `tools/check_parallel_speedup.py` natively as a coarse wall-time guard for
 actual multicore scaling.
 
-Internal architecture and licensing rationale is retained in the repository's
-`decisions/` directory rather than published as user-facing performance
-documentation.
+Architecture and licensing rationale is retained in the repository's
+`decisions/` directory and linked from the documentation. Decision records are
+maintainer evidence, not user-facing performance instructions.
 
 ## Release builds
 
@@ -180,7 +188,7 @@ and publishes `site/` to GitHub Pages on pushes to `main`.
 
 ## License and notices
 
-Polypix is distributed under Apache-2.0. The boundary transform includes a
+Polypix is distributed under Apache-2.0. The cell-corner transform includes a
 small BSD-3-Clause adaptation from Astrometry.net. Keep these files current
 whenever native dependencies or adapted code change:
 
