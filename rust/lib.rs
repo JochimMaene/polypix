@@ -1,6 +1,7 @@
 use numpy::ndarray::{Array2, Array3};
 use numpy::{
-    IntoPyArray, PyArray2, PyArray3, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods,
+    npyffi::NPY_ARRAY_WRITEABLE, Element, IntoPyArray, PyArray1, PyArray2, PyArray3,
+    PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods,
 };
 use pyo3::exceptions::{PyMemoryError, PyValueError};
 use pyo3::prelude::*;
@@ -43,6 +44,16 @@ fn native_error(error: NativeError) -> PyErr {
     }
 }
 
+fn readonly_vec<'py, T: Element>(values: Vec<T>, py: Python<'py>) -> Bound<'py, PyArray1<T>> {
+    let array = values.into_pyarray(py);
+    // SAFETY: `into_pyarray` has just created this array from an owned Vec, so
+    // no mutable Python or Rust borrow exists while the flag is cleared.
+    unsafe {
+        (*array.as_array_ptr()).flags &= !NPY_ARRAY_WRITEABLE;
+    }
+    array
+}
+
 #[pyfunction(signature = (vertices_xyz, offsets, resolution, candidate_cells=None, threads=None))]
 fn _cover<'py>(
     py: Python<'py>,
@@ -83,8 +94,8 @@ fn _cover<'py>(
         .map_err(native_error)?;
 
     Ok((
-        coverage.cells.into_pyarray(py),
-        coverage.offsets.into_pyarray(py),
+        readonly_vec(coverage.cells, py),
+        readonly_vec(coverage.offsets, py),
     ))
 }
 
@@ -120,8 +131,8 @@ fn _cover_cap<'py>(
         .detach(|| ring::cover_caps(centers, radii, resolution, raw_candidates, threads))
         .map_err(native_error)?;
     Ok((
-        coverage.cells.into_pyarray(py),
-        coverage.offsets.into_pyarray(py),
+        readonly_vec(coverage.cells, py),
+        readonly_vec(coverage.offsets, py),
     ))
 }
 
@@ -186,10 +197,10 @@ fn _summarize_occupancy<'py>(
         .detach(|| access::summarize(&cells, &offsets, resolution))
         .map_err(native_error)?;
     Ok((
-        summary.cells.into_pyarray(py),
-        summary.run_counts.into_pyarray(py),
-        summary.merged_gap_steps_sum.into_pyarray(py),
-        summary.merged_gap_counts.into_pyarray(py),
+        readonly_vec(summary.cells, py),
+        readonly_vec(summary.run_counts, py),
+        readonly_vec(summary.merged_gap_steps_sum, py),
+        readonly_vec(summary.merged_gap_counts, py),
         segment_count,
     ))
 }
@@ -230,8 +241,8 @@ fn _cover_sweep<'py>(
         .map_err(native_error)?;
 
     Ok((
-        coverage.cells.into_pyarray(py),
-        coverage.offsets.into_pyarray(py),
+        readonly_vec(coverage.cells, py),
+        readonly_vec(coverage.offsets, py),
     ))
 }
 

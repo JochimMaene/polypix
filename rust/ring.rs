@@ -1239,23 +1239,35 @@ fn compute_candidate_chunk(
     coverage.offsets.push(0);
     for index in range {
         let candidate_range = plan.ranges[index].clone();
-        for candidate_index in candidate_range {
-            let point = centers.map_or_else(
-                || center(candidates[candidate_index], resolution),
-                |values| values[candidate_index - plan.center_start],
-            );
-            if footprints[index].contains(point) {
-                if coverage.cells.len() == coverage.cells.capacity() {
-                    coverage.cells.try_reserve(1).map_err(|_| {
-                        NativeError::materialization("Coverage result is too large to materialize.")
-                    })?;
+        if let Some(centers) = centers {
+            for candidate_index in candidate_range {
+                let point = centers[candidate_index - plan.center_start];
+                if footprints[index].contains(point) {
+                    push_coverage_cell(&mut coverage.cells, candidates[candidate_index])?;
                 }
-                coverage.cells.push(candidates[candidate_index]);
+            }
+        } else {
+            for candidate_index in candidate_range {
+                let point = center(candidates[candidate_index], resolution);
+                if footprints[index].contains(point) {
+                    push_coverage_cell(&mut coverage.cells, candidates[candidate_index])?;
+                }
             }
         }
         coverage.offsets.push(coverage.cells.len() as u64);
     }
     Ok(coverage)
+}
+
+#[inline]
+fn push_coverage_cell(cells: &mut Vec<u64>, cell: u64) -> NativeResult<()> {
+    if cells.len() == cells.capacity() {
+        cells.try_reserve(1).map_err(|_| {
+            NativeError::materialization("Coverage result is too large to materialize.")
+        })?;
+    }
+    cells.push(cell);
+    Ok(())
 }
 
 fn merge_coverages(chunks: Vec<Coverage>) -> NativeResult<Coverage> {
@@ -1730,18 +1742,19 @@ fn compute_cap_candidate_chunk(
     coverage.offsets.push(0);
     for index in range {
         let candidate_range = plan.ranges[index].clone();
-        for candidate_index in candidate_range {
-            let point = centers.map_or_else(
-                || center(candidates[candidate_index], resolution),
-                |values| values[candidate_index - plan.center_start],
-            );
-            if caps[index].contains(point) {
-                if coverage.cells.len() == coverage.cells.capacity() {
-                    coverage.cells.try_reserve(1).map_err(|_| {
-                        NativeError::materialization("Coverage result is too large to materialize.")
-                    })?;
+        if let Some(centers) = centers {
+            for candidate_index in candidate_range {
+                let point = centers[candidate_index - plan.center_start];
+                if caps[index].contains(point) {
+                    push_coverage_cell(&mut coverage.cells, candidates[candidate_index])?;
                 }
-                coverage.cells.push(candidates[candidate_index]);
+            }
+        } else {
+            for candidate_index in candidate_range {
+                let point = center(candidates[candidate_index], resolution);
+                if caps[index].contains(point) {
+                    push_coverage_cell(&mut coverage.cells, candidates[candidate_index])?;
+                }
             }
         }
         coverage.offsets.push(coverage.cells.len() as u64);

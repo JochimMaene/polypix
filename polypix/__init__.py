@@ -78,8 +78,6 @@ class Coverage:
     ) -> Coverage:
         """Construct from trusted, newly owned native output buffers."""
         result = object.__new__(cls)
-        _freeze_array(cells)
-        _freeze_array(offsets)
         object.__setattr__(result, "cells", cells)
         object.__setattr__(result, "offsets", offsets)
         object.__setattr__(result, "resolution", resolution)
@@ -144,7 +142,6 @@ class OccupancySummary:
             ("merged_gap_steps_sum", merged_gap_steps_sum),
             ("merged_gap_counts", merged_gap_counts),
         ):
-            _freeze_array(array)
             object.__setattr__(result, name, array)
         object.__setattr__(result, "resolution", resolution)
         object.__setattr__(result, "segment_count", segment_count)
