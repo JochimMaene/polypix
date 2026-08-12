@@ -37,7 +37,7 @@ analysis should supply propagated sensor edges instead.
 
 ## What counts as an observation
 
-For each pair of adjacent samples, `cover_strip()` covers the swept quadrilateral
+For each pair of adjacent samples, `cover_sweep()` covers the swept quadrilateral
 `[left[i], right[i], right[i+1], left[i+1]]`. This fills the motion between
 samples rather than approximating a moving sensor with disconnected circles.
 
@@ -46,10 +46,10 @@ observation. A later pass is another observation, and satellites count
 separately.
 
 Revisit merges all satellites: overlapping or consecutive hits form one
-constellation access window, and revisit is the uncovered gap between windows.
-The map shows mean gaps over the ten days, omits cells with fewer than two
-windows, excludes gaps that extend past either end of the analysis window, and
-quantizes all boundaries to one minute.
+constellation occupancy window, and revisit is the uncovered gap between
+windows. The map shows mean gaps over the ten days, omits cells with fewer than
+two windows, excludes gaps that extend past either end of the analysis window,
+and samples time in one-minute bins.
 
 ## Swaths and coverage
 
@@ -59,7 +59,7 @@ The ten-day tracks and their paired sensor edges are vectorized:
 --8<-- "examples/earth_observation_constellation.py:eo-swaths"
 ```
 
-One `cover_strip()` call then covers all 14,400 intervals of a satellite:
+One `cover_sweep()` call then covers all 14,400 intervals of a satellite:
 
 ```python title="examples/earth_observation_constellation.py"
 --8<-- "examples/earth_observation_constellation.py:eo-cover"
@@ -67,18 +67,18 @@ One `cover_strip()` call then covers all 14,400 intervals of a satellite:
 
 ## Reducing to observations and revisit
 
-Every segment already contains unique cell IDs, so the reducer uses integer
-last-seen timestamps to detect observation starts, merge simultaneous hits, and
-accumulate revisit gaps in one chronological pass:
+`summarize_occupancy()` uses integer last-seen steps to detect source-specific
+observation starts, merge simultaneous hits, and accumulate revisit gaps in a
+native chronological pass:
 
 ```python title="examples/earth_observation_constellation.py"
 --8<-- "examples/earth_observation_constellation.py:eo-reduce"
 ```
 
-This avoids sorting nine million sparse observations, calling `unique()` per
-interval, and allocating a dense `(satellites, intervals, cells)` visibility
-cube. It is nonetheless the slowest stage above — the coverage calls are not the
-bottleneck here.
+This avoids sorting nine million sparse observations, crossing the Python/NumPy
+boundary once per interval and satellite, or allocating a dense
+`(satellites, intervals, cells)` visibility cube. The returned summary is sparse;
+the example scatters its 42,912 observed cells into dense plotting arrays.
 
 ## Running it
 

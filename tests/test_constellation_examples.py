@@ -3,8 +3,12 @@ import math
 import numpy as np
 
 import polypix as px
-from examples.communication_constellation import service_radius_rad
-from examples.constellation import cap_footprints, constellation_centers, swath_edges
+from examples.constellation import (
+    EARTH_RADIUS_KM,
+    constellation_centers,
+    service_caps,
+    swath_edges,
+)
 from examples.earth_observation_constellation import (
     SWATH_HALF_WIDTH_RAD,
     reduce_coverage,
@@ -39,24 +43,29 @@ def test_swath_edges_are_normalized_at_the_configured_half_width() -> None:
     )
 
 
-def test_communications_footprints_use_the_service_radius() -> None:
-    centers = np.asarray(
+def test_service_caps_normalize_positions_and_use_altitude_dependent_radii() -> None:
+    minimum_elevation_rad = math.radians(25.0)
+    positions_km = np.asarray(
         [
-            [1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0],
+            [EARTH_RADIUS_KM + 350.0, 0.0, 0.0],
+            [0.0, 0.0, EARTH_RADIUS_KM + 1200.0],
         ]
     )
-    radius = service_radius_rad()
+    orbit_radii_km = np.linalg.norm(positions_km, axis=1)
 
-    footprints = cap_footprints(centers, radius_rad=radius, vertex_count=16)
-
-    assert 0.0 < radius < math.pi / 2
-    assert footprints.shape == (2, 16, 3)
-    np.testing.assert_allclose(np.linalg.norm(footprints, axis=-1), 1.0)
-    np.testing.assert_allclose(
-        np.sum(footprints * centers[:, np.newaxis, :], axis=-1),
-        math.cos(radius),
+    centers, radii = service_caps(
+        positions_km,
+        body_radius_km=EARTH_RADIUS_KM,
+        minimum_elevation_rad=minimum_elevation_rad,
     )
+
+    np.testing.assert_allclose(np.linalg.norm(centers, axis=1), 1.0)
+    np.testing.assert_allclose(
+        radii,
+        np.arccos(EARTH_RADIUS_KM / orbit_radii_km * math.cos(minimum_elevation_rad))
+        - minimum_elevation_rad,
+    )
+    assert np.all((radii >= 0.0) & (radii <= math.pi))
 
 
 def test_constellation_rejects_uneven_plane_distribution() -> None:
@@ -71,12 +80,12 @@ def test_constellation_rejects_uneven_plane_distribution() -> None:
 
 
 def test_reduce_coverage_counts_observations_and_mean_revisit_gaps() -> None:
-    first = px.Coverage(
+    first = px.Coverage.from_arrays(
         cells=np.asarray([1, 2, 1, 1, 2], dtype=np.uint64),
         offsets=np.asarray([0, 2, 3, 3, 5], dtype=np.uint64),
         resolution=1,
     )
-    second = px.Coverage(
+    second = px.Coverage.from_arrays(
         cells=np.asarray([1, 2, 2], dtype=np.uint64),
         offsets=np.asarray([0, 1, 1, 2, 3], dtype=np.uint64),
         resolution=1,
@@ -98,12 +107,12 @@ def test_reduce_coverage_counts_observations_and_mean_revisit_gaps() -> None:
 
 
 def test_reduce_coverage_rejects_mismatched_interval_counts() -> None:
-    first = px.Coverage(
+    first = px.Coverage.from_arrays(
         cells=np.asarray([1], dtype=np.uint64),
         offsets=np.asarray([0, 1], dtype=np.uint64),
         resolution=1,
     )
-    second = px.Coverage(
+    second = px.Coverage.from_arrays(
         cells=np.asarray([1], dtype=np.uint64),
         offsets=np.asarray([0, 1, 1], dtype=np.uint64),
         resolution=1,

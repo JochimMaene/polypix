@@ -111,31 +111,26 @@ def swath_edges(
     return left, right
 
 
-def cap_footprints(
-    centers: npt.NDArray[np.float64],
+def service_caps(
+    positions_km: npt.NDArray[np.float64],
     *,
-    radius_rad: float,
-    vertex_count: int,
-) -> npt.NDArray[np.float64]:
-    """Return inscribed regular polygons approximating spherical caps."""
-    reference = np.zeros_like(centers)
-    reference[:, 2] = 1.0
-    near_pole = np.abs(centers[:, 2]) > 0.9
-    reference[near_pole] = (1.0, 0.0, 0.0)
-
-    first_tangent = np.cross(reference, centers)
-    first_tangent /= np.linalg.norm(first_tangent, axis=1, keepdims=True)
-    second_tangent = np.cross(centers, first_tangent)
-
-    angles = np.linspace(0.0, 2.0 * math.pi, vertex_count, endpoint=False)
-    boundary_direction = (
-        np.cos(angles)[np.newaxis, :, np.newaxis] * first_tangent[:, np.newaxis, :]
-        + np.sin(angles)[np.newaxis, :, np.newaxis] * second_tangent[:, np.newaxis, :]
+    body_radius_km: float,
+    minimum_elevation_rad: float,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+    """Return ground-service cap centers and altitude-dependent radii."""
+    orbit_radii_km = np.linalg.norm(positions_km, axis=1)
+    centers = positions_km / orbit_radii_km[:, np.newaxis]
+    radii = (
+        np.arccos(
+            np.clip(
+                body_radius_km / orbit_radii_km * math.cos(minimum_elevation_rad),
+                -1.0,
+                1.0,
+            )
+        )
+        - minimum_elevation_rad
     )
-    return (
-        math.cos(radius_rad) * centers[:, np.newaxis, :]
-        + math.sin(radius_rad) * boundary_direction
-    )
+    return centers, radii
 
 
 def map_coordinates(

@@ -5,8 +5,8 @@ build-backend = "maturin"
 [project]
 name = "polypix"
 dynamic = ["version"]
-description = "Fast HEALPix coverage for convex footprints on the sphere."
-keywords = ["healpix", "spherical-geometry", "geospatial", "astronomy", "spatial-index"]
+description = "Fast batch HEALPix rasterization and occupancy reduction for spherical regions."
+keywords = ["healpix", "spherical-geometry", "geospatial", "astronomy", "rasterization"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Operating System :: MacOS",
@@ -81,6 +81,12 @@ pytest-codspeed = ">=5"
 zensical = ">=0.0.47"
 markdown-exec = ">=1.12"
 matplotlib = "*"
+
+[tool.pixi.feature.docs.target.linux-64.pypi-dependencies]
+astroz = "==0.12.0"
+
+[tool.pixi.feature.docs.system-requirements]
+libc = "2.36"
 
 [tool.pixi.tasks]
 test = "python -m pytest -q tests"

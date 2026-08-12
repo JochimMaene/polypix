@@ -66,7 +66,7 @@ def cover_constellation(
     # --8<-- [start:eo-cover]
     for satellite in range(SATELLITE_COUNT):
         started = time.perf_counter()
-        coverage = px.cover_strip(
+        coverage = px.cover_sweep(
             left_edges[:, satellite],
             right_edges[:, satellite],
             resolution=HEALPIX_RESOLUTION,
@@ -96,55 +96,25 @@ def reduce_coverage(
             np.full(cell_count, np.nan, dtype=np.float64),
             empty_int.copy(),
         )
-
-    interval_count = int(coverages[0].counts.size)
-    if any(coverage.counts.size != interval_count for coverage in coverages):
+    expected_cell_count = 12 * 4 ** coverages[0].resolution
+    if cell_count != expected_cell_count:
+        raise ValueError("cell_count must match the coverage resolution")
+    interval_count = coverages[0].offsets.size - 1
+    if any(coverage.offsets.size - 1 != interval_count for coverage in coverages):
         raise ValueError("all satellite strips must have the same interval count")
 
-    observations = np.zeros(cell_count, dtype=np.int64)
-    revisit_gap_sum = np.zeros(cell_count, dtype=np.int64)
-    revisit_counts = np.zeros(cell_count, dtype=np.int64)
-    constellation_last_seen = np.full(cell_count, -2, dtype=np.int32)
-    interval_stamp = np.full(cell_count, -1, dtype=np.int32)
-    satellite_last_seen = np.full(
-        (len(coverages), cell_count),
-        -2,
-        dtype=np.int32,
-    )
-
-    # Each segment already contains unique cells. Integer timestamps therefore
-    # replace global sorting and per-interval set construction.
+    # Each source's observation runs and the constellation-wide merged gaps
+    # are reduced natively without sorting or Python work per interval.
     # --8<-- [start:eo-reduce]
-    for interval in range(interval_count):
-        observed_parts: list[npt.NDArray[np.intp]] = []
-        for satellite, coverage in enumerate(coverages):
-            cells = coverage.cells[
-                int(coverage.offsets[interval]) : int(coverage.offsets[interval + 1])
-            ].astype(np.intp, copy=False)
-
-            previous_satellite = satellite_last_seen[satellite, cells]
-            starts = previous_satellite < interval - 1
-            observations[cells[starts]] += 1
-            satellite_last_seen[satellite, cells] = interval
-
-            first_in_interval = interval_stamp[cells] != interval
-            observed_parts.append(cells[first_in_interval])
-            interval_stamp[cells] = interval
-
-        observed = np.concatenate(observed_parts)
-        previous = constellation_last_seen[observed]
-        revisited = (previous >= 0) & (previous < interval - 1)
-        revisited_cells = observed[revisited]
-        revisit_gap_sum[revisited_cells] += interval - previous[revisited] - 1
-        revisit_counts[revisited_cells] += 1
-        constellation_last_seen[observed] = interval
-    # --8<-- [end:eo-reduce]
-
+    summary = px.summarize_occupancy(coverages)
+    observations = np.zeros(cell_count, dtype=np.int64)
+    revisit_counts = np.zeros(cell_count, dtype=np.int64)
     mean_revisit_s = np.full(cell_count, np.nan, dtype=np.float64)
-    measured = revisit_counts > 0
-    mean_revisit_s[measured] = (
-        revisit_gap_sum[measured] * cadence_s / revisit_counts[measured]
-    )
+    cells = summary.cells.astype(np.int64, copy=False)
+    observations[cells] = summary.run_counts
+    revisit_counts[cells] = summary.merged_gap_counts
+    mean_revisit_s[cells] = summary.mean_merged_gap_steps * cadence_s
+    # --8<-- [end:eo-reduce]
     return observations, mean_revisit_s, revisit_counts
 
 
@@ -342,12 +312,12 @@ def documentation_html() -> str:
     <tr><th>Stage</th><th>Time</th></tr>
   </thead>
   <tbody>
-    <tr><td><strong>Polypix:</strong> one <code>cover_strip()</code> call per
+    <tr><td><strong>Polypix:</strong> one <code>cover_sweep()</code> call per
             satellite</td>
         <td><strong>{m["coverage_ms"]:.0f} ms</strong></td></tr>
     <tr><td>NumPy: orbits and swath edges</td>
         <td>{m["swath_ms"]:.0f} ms</td></tr>
-    <tr><td>NumPy: observation and revisit reduction</td>
+    <tr><td>Polypix: occupancy summary + NumPy scatter</td>
         <td>{m["reduction_ms"]:.0f} ms</td></tr>
     <tr><td>Complete analysis</td>
         <td>{m["analysis_ms"]:.0f} ms</td></tr>
