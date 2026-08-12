@@ -16,6 +16,12 @@ pub(crate) type Vec3 = [f64; 3];
 pub(crate) struct Polygon {
     pub(crate) vertices: Vec<Vec3>,
     pub(crate) edge_normals: Vec<Vec3>,
+    interior_cap: Option<InteriorCap>,
+}
+
+struct InteriorCap {
+    axis: Vec3,
+    cosine_radius: f64,
 }
 
 pub(crate) fn dot(left: Vec3, right: Vec3) -> f64 {
@@ -172,10 +178,50 @@ pub(crate) fn prepare_polygon(raw_vertices: &[[f64; 3]]) -> Result<Polygon, Stri
     let mut edge_normals = vec![[0.0; 3]; vertices.len()];
     validate_polygon(&mut vertices, &mut edge_normals)?;
 
+    // Every point strictly closer to an interior axis than its nearest edge
+    // is necessarily inside all polygon half-spaces.  This conservative cap
+    // turns containment for the bulk of regular many-sided footprints into a
+    // single dot product; points near or outside the cap retain the nominal
+    // edge-by-edge predicate below.
+    let mut axis = vertices.iter().fold([0.0; 3], |mut total, vertex| {
+        total[0] += vertex[0];
+        total[1] += vertex[1];
+        total[2] += vertex[2];
+        total
+    });
+    let interior_cap = normalize(axis)
+        .ok()
+        .and_then(|normalized_axis| {
+            axis = normalized_axis;
+            edge_normals
+                .iter()
+                .map(|&normal| dot(normal, axis))
+                .reduce(f64::min)
+        })
+        .filter(|&minimum_side| minimum_side > CONTAINMENT_EPSILON)
+        .map(|minimum_side| InteriorCap {
+            axis,
+            cosine_radius: (1.0 - minimum_side * minimum_side).max(0.0).sqrt(),
+        });
+
     Ok(Polygon {
         vertices,
         edge_normals,
+        interior_cap,
     })
+}
+
+pub(crate) fn polygon_contains(polygon: &Polygon, center: Vec3) -> bool {
+    // Keep a wide numerical guard between the shortcut and its theoretical
+    // boundary.  The public 1e-14 predicate remains authoritative there.
+    if polygon
+        .interior_cap
+        .as_ref()
+        .is_some_and(|cap| dot(cap.axis, center) >= cap.cosine_radius + 1.0e-12)
+    {
+        return true;
+    }
+    contains_center(&polygon.edge_normals, center)
 }
 
 pub(crate) fn contains_center(edge_normals: &[Vec3], center: Vec3) -> bool {
