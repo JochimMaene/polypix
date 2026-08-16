@@ -1,6 +1,6 @@
 # Polypix
 
-Fast batch HEALPix rasterization and occupancy reduction for spherical regions.
+Which grid cells does this region cover? Answered for millions of regions at once.
 
 [![PyPI](https://img.shields.io/pypi/v/polypix.svg)](https://pypi.org/project/polypix/)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-3776AB.svg?logo=python&logoColor=white)](https://pypi.org/project/polypix/)
@@ -15,9 +15,11 @@ Fast batch HEALPix rasterization and occupancy reduction for spherical regions.
 [Repository](https://github.com/JochimMaene/polypix) |
 [Issues](https://github.com/JochimMaene/polypix/issues)
 
-Polypix maps Cartesian directions and spherical regions to fixed-resolution
-HEALPix RING cells. Its native batch kernels cover exact caps, convex
-great-circle polygons, and sampled sweeps, returning NumPy arrays throughout.
+Give Polypix circles, polygons, or the path a moving sensor sweeps out. Get back
+the HEALPix cells they cover, as plain NumPy arrays.
+
+It does the whole batch in one call, with the geometry handled in a native kernel
+so the poles and the date line stop being special cases.
 
 ## Install
 

@@ -2,23 +2,22 @@
 # Polypix
 
 :::{container} polypix-hero
-<p class="tagline">Fast batch rasterization of spherical regions onto the HEALPix RING grid.</p>
+<p class="tagline">Which grid cells does this region cover? Answered for millions of regions at once.</p>
 
-<p class="scope">Pass Cartesian directions, caps, convex footprints, or sampled sweep edges. Polypix returns NumPy arrays with deterministic cell-center membership.</p>
+<p class="scope">Give Polypix circles, polygons, or the path a moving sensor sweeps out. Get back the HEALPix cells they cover, as plain NumPy arrays.</p>
 
 <p class="polypix-actions"><a href="guide.html">Get started</a><a href="api.html">API reference</a></p>
 :::
 
 <div class="polypix-install"><span>pip install polypix</span></div>
 
-If you work with satellite footprints, sensor beams, or survey fields, sooner or
-later you need to know which grid cells each region touches. Polypix answers that
-for a whole batch at once: hand it Cartesian directions, get back NumPy arrays of
-HEALPix RING cell IDs.
+Say you have ten thousand satellite footprints, or a sky survey's worth of
+telescope fields. For each one you need the list of grid cells it lands on.
+Looping over them in Python is slow, and the geometry has awkward corners at the
+poles and the date line. Polypix does the whole batch in one call.
 
-It stops there, on purpose. Propagating orbits, pointing sensors, intersecting an
-ellipsoid — that stays in your code, or in the libraries you already use. Polypix
-picks up once you have directions on a sphere.
+Here are two circles on the sphere — one with a 5° radius, one with 8° — and the
+cells each one covers:
 
 ```python
 import numpy as np
@@ -32,34 +31,42 @@ coverage.counts
 # array([1502, 3824])
 ```
 
+That's the whole idea. `coverage[0]` is the cell IDs for the first circle,
+`coverage[1]` for the second.
+
+Polypix stops there, on purpose. Propagating orbits, pointing sensors,
+intersecting an ellipsoid — that stays in your code, or in the libraries you
+already use. Polypix picks up once you know where your regions are.
+
 <div class="polypix-paths">
   <div>
     <h3><a href="guide.html">Start with a region</a></h3>
-    <p>Caps, convex footprints, sampled sweeps, and direction-to-cell indexing.</p>
+    <p>Circles, polygons, swept sensor paths, and turning points into cells.</p>
   </div>
   <div>
     <h3><a href="concepts.html">Understand the result</a></h3>
-    <p>Center sampling, RING cell IDs, segmented batches, and occupancy bins.</p>
+    <p>How cells get picked, what comes back, and how batches stay separated.</p>
   </div>
   <div>
     <h3><a href="performance.html">Plan a large run</a></h3>
-    <p>Resolution, output size, sparse queries, batching, and native threads.</p>
+    <p>Picking a resolution, sizing the output, and knowing when it won't fit.</p>
   </div>
 </div>
 
 ## Why Polypix?
 
-- **One call, thousands of regions.** You get back two flat arrays — `cells` and
-  `offsets` — so a batch of 10,000 footprints costs you two allocations, not
-  10,000 Python objects.
-- **Poles and the date line are not special cases.** Caps and great-circle
-  polygons are evaluated in direction space, so there is no seam to work around
-  and no latitude where the answer quietly degrades.
-- **Skip the middle step when you can.** If you only need counts per cell,
-  `count_caps_per_cell()` accumulates them directly instead of building every
-  cap–cell pair and reducing it afterwards.
-- **NumPy, and nothing else.** Frames, propagation, plotting, interpolation, and
-  map algebra all have good homes already. Polypix stays out of them.
+- **Fast**: the work happens in a native kernel that releases the GIL, so one
+  call can use every core you have.
+- **Batch-first**: 10,000 regions come back as two arrays, not 10,000 Python
+  objects. Nothing loops in Python.
+- **No awkward corners**: the poles and the date line are ordinary. Everything
+  is computed with 3D vectors, so there is no seam to work around and no
+  latitude where the answer quietly gets worse.
+- **Skips work you don't need**: only want counts per cell? Polypix adds them up
+  as it goes, instead of building every region–cell pair and reducing it
+  afterwards.
+- **Small**: NumPy is the only dependency. No HEALPix C library, no compiler, no
+  coordinate framework to adopt.
 
 ## Case studies
 

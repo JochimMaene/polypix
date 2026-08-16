@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "polypix"
 dynamic = ["version"]
-description = "Fast batch HEALPix rasterization and occupancy reduction for spherical regions."
+description = "Fast batch HEALPix coverage for circles, polygons, and swept paths on a sphere."
 keywords = ["healpix", "spherical-geometry", "geospatial", "astronomy", "rasterization"]
 classifiers = [
   "Development Status :: 4 - Beta",
