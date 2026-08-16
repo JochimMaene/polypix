@@ -260,3 +260,14 @@ html[data-theme="dark"] {
     margin-top: 1.5rem;
   }
 }
+
+/* Wide numeric reference tables: keep every row on one line. */
+.polypix-reftable {
+  font-size: 0.86rem;
+}
+
+.polypix-reftable td,
+.polypix-reftable th {
+  padding: 0.3rem 0.55rem;
+  white-space: nowrap;
+}

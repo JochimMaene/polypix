@@ -6,16 +6,9 @@ more than how fast the geometric predicate is.
 
 ## Grid size
 
-| Resolution | Cells | Nominal cell scale | Dense `int64` array |
-| ---: | ---: | ---: | ---: |
-| 4 | 3,072 | 3.66° | 24 KiB |
-| 6 | 49,152 | 0.92° | 384 KiB |
-| 8 | 786,432 | 0.23° | 6 MiB |
-| 10 | 12,582,912 | 3.44 arcmin | 96 MiB |
-| 12 | 201,326,592 | 0.86 arcmin | 1.5 GiB |
-
-The scale column is `sqrt(cell area)` — a rough sense of size, not a bound on
-any cell's width.
+Each step up in resolution quadruples the cell count and halves the cell size,
+so a dense global map goes from 6 MiB at resolution 8 to 1.5 GiB at 12.
+[Resolutions](resolutions.md) has the full table.
 
 ## Size the result first
 

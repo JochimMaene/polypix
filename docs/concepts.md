@@ -21,8 +21,9 @@ cell_count = 12 * 4 ** resolution
 Every step up quadruples the grid and roughly halves the cell scale, so the
 numbers get away from you quickly — resolution 12 already needs about 1.5 GiB
 for one `int64` per cell. Resolutions run to 29, which is only useful for sparse
-transforms and selected-cell queries, never for a complete dense map. See
-[Performance and memory](performance.md) before committing to a resolution.
+transforms and selected-cell queries, never for a complete dense map.
+[Resolutions](resolutions.md) lists every one with its angular size, its size on
+the ground, and what a dense map would cost.
 
 What you get back are ordinary RING pixel indices in `[0, cell_count)`. They are
 not packed tokens and they do not encode their resolution — the result object
@@ -131,6 +132,7 @@ shape, chunking, output sizing, and threads.
 :hidden:
 :maxdepth: 1
 
+resolutions
 performance
 interoperability
 ```
