@@ -9,12 +9,16 @@
 <p class="polypix-actions"><a href="guide.html">Get started</a><a href="api.html">API reference</a></p>
 :::
 
-<div class="polypix-install"><span>python -m pip install polypix</span></div>
+<div class="polypix-install"><span>pip install polypix</span></div>
 
-Polypix is a small native Python library for workloads where many spherical
-regions must be mapped to a fixed-resolution grid. Geometry preparation stays
-with the caller; Polypix handles validation, HEALPix traversal, parallel batch
-execution, and result allocation.
+If you work with satellite footprints, sensor beams, or survey fields, sooner or
+later you need to know which grid cells each region touches. Polypix answers that
+for a whole batch at once: hand it Cartesian directions, get back NumPy arrays of
+HEALPix RING cell IDs.
+
+It stops there, on purpose. Propagating orbits, pointing sensors, intersecting an
+ellipsoid — that stays in your code, or in the libraries you already use. Polypix
+picks up once you have directions on a sphere.
 
 ```python
 import numpy as np
@@ -45,20 +49,23 @@ coverage.counts
 
 ## Why Polypix?
 
-- **Batch first.** One call can cover thousands of regions while preserving
-  their boundaries in a compact `cells` and `offsets` representation.
-- **Exact spherical primitives.** Caps and convex great-circle polygons are
-  evaluated directly in direction space, including poles and longitude seams.
-- **Useful fused operations.** Per-cell cap counts avoid materializing every
-  cap–cell pair when explicit membership is not the result you need.
-- **Small runtime surface.** NumPy is the only runtime dependency. Coordinate
-  frames, propagation, plotting, interpolation, and map algebra stay in their
-  established libraries.
+- **One call, thousands of regions.** You get back two flat arrays — `cells` and
+  `offsets` — so a batch of 10,000 footprints costs you two allocations, not
+  10,000 Python objects.
+- **Poles and the date line are not special cases.** Caps and great-circle
+  polygons are evaluated in direction space, so there is no seam to work around
+  and no latitude where the answer quietly degrades.
+- **Skip the middle step when you can.** If you only need counts per cell,
+  `count_caps_per_cell()` accumulates them directly instead of building every
+  cap–cell pair and reducing it afterwards.
+- **NumPy, and nothing else.** Frames, propagation, plotting, interpolation, and
+  map algebra all have good homes already. Polypix stays out of them.
 
 ## Case studies
 
-The documentation build runs two larger examples from pinned inputs. Their
-figures and measurements are regenerated from the checked-in source.
+Two worked examples, both run from pinned inputs every time these docs are
+built. The maps and timings you see below came out of the checked-in source, so
+they cannot drift from it.
 
 <div class="example-gallery">
   <a class="example-card" href="examples/communication-constellation.html">

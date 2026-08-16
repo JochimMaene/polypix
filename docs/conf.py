@@ -35,19 +35,28 @@ intersphinx_mapping = {
     "numpy": ("https://numpy.org/doc/stable/", None),
 }
 
-html_theme = "pydata_sphinx_theme"
+html_theme = "sphinx_book_theme"
 html_title = "Polypix"
 html_baseurl = "https://jochimmaene.github.io/polypix/"
 html_extra_path = ["assets"]
 html_static_path = ["_static"]
 html_css_files = ["polypix.css"]
 html_theme_options = {
-    "github_url": "https://github.com/JochimMaene/polypix",
-    "navbar_align": "left",
-    "navbar_center": ["navbar-nav"],
+    "repository_url": "https://github.com/JochimMaene/polypix",
+    "repository_branch": "main",
+    "path_to_docs": "docs",
+    "use_repository_button": True,
+    "use_issues_button": True,
+    "use_edit_page_button": True,
+    "use_download_button": False,
+    "use_fullscreen_button": False,
+    "home_page_in_toc": False,
+    "show_navbar_depth": 1,
+    "max_navbar_depth": 3,
     "show_toc_level": 2,
-    "navigation_depth": 3,
-    "show_nav_level": 1,
+    "toc_title": "On this page",
+    "navigation_with_keys": False,
+    # The sidebar already carries a search field; pydata's persistent navbar
+    # search would render a second one on desktop.
+    "navbar_persistent": [],
 }
-
-html_sidebars = {"**": []}

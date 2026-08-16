@@ -80,7 +80,7 @@ pytest-codspeed = ">=5"
 [tool.pixi.feature.docs.pypi-dependencies]
 sphinx = ">=8.2,<10"
 myst-parser = ">=5,<6"
-pydata-sphinx-theme = ">=0.16,<1"
+sphinx-book-theme = ">=1.1,<2"
 sphinx-autobuild = ">=2024.10"
 matplotlib = "*"
 
