@@ -27,7 +27,7 @@ kernel as `polypix._core`, and the Python package wraps it in the NumPy-first
 public API. The RING kernel is Polypix's own, with no HEALPix runtime
 dependency.
 
-Wheels ship the compiled kernel, and NumPy is the only runtime dependency —
+Wheels ship the compiled kernel, and NumPy is the only runtime dependency.
 HEALPix C++, CFITSIO, CMake, and a C++ compiler appear nowhere in the build or
 runtime chain.
 
@@ -51,7 +51,7 @@ Markdown through MyST with sphinx-book-theme.
 
 `docs-build` and `docs-serve` both run `docs-figures` first. That step executes
 both case studies and writes their maps and measurement tables into
-`docs/assets/generated/`, which the example pages then include directly — so the
+`docs/assets/generated/`, which the example pages then include directly, so the
 figures have to exist before Sphinx runs. After changing an example, regenerate
 them yourself; `docs-serve` will not do it on reload.
 
@@ -97,7 +97,7 @@ stable-ABI wheels for Linux x86-64 and ARM64, macOS 11+ on x86-64 and ARM64, and
 Windows x86-64. Pull requests build a smaller native-platform smoke matrix;
 releases and manual runs build everything.
 
-The version comes from `Cargo.toml` — keep the Polypix entry in `Cargo.lock` in
+The version comes from `Cargo.toml`. Keep the Polypix entry in `Cargo.lock` in
 step with it.
 
 1. Open a release pull request setting the version, dating and completing the

@@ -99,9 +99,9 @@ assert len(swept) == 2
 ```
 
 This is what you want for a moving footprint whose edges you have already
-sampled. Your sampling *is* the geometry here — Polypix joins adjacent points
-with minor great-circle arcs and cannot tell a sparse sample from a deliberate
-one.
+sampled. Your sampling *is* the geometry here. Polypix joins adjacent points
+with minor great-circle arcs, and it cannot tell a sparse sample from a
+deliberate one.
 
 ## Count overlaps without building them
 
@@ -127,13 +127,13 @@ site_counts = px.count_caps_per_cell(
 
 ## Where to go next
 
-- [User guide](concepts.md) — resolution, center sampling, segmented results,
-  occupancy summaries.
-- [Performance and memory](performance.md) — sizing results, sparse queries,
-  batching, threads.
-- [API reference](api.md) — the complete call contract.
-- [Interoperability](interoperability.md) — handing data to other HEALPix and
-  astronomy packages.
+- [User guide](concepts.md) explains resolution, center sampling, segmented
+  results, and occupancy summaries.
+- [Performance and memory](performance.md) covers sizing results, sparse
+  queries, batching, and threads.
+- [API reference](api.md) is the complete call contract.
+- [Interoperability](interoperability.md) covers handing data to other HEALPix
+  and astronomy packages.
 
 ```{toctree}
 :hidden:

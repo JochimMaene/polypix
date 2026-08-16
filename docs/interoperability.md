@@ -45,8 +45,8 @@ downstream: maps, units, statistics, MOCs, plotting, storage
 
 Astropy, Skyfield, Orekit, SPICE wrappers, and your own sensor models resolve
 physical state into direction-space geometry. Minimum elevation, off-nadir
-limits, attitude, ellipsoid intersection, refraction, terrain — all upstream.
-Pass Polypix the cap or footprint that falls out of them.
+limits, attitude, ellipsoid intersection, refraction, terrain: all of that is
+upstream. Pass Polypix the cap or footprint that falls out of them.
 
 ## Other HEALPix libraries
 
@@ -60,7 +60,7 @@ Two things to watch when you hand data over:
   Those four points are not a sampled boundary, so do not round-trip them as an
   exact great-circle polygon.
 - A MOC represents whole cells by area. Converting center-selected cells into a
-  MOC changes what the result means — it does not retroactively turn your query
+  MOC changes what the result means. It does not retroactively turn your query
   into an intersection query.
 
 ## Bringing segmented data in

@@ -16,8 +16,8 @@ telescope fields. For each one you need the list of grid cells it lands on.
 Looping over them in Python is slow, and the geometry has awkward corners at the
 poles and the date line. Polypix does the whole batch in one call.
 
-Here are two circles on the sphere — one with a 5° radius, one with 8° — and the
-cells each one covers:
+Here are two circles on the sphere, one with a 5° radius and one with 8°, plus
+the cells each of them covers:
 
 ```python
 import numpy as np
@@ -35,8 +35,8 @@ That's the whole idea. `coverage[0]` is the cell IDs for the first circle,
 `coverage[1]` for the second.
 
 Polypix stops there, on purpose. Propagating orbits, pointing sensors,
-intersecting an ellipsoid — that stays in your code, or in the libraries you
-already use. Polypix picks up once you know where your regions are.
+intersecting an ellipsoid: all of that stays in your code, or in the libraries
+you already use. Polypix picks up once you know where your regions are.
 
 <div class="polypix-paths">
   <div>

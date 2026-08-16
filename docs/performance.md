@@ -65,7 +65,7 @@ sparse = px.count_caps_per_cell(
 ```
 
 Go dense whenever the array fits comfortably. Use `cells=` when the grid would
-be enormous and your query set is genuinely small — its cost grows with both the
+be enormous and your query set is genuinely small. Its cost grows with both the
 cap count and the number of cells you ask for, so it is not a general-purpose
 escape hatch.
 
@@ -89,7 +89,7 @@ Polygon coverage scans a conservative spherical bounding box and tests centers
 against every edge, which makes compact convex footprints the fast path. A large
 diagonal or pole-containing footprint can cost far more per returned cell.
 
-For long thin regions, `cover_sweep()` keeps each interval's bounds tight — that
+For long thin regions, `cover_sweep()` keeps each interval's bounds tight. That
 is what it is for. Caps use analytic per-ring longitude spans, and their dense
 counts skip cap-cell membership entirely.
 

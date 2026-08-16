@@ -15,8 +15,8 @@ downstream      maps, joins, statistics, MOCs, plotting, storage
 ```
 
 Upstream answers "what angular region is valid here, under this model?" Polypix
-answers "which cell centers fall inside these regions?" Everything after that —
-time, units, map algebra, persistence — is yours again.
+answers "which cell centers fall inside these regions?" Everything after that is
+yours again: time, units, map algebra, persistence.
 
 Access constraints are the case worth spelling out. A minimum elevation or
 off-nadir limit depends on body radius, platform position, attitude, sensor
@@ -29,8 +29,8 @@ footprint and hand that over. Polypix will not grow `minimum_elevation=`,
 - physical models: propagation, attitude, clocks, ellipsoids, terrain,
   atmosphere;
 - coordinate frames, WGS84, CRS, GeoJSON, or the Shapely/Astropy/Skyfield object
-  models — array recipes and optional adapters are fine, runtime dependencies
-  are not;
+  models (array recipes and optional adapters are fine, runtime dependencies
+  are not);
 - concave polygons, holes, multipolygons, or geometry repair;
 - coverage rules other than center sampling; anything conservative or
   area-based would need its own verb and its own contract;
@@ -55,7 +55,7 @@ API symmetry is not a reason. Neither is "someone might need this."
 ## Stability
 
 While Polypix is on `0.x`, breaking changes are preferred over deprecation
-shims and compatibility layers — every release is tested and usable, but the
+shims and compatibility layers. Every release is tested and usable, but the
 surface can move. There is no deadline for 1.0. After 1.0 it follows semantic
 versioning with normal deprecation periods.
 

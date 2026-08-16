@@ -76,9 +76,9 @@ Two constellation studies run during every documentation build, so their maps
 and timings match the code that produced them:
 
 - [Starlink snapshot visibility](https://jochimmaene.github.io/polypix/examples/communication-constellation/)
-  — 657,031 exact service caps from a pinned catalog of 10,771 objects.
+  covers 657,031 exact service caps from a pinned catalog of 10,771 objects.
 - [Earth-observation revisit](https://jochimmaene.github.io/polypix/examples/earth-observation-constellation/)
-  — 144,000 swept swath intervals from 10 satellites.
+  covers 144,000 swept swath intervals from 10 satellites.
 
 ## License
 

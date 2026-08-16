@@ -13,9 +13,8 @@ Polypix accepts 0 through 29.
 ## Reading the table
 
 HEALPix is an equal-area grid, so every cell on the sphere covers exactly the
-same solid angle. Their *shapes* differ — cells near the poles are not the same
-shape as cells on the equator — so there is no single edge length that holds
-everywhere. The nominal cell size below is `sqrt(cell area)`, which is the usual
+same solid angle. Their *shapes* differ. A cell near a pole is not shaped like
+one on the equator, so no single edge length holds everywhere. The nominal cell size below is `sqrt(cell area)`, which is the usual
 stand-in and matches what `healpy.nside2resol()` reports. Treat it as a typical
 size, not as a bound on how wide any particular cell gets.
 
@@ -69,7 +68,7 @@ Some rough anchors:
 - **Resolution 8–10** (25 km down to 6 km) suits regional analysis and most
   sensor-footprint work.
 - **Resolution 12** (1.6 km) is about where a dense global map stops being
-  comfortable — one `int64` per cell is already 1.5 GiB.
+  comfortable. One `int64` per cell is already 1.5 GiB.
 - **Above 13**, forget dense global arrays. The high resolutions exist for
   sparse work: pass `candidate_cells=` to restrict coverage to cells you care
   about, or `cells=` to query a short list. See

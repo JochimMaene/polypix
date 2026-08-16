@@ -19,14 +19,14 @@ cell_count = 12 * 4 ** resolution
 | 12 | 4,096 | 201,326,592 |
 
 Every step up quadruples the grid and roughly halves the cell scale, so the
-numbers get away from you quickly — resolution 12 already needs about 1.5 GiB
+numbers get away from you quickly. Resolution 12 already needs about 1.5 GiB
 for one `int64` per cell. Resolutions run to 29, which is only useful for sparse
 transforms and selected-cell queries, never for a complete dense map.
 [Resolutions](resolutions.md) lists every one with its angular size, its size on
 the ground, and what a dense map would cost.
 
 What you get back are ordinary RING pixel indices in `[0, cell_count)`. They are
-not packed tokens and they do not encode their resolution — the result object
+not packed tokens and they do not encode their resolution. The result object
 carries that. If you need ordering conversion, neighbors, hierarchy, or map
 algebra, hand these IDs to a fuller HEALPix library; Polypix does not do any of
 it.
@@ -35,9 +35,9 @@ it.
 
 Everything in and out of Polypix is a Cartesian direction `(x, y, z)` on the
 unit sphere. Magnitude is ignored, so position vectors work as well as unit
-vectors. The frame is yours — body-fixed for a planet, celestial for a sky
-survey — and Polypix neither labels it nor transforms between frames. Just make
-sure every vector in one call lives in the same one.
+vectors. The frame is yours: body-fixed for a planet, celestial for a sky
+survey. Polypix neither labels it nor transforms between frames. Just make sure
+every vector in one call lives in the same one.
 
 Working in three dimensions is why the poles and the longitude seam need no
 special handling.
@@ -46,8 +46,8 @@ Use `cell_at()` when your input is points rather than regions, and `centers()`
 to go back the other way. Be careful about what "back" means: `centers()` gives
 you the grid representative, not the direction you started with. Cell centers
 round-trip exactly; arbitrary directions do not. A direction sitting numerically
-on a cell edge is a floating-point tie — repeatable for one build and platform,
-but not something the API promises across platforms.
+on a cell edge is a floating-point tie. It is repeatable for one build and
+platform, but the API does not promise it across platforms.
 
 Orbit propagation, attitude, sensor projection, ellipsoid intersection: all of
 that happens before Polypix sees anything.
@@ -100,7 +100,7 @@ densely enough that each arc is the boundary you meant.
 aligned, ordered bins. It counts consecutive runs per source, then merges every
 source to measure the uncovered bins between occupied windows.
 
-Gaps are counts of bins, not durations — Polypix has no clock. Hits in bins 0
+Gaps are counts of bins, not durations. Polypix has no clock. Hits in bins 0
 and 2 give a gap of one, so this is an uncovered interval and not a
 start-to-start period. Equal bin duration only matters when you multiply those
 counts out into real time.

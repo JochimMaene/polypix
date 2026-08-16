@@ -5,7 +5,7 @@ interval becomes a quadrilateral between two sampled swath edges. Polypix first
 rasterizes those intervals, then summarizes per-satellite observation runs and
 constellation-wide revisit gaps.
 
-The orbit and sensor model is kept deliberately crude — circular orbit,
+The orbit and sensor model is kept deliberately crude: circular orbit,
 spherical rotating Earth, constant 7.5° ground half-width. Real mission analysis
 would feed in propagated sensor edges from its own model.
 
