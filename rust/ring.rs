@@ -19,6 +19,11 @@ use crate::geometry::{
     validate_polygon, Polygon, Vec3, CONTAINMENT_EPSILON,
 };
 
+// 29 is the largest order whose RING cell IDs still fit a *signed* 64-bit
+// integer: 12 * 4^29 is 3.46e18 against an i64 limit of 9.22e18, while order 30
+// needs 1.38e19. The IDs are u64 here and order 30 would fit that, but healpy,
+// astropy-healpix and cdshealpix all stop at 29, and docs/interoperability.md
+// promises callers that every Polypix cell ID converts to int64 unchanged.
 pub(crate) const MAX_RESOLUTION: u8 = 29;
 // Scan dispatch combines fixed preparation work with a spherical-cap estimate
 // of cells visited. The constants retain the measured crossover for primary
