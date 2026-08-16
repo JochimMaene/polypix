@@ -3,7 +3,7 @@
 Install Polypix from PyPI:
 
 ```bash
-python -m pip install polypix
+pip install polypix
 ```
 
 NumPy is the only runtime dependency, and there are wheels for CPython 3.12+ on

@@ -22,7 +22,7 @@ great-circle polygons, and sampled sweeps, returning NumPy arrays throughout.
 ## Install
 
 ```bash
-python -m pip install polypix
+pip install polypix
 ```
 
 Wheels cover CPython 3.12+ on Linux x86-64 and ARM64, macOS 11+ on Intel and
