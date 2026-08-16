@@ -1,8 +1,8 @@
 # Examples
 
-The documentation build runs both case studies from pinned inputs and records
-their figures and one set of wall-clock timings. Start with [Getting
-started](../guide.md) if you are learning the API.
+Both case studies run from pinned inputs every time the docs are built, so the
+figures and timings below always match the source. If you are still learning the
+API, start with [Getting started](../guide.md).
 
 <div class="example-gallery">
   <a class="example-card" href="communication-constellation.html">
@@ -21,9 +21,9 @@ started](../guide.md) if you are learning the API.
   </a>
 </div>
 
-Timings on these pages describe the documentation builder that produced the
-figures. For controlled performance measurements, see [Performance and
-memory](../performance.md).
+The timings describe whatever machine built these pages, so treat them as a
+sense of proportion rather than a benchmark. [Performance and
+memory](../performance.md) is the place for sizing a real run.
 
 ```{toctree}
 :hidden:

@@ -5,9 +5,9 @@ interval becomes a quadrilateral between two sampled swath edges. Polypix first
 rasterizes those intervals, then summarizes per-satellite observation runs and
 constellation-wide revisit gaps.
 
-The orbit and sensor model is intentionally simple: a circular orbit, spherical
-rotating Earth, and constant 7.5° ground half-width. A mission analysis would
-supply propagated sensor edges from its own physical model.
+The orbit and sensor model is kept deliberately crude — circular orbit,
+spherical rotating Earth, constant 7.5° ground half-width. Real mission analysis
+would feed in propagated sensor edges from its own model.
 
 ## Results
 
@@ -59,8 +59,8 @@ satellites:
 :end-before: "--8<-- [end:eo-reduce]"
 ```
 
-The native reducer avoids sorting the nine million interval–cell hits or
-crossing the Python boundary once per interval.
+The reducer never sorts the nine million interval–cell hits, and never crosses
+back into Python per interval.
 
 ## Run the example
 

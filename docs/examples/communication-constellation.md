@@ -5,9 +5,8 @@ visible above a 25° elevation mask. It uses a pinned TLE catalog, propagates on
 hour at one-minute cadence, and accumulates exact spherical caps directly into
 a HEALPix count map.
 
-The result describes catalog geometry, not operational Starlink service. It
-does not include satellite status, beams, capacity, gateways, terrain, or
-atmospheric effects.
+This is catalog geometry, not Starlink service. Nothing here knows about
+satellite status, beams, capacity, gateways, terrain, or the atmosphere.
 
 ## Result
 
@@ -30,9 +29,8 @@ benchmark.
 | Minimum elevation | 25° |
 | Grid | HEALPix resolution 6, 49,152 cells |
 
-The TLE snapshot is committed with the repository. Fixing both the catalog and
-analysis time keeps the example deterministic and removes network access from
-the documentation build.
+The TLE snapshot is committed to the repository. Pinning the catalog and the
+analysis time keeps this reproducible and keeps the docs build off the network.
 
 Astroz produces Earth-fixed positions for every object and timestamp:
 
@@ -53,8 +51,8 @@ with one `count_caps_per_cell()` call:
 :end-before: "--8<-- [end:communications-coverage]"
 ```
 
-The count operation consumes analytic RING spans. It does not build the roughly
-2.25 million cap–cell IDs that explicit coverage would return at each sample.
+That count consumes analytic RING spans directly. It never builds the roughly
+2.25 million cap–cell IDs explicit coverage would hand back at every sample.
 
 ## Run the example
 

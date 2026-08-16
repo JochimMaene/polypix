@@ -1,76 +1,71 @@
 # Interoperability
 
-Polypix exchanges two simple things with the rest of the Python ecosystem:
-`(N, 3)` NumPy direction arrays and fixed-resolution HEALPix RING IDs. It does
-not require Astropy, a coordinate-frame object model, or a geospatial runtime.
+Polypix exchanges two things with the rest of the ecosystem: `(N, 3)` NumPy
+direction arrays and fixed-resolution HEALPix RING IDs. There is no frame object
+model to adopt and no Astropy or geospatial runtime to install.
 
-## Grid conventions
+## Cell IDs
 
 ```text
 nside      = 2 ** resolution
 cell_count = 12 * 4 ** resolution
 ```
 
-Polypix accepts resolutions 0 through 29 and therefore the power-of-two subset
-of HEALPix RING grids. Cell arrays use `uint64`; the resolution is carried by
-the result object, not encoded in each ID. NESTED ordering and mixed-resolution
-representations remain outside the library.
+Resolutions 0 through 29 give you the power-of-two subset of RING grids. Cells
+come back as `uint64`, with the resolution on the result object rather than
+baked into each ID. NESTED ordering and mixed-resolution representations are not
+here.
 
-Every valid Polypix cell ID fits signed `int64`. When another API requires
-signed IDs:
+Every valid cell ID fits in signed `int64`, so when an API insists on signed:
 
 ```python
 signed_cells = coverage.cells.astype(np.int64, copy=False)
 ```
 
-## Cartesian directions
+## Directions
 
-Geometry arrives as `(N, 3)` Cartesian vectors in one caller-defined frame.
-Magnitude is ignored. If another library returns component-major `(3, N)`
-vectors, move the component axis explicitly:
+Geometry arrives as `(N, 3)` vectors in whatever frame you are working in.
+Magnitude is ignored. If another library hands you component-major `(3, N)`,
+move the axis yourself:
 
 ```python
 vectors_n3 = np.moveaxis(vectors_3n, 0, -1)
 cells = px.cell_at(vectors_n3, resolution=8)
 ```
 
-Polypix attaches no unit, celestial frame, body, datum, CRS, or epoch to these
-arrays. Coordinate transformations belong upstream.
+Polypix attaches no unit, frame, body, datum, CRS, or epoch to these arrays.
 
-## Geometry producers upstream
-
-Astropy, Skyfield, Orekit, SPICE wrappers, propagation libraries, and custom
-sensor models can resolve physical state into direction-space geometry. The
-boundary is:
+## Who does what
 
 ```text
-upstream:  state + physical constraints -> directions, caps, or footprint edges
-Polypix:   resolved spherical regions -> fixed-resolution center membership
-downstream: maps, units, statistics, MOCs, plotting, or persistence
+upstream:   state + physical constraints -> directions, caps, footprint edges
+Polypix:    resolved regions -> center membership
+downstream: maps, units, statistics, MOCs, plotting, storage
 ```
 
-Minimum elevation, off-nadir limits, attitude, ellipsoid intersection,
-refraction, and terrain therefore remain upstream. Pass their resulting cap or
-footprint geometry to Polypix.
+Astropy, Skyfield, Orekit, SPICE wrappers, and your own sensor models resolve
+physical state into direction-space geometry. Minimum elevation, off-nadir
+limits, attitude, ellipsoid intersection, refraction, terrain — all upstream.
+Pass Polypix the cap or footprint that falls out of them.
 
-## Other HEALPix tools
+## Other HEALPix libraries
 
-Standard RING IDs can be handed to healpy, astropy-healpix, cdshealpix, or
-another HEALPix implementation for functionality Polypix intentionally omits:
-ordering conversion, neighbors, interpolation, map resampling, harmonics, and
-file formats.
+Standard RING IDs go straight to healpy, astropy-healpix, or cdshealpix for
+everything Polypix leaves out: ordering conversion, neighbors, interpolation,
+resampling, harmonics, file formats.
 
-`corners()` returns only four HEALPix corner vectors. HEALPix edges are curved,
-so those points are not a sampled boundary and must not be treated as an exact
-great-circle polygon for round-tripping.
+Two things to watch when you hand data over:
 
-A MOC represents the area of whole cells. Converting center-selected cells to a
-MOC therefore changes the spatial meaning; it does not turn the original query
-into an intersection query.
+- `corners()` returns four corner vectors, and HEALPix cell edges are curved.
+  Those four points are not a sampled boundary, so do not round-trip them as an
+  exact great-circle polygon.
+- A MOC represents whole cells by area. Converting center-selected cells into a
+  MOC changes what the result means — it does not retroactively turn your query
+  into an intersection query.
 
-## Imported segmented membership
+## Bringing segmented data in
 
-Use `Coverage.from_arrays()` when another system already has one flat RING
-array plus segment offsets. The factory copies and validates the arrays,
-including cell ranges and within-segment uniqueness. Native Polypix producers
-avoid that copy because they already own and validate their output.
+`Coverage.from_arrays()` takes a flat RING array plus offsets from another
+system. It copies and validates them, checking cell ranges and within-segment
+uniqueness. Polypix's own calls skip that copy because they already own and
+trust their output.
