@@ -23,6 +23,7 @@ from examples.constellation import DOC_FIGURE_DIR
 from examples.palette import (
     COVERED_CENTER,
     COVERED_FILL,
+    CYAN,
     GRID_CENTER,
     GRID_EDGE,
     LABEL,
@@ -171,10 +172,24 @@ def draw_grid(
 
 
 def save(figure: Any, path: Path) -> None:
+    """Write a line-art diagram as SVG."""
     import matplotlib.pyplot as plt
 
     path.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(path, format="svg", transparent=True)
+    plt.close(figure)
+
+
+def save_raster(figure: Any, path: Path, dpi: int = 170) -> None:
+    """Write a diagram as PNG.
+
+    The sphere views draw tens of thousands of facets. As SVG that is tens of
+    megabytes of vector paths, so those go out as raster instead.
+    """
+    import matplotlib.pyplot as plt
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    figure.savefig(path, format="png", dpi=dpi, transparent=True)
     plt.close(figure)
 
 
@@ -350,6 +365,65 @@ def resolution_steps(path: Path) -> None:
     save(figure, path)
 
 
+def sphere_levels(path: Path) -> None:
+    """The whole sphere, partitioned at four resolutions.
+
+    HEALPix cell edges are curved, and `corners()` returns only four points per
+    cell, so drawing a coarse cell as a flat quadrilateral would misrepresent
+    its shape. Instead this draws a fine mesh and colours each fine cell by the
+    coarse cell its centre falls in, which recovers the true curved boundaries
+    using nothing but the public API.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import to_rgb
+    from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+
+    mesh_resolution = 6
+    mesh = np.arange(12 * 4**mesh_resolution, dtype=np.uint64)
+    mesh_centers = px.centers(mesh, mesh_resolution)
+    mesh_corners = px.corners(mesh, mesh_resolution)
+
+    # Slightly rotated view so the pole and the equatorial band are both visible.
+    view = np.array([0.62, 0.45, 0.64])
+    view /= np.linalg.norm(view)
+    facing = mesh_centers @ view > 0.0
+
+    ramp = [to_rgb(c) for c in (CYAN, "#1a7290", "#14456a", "#8fe0ea", "#12607a")]
+    figure, panels = plt.subplots(
+        1, 4, figsize=(7.6, 2.2), subplot_kw={"projection": "3d"}
+    )
+    figure.patch.set_alpha(0.0)
+
+    for panel, resolution in zip(panels, (0, 1, 2, 3), strict=True):
+        parents = px.cell_at(mesh_centers[facing], resolution)
+        colors = [ramp[int(p) % len(ramp)] for p in parents]
+        panel.add_collection3d(
+            Poly3DCollection(
+                mesh_corners[facing],
+                facecolors=colors,
+                linewidths=0,
+                shade=False,
+            )
+        )
+        panel.set_xlim(-0.72, 0.72)
+        panel.set_ylim(-0.72, 0.72)
+        panel.set_zlim(-0.72, 0.72)
+        panel.set_box_aspect((1, 1, 1))
+        panel.view_init(elev=26, azim=36)
+        panel.set_axis_off()
+        panel.patch.set_alpha(0.0)
+        cells = 12 * 4**resolution
+        panel.set_title(
+            f"resolution {resolution}\n{cells:,} cells",
+            color=LABEL,
+            fontsize=8,
+            pad=-2,
+        )
+
+    figure.subplots_adjust(left=0.0, right=1.0, top=0.86, bottom=0.0, wspace=0.0)
+    save_raster(figure, path)
+
+
 def main() -> None:
     center_sampling(DOC_FIGURE_DIR / "center-sampling.svg")
     cover_cap(DOC_FIGURE_DIR / "cover-cap.svg")
@@ -357,6 +431,7 @@ def main() -> None:
     cover_sweep(DOC_FIGURE_DIR / "cover-sweep.svg")
     cell_at(DOC_FIGURE_DIR / "cell-at.svg")
     resolution_steps(DOC_FIGURE_DIR / "resolution-steps.svg")
+    sphere_levels(DOC_FIGURE_DIR / "sphere-levels.png")
 
 
 if __name__ == "__main__":

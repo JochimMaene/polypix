@@ -89,6 +89,7 @@ def test_diagram_examples_still_run(
 
     monkeypatch.setattr(docs_diagrams, "DOC_FIGURE_DIR", tmp_path)
     docs_diagrams.main()
+    assert (tmp_path / "sphere-levels.png").is_file()
     assert sorted(p.name for p in tmp_path.glob("*.svg")) == [
         "cell-at.svg",
         "center-sampling.svg",

@@ -10,6 +10,16 @@ cell_count = 12 * 4 ** resolution
 
 Polypix accepts 0 through 29.
 
+```{figure} assets/generated/sphere-levels.png
+:alt: The same sphere partitioned at HEALPix resolutions 0 to 3, cell count rising from 12 to 768.
+:width: 100%
+:align: center
+
+Every resolution starts from the same 12 cells and splits each one into four.
+Cells are equal in area at every level, which is what makes the grid useful for
+counting, and why they change shape between the poles and the equator.
+```
+
 ```{figure} assets/generated/resolution-steps.svg
 :alt: The same circular region drawn on three HEALPix grids, one resolution apart.
 :width: 100%
