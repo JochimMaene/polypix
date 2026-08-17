@@ -16,7 +16,6 @@ import polypix as px
 from examples.constellation import (
     DOC_FIGURE_DIR,
     DOC_FIGURE_URL,
-    clipped_range,
     constellation_centers,
     map_coordinates,
     plot_global_map,
@@ -24,7 +23,7 @@ from examples.constellation import (
     swath_edges,
     write_measurements,
 )
-from examples.palette import diverging_colormap, sequential_colormap
+from examples.palette import gap_colormap, sequential_colormap
 
 OBSERVATIONS_FIGURE_PATH = DOC_FIGURE_DIR / "earth-observation-count.png"
 REVISIT_FIGURE_PATH = DOC_FIGURE_DIR / "earth-observation-revisit.png"
@@ -180,13 +179,13 @@ def plot_observations(
 ) -> None:
     """Render distinct satellite observations per cell."""
     import matplotlib.colors as colors
+    import matplotlib.pyplot as plt
 
     visible = result.observations > 0
-    _, high = clipped_range(
-        result.observations[visible].astype(np.float64),
-        low_percentile=0.0,
-        high_percentile=99.0,
-    )
+    # Same reason as the revisit map: the bulk of the sphere sits in a narrow
+    # band of counts while a thin peak reaches far higher, so bands show the
+    # latitude structure that a continuous ramp flattens.
+    levels = [1, 50, 100, 150, 200, 250, 350, 450]
     plot_global_map(
         result.observations,
         output,
@@ -194,8 +193,9 @@ def plot_observations(
         visible=visible,
         resolution=HEALPIX_RESOLUTION,
         colorbar_label="Distinct satellite observations per cell",
-        cmap=sequential_colormap(),
-        norm=colors.PowerNorm(gamma=0.65, vmin=1, vmax=high),
+        cmap=plt.get_cmap(sequential_colormap(), len(levels)),
+        norm=colors.BoundaryNorm(levels, len(levels), extend="max"),
+        colorbar_ticks=levels,
         extend="max",
         dpi=dpi,
     )
@@ -213,13 +213,14 @@ def plot_revisit(
 ) -> None:
     """Render mean gaps between constellation access windows."""
     import matplotlib.colors as colors
+    import matplotlib.pyplot as plt
 
     measured = np.isfinite(result.mean_revisit_s)
     revisit_hours = result.mean_revisit_s / 3_600
-    finite_hours = revisit_hours[measured]
-    # A thin polar tail reaches several hours and would otherwise flatten every
-    # inhabited latitude into one color.
-    low, high = clipped_range(finite_hours, low_percentile=1.0, high_percentile=99.0)
+    # Most measured cells sit close to the median, so a continuous ramp spends
+    # its range on differences nobody can see. Banding by hour reads like a
+    # contour map and can be taken straight off the colorbar.
+    levels = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0]
     plot_global_map(
         revisit_hours,
         output,
@@ -227,10 +228,10 @@ def plot_revisit(
         visible=measured,
         resolution=HEALPIX_RESOLUTION,
         colorbar_label="Mean revisit gap (hours)",
-        cmap=diverging_colormap(),
-        norm=colors.LogNorm(vmin=low, vmax=high),
-        colorbar_ticks=[t for t in (0.5, 0.75, 1, 1.5, 2, 3, 5, 8) if low <= t <= high],
-        extend="both",
+        cmap=plt.get_cmap(gap_colormap(), len(levels)),
+        norm=colors.BoundaryNorm(levels, len(levels), extend="max"),
+        colorbar_ticks=levels,
+        extend="max",
         dpi=dpi,
     )
 

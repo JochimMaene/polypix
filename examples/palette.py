@@ -37,23 +37,26 @@ MAP_MUTED = "#4c5d6e"
 MAP_RULE = "#aab4bf"
 MAP_GRID = "#667788"
 
-# Pale cyan up through the logo cyan into the logo navy. Lightness falls the
-# whole way, which is what a sequential scale needs on a light background.
-SEQUENTIAL = ["#eaf7fa", "#a7e0ec", CYAN, "#1a7290", "#14456a", NAVY_DEEP]
-
-# Fast to slow, for revisit. Both ends stay legible on the pale panel.
-DIVERGING = [CYAN, "#7fbfd6", "#b9a9b4", "#c98a5a", "#9c5a22"]
+# Data colormaps are NOT brand colours.
+#
+# A colormap's job is to encode magnitude, and a ramp hand-mixed from two logo
+# colours is neither perceptually uniform nor well ordered: the first attempt
+# banded visibly and collapsed most of the range into one muddy mid-teal. These
+# are ColorBrewer sequential schemes instead, picked from the blue and brown
+# families so they still sit next to the logo, and both run light-to-dark
+# because the maps render on a white page.
+#
+# Brand consistency lives in the chrome above and in the explanatory diagrams,
+# where colour is categorical rather than quantitative.
+COUNT_CMAP = "YlGnBu"
+GAP_CMAP = "YlOrBr"
 
 
 def sequential_colormap() -> Any:
-    """Return the brand sequential colormap."""
-    from matplotlib.colors import LinearSegmentedColormap
-
-    return LinearSegmentedColormap.from_list("polypix", SEQUENTIAL)
+    """Return the colormap for per-cell counts."""
+    return COUNT_CMAP
 
 
-def diverging_colormap() -> Any:
-    """Return the brand fast-to-slow colormap."""
-    from matplotlib.colors import LinearSegmentedColormap
-
-    return LinearSegmentedColormap.from_list("polypix_fast_slow", DIVERGING)
+def gap_colormap() -> Any:
+    """Return the colormap for revisit gaps."""
+    return GAP_CMAP
