@@ -64,6 +64,14 @@ that costs you:
 So this is not a conservative spatial index. If you need every cell a region
 touches, Polypix will not give you that today.
 
+```{figure} assets/generated/center-sampling.svg
+:alt: A circular region on a HEALPix grid. Cells whose centres fall inside are filled; one cell the region overlaps is left out because its centre is outside.
+:width: 100%
+:align: center
+
+Blue cells are what `cover_cap()` returned. Grey dots are cell centres. The orange cell is overlapped by the region but left out, because the rule asks about the centre and nothing else.
+```
+
 Caps and footprints use the same rule. The accepted geometry and its numerical
 limits are in the [geometry contract](api.md#geometry-contract).
 

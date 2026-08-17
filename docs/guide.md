@@ -44,6 +44,14 @@ array([1502, 3824])
 region operation follows the same rule: a cell is selected when its center lies
 inside the region.
 
+```{figure} assets/generated/cover-cap.svg
+:alt: Two spherical caps and the grid cells each one covers.
+:width: 100%
+:align: center
+
+The two caps above, and the cells `cover_cap()` returned for them.
+```
+
 For a convex polygon, give the vertices in boundary order. Adjacent vertices are
 joined by the shorter great-circle arc:
 
@@ -58,6 +66,14 @@ footprint = np.array(
 )
 
 coverage = px.cover_footprint(footprint, resolution=8)
+```
+
+```{figure} assets/generated/cover-footprint.svg
+:alt: A convex polygon and the grid cells it covers.
+:width: 100%
+:align: center
+
+A four-sided footprint and the cells it covers.
 ```
 
 If every polygon has the same vertex count, a dense `(regions, vertices, 3)`
@@ -81,6 +97,14 @@ cells = px.cell_at(directions, resolution=8)
 cell_centers = px.centers(cells, resolution=8)
 ```
 
+```{figure} assets/generated/cell-at.svg
+:alt: Four directions, each snapped to the grid cell containing it, with an arrow to that cell's centre.
+:width: 100%
+:align: center
+
+`cell_at()` gives you the cell a direction falls in. `centers()` then gives that cell's centre, which is the arrow head, not where you started.
+```
+
 Note that `cell_centers` holds grid representatives, not the directions you
 started with. Only cell centers round-trip exactly:
 `cell_at(centers(cells, r), r) == cells`.
@@ -96,6 +120,14 @@ right = np.array([[1.0, 0.1, -0.1], [1.0, 0.1, 0.1], [1.0, 0.1, 0.3]])
 
 swept = px.cover_sweep(left, right, resolution=8)
 assert len(swept) == 2
+```
+
+```{figure} assets/generated/cover-sweep.svg
+:alt: Two sampled edges, the quadrilaterals between consecutive samples, and the cells they cover.
+:width: 100%
+:align: center
+
+Each pair of consecutive samples becomes one quadrilateral, and each quadrilateral is its own segment in the result.
 ```
 
 This is what you want for a moving footprint whose edges you have already

@@ -10,6 +10,14 @@ cell_count = 12 * 4 ** resolution
 
 Polypix accepts 0 through 29.
 
+```{figure} assets/generated/resolution-steps.svg
+:alt: The same circular region drawn on three HEALPix grids, one resolution apart.
+:width: 100%
+:align: center
+
+The same region on three grids. Each step up quadruples the cell count and roughly halves the cell size.
+```
+
 ## Reading the table
 
 HEALPix is an equal-area grid, so every cell on the sphere covers exactly the
