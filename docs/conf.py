@@ -41,7 +41,14 @@ html_baseurl = "https://jochimmaene.github.io/polypix/"
 html_extra_path = ["assets"]
 html_static_path = ["_static"]
 html_css_files = ["polypix.css"]
+html_favicon = "_static/polypix-mark-square.svg"
 html_theme_options = {
+    "logo": {
+        "image_light": "_static/polypix.svg",
+        "image_dark": "_static/polypix-dark.svg",
+        "alt_text": "Polypix",
+        "text": "Polypix",
+    },
     "repository_url": "https://github.com/JochimMaene/polypix",
     "repository_branch": "main",
     "path_to_docs": "docs",

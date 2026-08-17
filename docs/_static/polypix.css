@@ -271,3 +271,16 @@ html[data-theme="dark"] {
   padding: 0.3rem 0.55rem;
   white-space: nowrap;
 }
+
+/* The mark is portrait, so cap its height in the sidebar brand. */
+.bd-sidebar-primary .navbar-brand img,
+.bd-sidebar-primary .navbar-brand .logo__image {
+  max-height: 3rem;
+  width: auto;
+}
+
+.bd-sidebar-primary .navbar-brand {
+  align-items: center;
+  display: flex;
+  gap: 0.6rem;
+}

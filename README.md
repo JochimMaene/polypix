@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/_static/polypix-dark.svg">
+    <img src="docs/_static/polypix.svg" alt="Polypix" height="110">
+  </picture>
+</p>
+
 # Polypix
 
 Which grid cells does this region cover? Answered for millions of regions at once.
