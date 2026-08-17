@@ -34,6 +34,19 @@ coverage.counts
 That's the whole idea. `coverage[0]` is the cell IDs for the first circle,
 `coverage[1]` for the second.
 
+If you have not used HEALPix before, this is the grid those IDs refer to. It
+starts as 12 equal-area cells covering the sphere, and every step up in
+resolution splits each cell into four:
+
+```{figure} assets/generated/sphere-levels.png
+:alt: The same sphere partitioned at HEALPix resolutions 0 to 3, cell count rising from 12 to 768.
+:width: 100%
+:align: center
+
+Resolution 0 through 3. Polypix goes to 29, where a cell is about 12 mm across
+on the ground. [Resolutions](resolutions.md) has the whole table.
+```
+
 Polypix stops there, on purpose. Propagating orbits, pointing sensors,
 intersecting an ellipsoid: all of that stays in your code, or in the libraries
 you already use. Polypix picks up once you know where your regions are.
