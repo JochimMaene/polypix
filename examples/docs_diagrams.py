@@ -28,6 +28,7 @@ from examples.palette import (
     GRID_EDGE,
     LABEL,
     MISSED_FILL,
+    NAVY_DEEP,
     REGION_LINE,
 )
 
@@ -365,6 +366,63 @@ def resolution_steps(path: Path) -> None:
     save(figure, path)
 
 
+def touching_cells(resolution: int) -> dict[int, set[int]]:
+    """Return which cells share an edge, keyed by cell.
+
+    Cells sharing an edge share two corners, so counting shared corners is
+    enough and needs no neighbour lookup the library does not offer. Cells that
+    meet at a single point are deliberately not counted: a shared vertex is not
+    visible enough to read as one region, and including it makes the graph too
+    dense to colour from a small palette.
+    """
+    cells = np.arange(12 * 4**resolution, dtype=np.uint64)
+    corners = np.round(px.corners(cells, resolution), 7)
+    at_corner: dict[tuple[float, float, float], set[int]] = {}
+    for index, cell_corners in enumerate(corners):
+        for corner in cell_corners:
+            at_corner.setdefault(tuple(corner), set()).add(index)
+
+    shared_corners: dict[tuple[int, int], int] = {}
+    for group in at_corner.values():
+        for first in group:
+            for second in group:
+                if first < second:
+                    key = (first, second)
+                    shared_corners[key] = shared_corners.get(key, 0) + 1
+
+    touching: dict[int, set[int]] = {int(c): set() for c in cells}
+    for (first, second), count in shared_corners.items():
+        if count >= 2:
+            touching[first].add(second)
+            touching[second].add(first)
+    return touching
+
+
+def distinct_colors(resolution: int, palette: list[str]) -> list[str]:
+    """Assign palette entries so no two touching cells get the same one.
+
+    Greedy, worst first. A HEALPix grid is planar, so four colours always
+    suffice and the palette has room to spare.
+    """
+    touching = touching_cells(resolution)
+    assigned: dict[int, int] = {}
+    used = [0] * len(palette)
+    for cell in sorted(touching, key=lambda c: -len(touching[c])):
+        taken = {assigned[n] for n in touching[cell] if n in assigned}
+        # Take the least-used free colour, not the first one. Picking the first
+        # leaves the dark end of the palette unused and the sphere washed out.
+        choice = min(
+            (i for i in range(len(palette)) if i not in taken),
+            key=lambda i: used[i],
+        )
+        assigned[cell] = choice
+        used[choice] += 1
+    for cell, neighbours in touching.items():
+        for neighbour in neighbours:
+            assert assigned[cell] != assigned[neighbour], "adjacent cells match"
+    return [palette[assigned[cell]] for cell in sorted(assigned)]
+
+
 def sphere_levels(path: Path) -> None:
     """The whole sphere, partitioned at four resolutions.
 
@@ -388,15 +446,19 @@ def sphere_levels(path: Path) -> None:
     view /= np.linalg.norm(view)
     facing = mesh_centers @ view > 0.0
 
-    ramp = [to_rgb(c) for c in (CYAN, "#1a7290", "#14456a", "#8fe0ea", "#12607a")]
+    # Five clearly separated steps; the closest pair is 75 apart in RGB, where
+    # the previous ramp had two entries only 30 apart and put them on
+    # neighbouring cells.
+    palette = ["#d7f2f8", "#8fe0ea", CYAN, "#17607d", NAVY_DEEP]
     figure, panels = plt.subplots(
         1, 4, figsize=(7.6, 2.2), subplot_kw={"projection": "3d"}
     )
     figure.patch.set_alpha(0.0)
 
     for panel, resolution in zip(panels, (0, 1, 2, 3), strict=True):
+        assigned = distinct_colors(resolution, palette)
         parents = px.cell_at(mesh_centers[facing], resolution)
-        colors = [ramp[int(p) % len(ramp)] for p in parents]
+        colors = [to_rgb(assigned[int(p)]) for p in parents]
         panel.add_collection3d(
             Poly3DCollection(
                 mesh_corners[facing],
