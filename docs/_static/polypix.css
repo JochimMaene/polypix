@@ -1,6 +1,7 @@
+/* Derived from docs/_static/polypix.svg; examples/palette.py mirrors these. */
 :root {
-  --pst-color-primary: #315b8a;
-  --pst-color-secondary: #9f4b62;
+  --pst-color-primary: #17607d;
+  --pst-color-secondary: #a8475c;
   --pst-font-family-heading: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --pst-font-family-base-system: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --polypix-ink: #182433;

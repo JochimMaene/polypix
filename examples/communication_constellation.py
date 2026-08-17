@@ -25,6 +25,7 @@ from examples.constellation import (
     service_caps,
     write_measurements,
 )
+from examples.palette import sequential_colormap
 
 FIGURE_PATH = DOC_FIGURE_DIR / "communications-availability.png"
 MEASUREMENTS_PATH = DOC_FIGURE_DIR / "communications-availability.json"
@@ -170,7 +171,7 @@ def plot_availability(
         visible=np.ones(result.mean_visible.size, dtype=bool),
         resolution=HEALPIX_RESOLUTION,
         colorbar_label="Mean catalogued objects in view",
-        cmap="plasma",
+        cmap=sequential_colormap(),
         norm=colors.PowerNorm(gamma=0.75, vmin=0.0, vmax=maximum),
         dpi=dpi,
     )

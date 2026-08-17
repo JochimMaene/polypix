@@ -24,6 +24,7 @@ from examples.constellation import (
     swath_edges,
     write_measurements,
 )
+from examples.palette import diverging_colormap, sequential_colormap
 
 OBSERVATIONS_FIGURE_PATH = DOC_FIGURE_DIR / "earth-observation-count.png"
 REVISIT_FIGURE_PATH = DOC_FIGURE_DIR / "earth-observation-revisit.png"
@@ -193,7 +194,7 @@ def plot_observations(
         visible=visible,
         resolution=HEALPIX_RESOLUTION,
         colorbar_label="Distinct satellite observations per cell",
-        cmap="plasma",
+        cmap=sequential_colormap(),
         norm=colors.PowerNorm(gamma=0.65, vmin=1, vmax=high),
         extend="max",
         dpi=dpi,
@@ -226,7 +227,7 @@ def plot_revisit(
         visible=measured,
         resolution=HEALPIX_RESOLUTION,
         colorbar_label="Mean revisit gap (hours)",
-        cmap="viridis_r",
+        cmap=diverging_colormap(),
         norm=colors.LogNorm(vmin=low, vmax=high),
         colorbar_ticks=[t for t in (0.5, 0.75, 1, 1.5, 2, 3, 5, 8) if low <= t <= high],
         extend="both",

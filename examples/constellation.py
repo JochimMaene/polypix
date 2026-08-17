@@ -13,6 +13,14 @@ import numpy as np
 import numpy.typing as npt
 
 import polypix as px
+from examples.palette import (
+    MAP_BACKGROUND,
+    MAP_GRID,
+    MAP_MUTED,
+    MAP_PANEL,
+    MAP_RULE,
+    MAP_TEXT,
+)
 
 EARTH_RADIUS_KM = 6_378.137
 EARTH_MU_KM3_S2 = 398_600.4418
@@ -192,7 +200,7 @@ def plot_global_map(
     visible: npt.NDArray[np.bool_],
     resolution: int,
     colorbar_label: str,
-    cmap: str,
+    cmap: Any,
     norm: object,
     colorbar_ticks: Sequence[float] | None = None,
     extend: str = "neither",
@@ -203,8 +211,8 @@ def plot_global_map(
     from matplotlib.ticker import NullLocator, ScalarFormatter
 
     longitude, latitude = coordinates
-    figure = plt.figure(figsize=(12.0, 5.75), facecolor="white")
-    axes = figure.add_subplot(projection="mollweide", facecolor="#f1f4f7")
+    figure = plt.figure(figsize=(12.0, 5.75), facecolor=MAP_BACKGROUND)
+    axes = figure.add_subplot(projection="mollweide", facecolor=MAP_PANEL)
     points = axes.scatter(
         longitude[visible],
         latitude[visible],
@@ -216,9 +224,9 @@ def plot_global_map(
         linewidths=0,
         rasterized=True,
     )
-    axes.grid(color="#667788", alpha=0.28, linewidth=0.55)
-    axes.tick_params(colors="#4c5d6e", labelsize=8)
-    axes.spines["geo"].set_edgecolor("#aab4bf")
+    axes.grid(color=MAP_GRID, alpha=0.28, linewidth=0.55)
+    axes.tick_params(colors=MAP_MUTED, labelsize=8)
+    axes.spines["geo"].set_edgecolor(MAP_RULE)
     colorbar = figure.colorbar(
         points,
         ax=axes,
@@ -228,9 +236,9 @@ def plot_global_map(
         aspect=45,
         extend=extend,
     )
-    colorbar.set_label(colorbar_label, color="#253545", fontsize=10)
-    colorbar.ax.tick_params(colors="#4c5d6e", labelsize=8)
-    colorbar.outline.set_edgecolor("#aab4bf")
+    colorbar.set_label(colorbar_label, color=MAP_TEXT, fontsize=10)
+    colorbar.ax.tick_params(colors=MAP_MUTED, labelsize=8)
+    colorbar.outline.set_edgecolor(MAP_RULE)
     if colorbar_ticks is not None:
         # A logarithmic scale otherwise labels an hours axis "10^0".
         colorbar.ax.xaxis.set_minor_locator(NullLocator())

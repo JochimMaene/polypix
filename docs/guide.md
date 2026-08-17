@@ -16,29 +16,27 @@ position vectors work just as well as unit vectors.
 
 A spherical cap is a center direction plus an angular radius in radians:
 
-```python
-import numpy as np
-import polypix as px
+Polypix wants Cartesian directions, so a small helper keeps the examples in
+degrees:
 
-centers = np.array(
-    [
-        [1.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0],
-    ]
-)
-radii = np.deg2rad([5.0, 8.0])
-
-coverage = px.cover_cap(centers, radii, resolution=8)
+```{literalinclude} ../examples/docs_diagrams.py
+:language: python
+:caption: examples/docs_diagrams.py
+:start-after: "--8<-- [start:unit-vector]"
+:end-before: "--8<-- [end:unit-vector]"
 ```
 
-Both regions come back in one result, kept apart by offsets:
-
-```pycon
->>> coverage.counts
-array([1502, 3824])
->>> coverage[0].shape
-(1502,)
+```{literalinclude} ../examples/docs_diagrams.py
+:language: python
+:caption: examples/docs_diagrams.py
+:start-after: "--8<-- [start:cover-cap]"
+:end-before: "--8<-- [end:cover-cap]"
 ```
+
+Both caps come back in one result, kept apart by offsets. `coverage.counts` is
+how many cells each one got, and the `assert` above is not decoration: these
+snippets are included straight from a file the test suite runs, so the numbers
+in them cannot quietly go stale.
 
 `coverage[i]` is a read-only view of the RING cell IDs for region `i`. Every
 region operation follows the same rule: a cell is selected when its center lies
@@ -55,17 +53,11 @@ The two caps above, and the cells `cover_cap()` returned for them.
 For a convex polygon, give the vertices in boundary order. Adjacent vertices are
 joined by the shorter great-circle arc:
 
-```python
-footprint = np.array(
-    [
-        [1.0, -0.12, -0.08],
-        [1.0,  0.12, -0.08],
-        [1.0,  0.12,  0.08],
-        [1.0, -0.12,  0.08],
-    ]
-)
-
-coverage = px.cover_footprint(footprint, resolution=8)
+```{literalinclude} ../examples/docs_diagrams.py
+:language: python
+:caption: examples/docs_diagrams.py
+:start-after: "--8<-- [start:cover-footprint]"
+:end-before: "--8<-- [end:cover-footprint]"
 ```
 
 ```{figure} assets/generated/cover-footprint.svg
@@ -84,17 +76,11 @@ arrays instead.
 
 When your input is points rather than regions, use `cell_at()`:
 
-```python
-directions = np.array(
-    [
-        [1.0, 0.0, 0.0],
-        [0.0, 1.0, 1.0],
-        [-2.0, 1.0, 0.5],
-    ]
-)
-
-cells = px.cell_at(directions, resolution=8)
-cell_centers = px.centers(cells, resolution=8)
+```{literalinclude} ../examples/docs_diagrams.py
+:language: python
+:caption: examples/docs_diagrams.py
+:start-after: "--8<-- [start:cell-at]"
+:end-before: "--8<-- [end:cell-at]"
 ```
 
 ```{figure} assets/generated/cell-at.svg
@@ -114,12 +100,11 @@ started with. Only cell centers round-trip exactly:
 Two aligned boundary curves define one quadrilateral between every adjacent
 sample pair:
 
-```python
-left = np.array([[1.0, -0.1, -0.1], [1.0, -0.1, 0.1], [1.0, -0.1, 0.3]])
-right = np.array([[1.0, 0.1, -0.1], [1.0, 0.1, 0.1], [1.0, 0.1, 0.3]])
-
-swept = px.cover_sweep(left, right, resolution=8)
-assert len(swept) == 2
+```{literalinclude} ../examples/docs_diagrams.py
+:language: python
+:caption: examples/docs_diagrams.py
+:start-after: "--8<-- [start:cover-sweep]"
+:end-before: "--8<-- [end:cover-sweep]"
 ```
 
 ```{figure} assets/generated/cover-sweep.svg

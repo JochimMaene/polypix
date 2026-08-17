@@ -20,20 +20,21 @@ import numpy.typing as npt
 
 import polypix as px
 from examples.constellation import DOC_FIGURE_DIR
+from examples.palette import (
+    COVERED_CENTER,
+    COVERED_FILL,
+    GRID_CENTER,
+    GRID_EDGE,
+    LABEL,
+    MISSED_FILL,
+    REGION_LINE,
+)
 
 # Chosen so a diagram holds roughly forty cells: large enough to see one, small
 # enough that drawing a flat longitude/latitude patch stays honest.
 RESOLUTION = 4
 WINDOW_LON = (-17.0, 17.0)
 WINDOW_LAT = (-13.0, 13.0)
-
-GRID_EDGE = "#93a1b0"
-GRID_CENTER = "#aab4c0"
-COVERED_FILL = "#4a90d9"
-COVERED_CENTER = "#1b6ca8"
-MISSED_FILL = "#e0a33c"
-REGION_LINE = "#d1495b"
-LABEL = "#7a8798"
 
 
 def to_lonlat(vectors: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
@@ -48,13 +49,20 @@ def from_lonlat(
     latitude_deg: npt.ArrayLike,
 ) -> npt.NDArray[np.float64]:
     """Return unit vectors for longitudes and latitudes in degrees."""
-    longitude = np.radians(np.asarray(longitude_deg, dtype=np.float64))
-    latitude = np.radians(np.asarray(latitude_deg, dtype=np.float64))
-    cosine = np.cos(latitude)
+    return np.asarray(unit_vector(longitude_deg, latitude_deg), dtype=np.float64)
+
+
+# --8<-- [start:unit-vector]
+def unit_vector(lon_deg, lat_deg):
+    """Cartesian directions for longitudes and latitudes in degrees."""
+    lon, lat = np.radians(lon_deg), np.radians(lat_deg)
     return np.stack(
-        (cosine * np.cos(longitude), cosine * np.sin(longitude), np.sin(latitude)),
+        [np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)],
         axis=-1,
     )
+
+
+# --8<-- [end:unit-vector]
 
 
 def window_cells(resolution: int) -> npt.NDArray[np.uint64]:
@@ -219,10 +227,12 @@ def center_sampling(path: Path) -> None:
 
 def cover_cap(path: Path) -> None:
     """Two caps of different radii and the cells each selects."""
-    specs = [(-7.5, 3.0, 6.0), (8.0, -4.0, 4.0)]
-    centers = from_lonlat([lon for lon, _, _ in specs], [lat for _, lat, _ in specs])
-    radii = np.radians([radius for _, _, radius in specs])
-    coverage = px.cover_cap(centers, radii, RESOLUTION)
+    # --8<-- [start:cover-cap]
+    lon, lat, radius_deg = [-7.5, 8.0], [3.0, -4.0], [6.0, 4.0]
+
+    coverage = px.cover_cap(unit_vector(lon, lat), np.radians(radius_deg), resolution=4)
+    assert coverage.counts.tolist() == [9, 4]
+    # --8<-- [end:cover-cap]
 
     figure, axes = new_axes()
     draw_grid(
@@ -231,18 +241,20 @@ def cover_cap(path: Path) -> None:
         RESOLUTION,
         covered={int(c) for c in coverage.cells},
     )
-    for lon, lat, radius in specs:
-        outline(axes, cap_outline(lon, lat, radius))
+    for cap in zip(lon, lat, radius_deg, strict=True):
+        outline(axes, cap_outline(*cap))
     save(figure, path)
 
 
 def cover_footprint(path: Path) -> None:
     """A convex polygon and the cells it selects."""
-    vertices_lonlat = [(-9.0, -6.0), (7.0, -8.0), (11.0, 4.0), (-2.0, 8.0)]
-    footprint = from_lonlat(
-        [lon for lon, _ in vertices_lonlat], [lat for _, lat in vertices_lonlat]
-    )
-    coverage = px.cover_footprint(footprint, RESOLUTION)
+    # --8<-- [start:cover-footprint]
+    lon = [-9.0, 7.0, 11.0, -2.0]
+    lat = [-6.0, -8.0, 4.0, 8.0]
+
+    coverage = px.cover_footprint(unit_vector(lon, lat), resolution=4)
+    assert len(coverage) == 1
+    # --8<-- [end:cover-footprint]
 
     figure, axes = new_axes()
     draw_grid(
@@ -251,18 +263,21 @@ def cover_footprint(path: Path) -> None:
         RESOLUTION,
         covered={int(c) for c in coverage.cells},
     )
-    closed = np.array([*vertices_lonlat, vertices_lonlat[0]], dtype=np.float64)
-    outline(axes, closed)
+    outline(axes, np.array([*zip(lon, lat, strict=True), (lon[0], lat[0])]))
     save(figure, path)
 
 
 def cover_sweep(path: Path) -> None:
     """A sampled sweep, its quadrilaterals, and the cells they select."""
+    # --8<-- [start:cover-sweep]
     track_lon = np.linspace(-13.0, 13.0, 7)
     track_lat = 5.0 * np.sin(np.radians(track_lon * 7.0))
-    left = from_lonlat(track_lon, track_lat + 3.2)
-    right = from_lonlat(track_lon, track_lat - 3.2)
-    coverage = px.cover_sweep(left, right, RESOLUTION)
+
+    left = unit_vector(track_lon, track_lat + 3.2)
+    right = unit_vector(track_lon, track_lat - 3.2)
+    coverage = px.cover_sweep(left, right, resolution=4)
+    assert len(coverage) == len(track_lon) - 1
+    # --8<-- [end:cover-sweep]
 
     figure, axes = new_axes()
     draw_grid(
@@ -289,10 +304,17 @@ def cover_sweep(path: Path) -> None:
 
 def cell_at(path: Path) -> None:
     """Scattered directions, the cell each lands in, and that cell's centre."""
-    points = np.array([(-11.0, 6.0), (-3.0, -7.0), (5.0, 2.0), (12.0, -9.0)])
-    directions = from_lonlat(points[:, 0], points[:, 1])
-    cells = px.cell_at(directions, RESOLUTION)
-    centers = to_lonlat(px.centers(cells, RESOLUTION))
+    # --8<-- [start:cell-at]
+    lon = [-11.0, -3.0, 5.0, 12.0]
+    lat = [6.0, -7.0, 2.0, -9.0]
+
+    cells = px.cell_at(unit_vector(lon, lat), resolution=4)
+    cell_centers = px.centers(cells, resolution=4)
+    assert cells.shape == (4,) and cell_centers.shape == (4, 3)
+    # --8<-- [end:cell-at]
+
+    points = np.stack([lon, lat], axis=-1)
+    centers = to_lonlat(cell_centers)
 
     figure, axes = new_axes()
     draw_grid(
