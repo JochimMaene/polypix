@@ -98,6 +98,7 @@ wheel = "maturin build --release --out dist"
 docs-figures = "MPLBACKEND=Agg MPLCONFIGDIR=.cache/matplotlib python -m examples.documentation_assets"
 docs-prepare = { cmd = "sphinx-build -M clean docs site", depends-on = ["docs-figures"] }
 docs-build = { cmd = "sphinx-build --fail-on-warning --keep-going -b html docs site", depends-on = ["docs-prepare"] }
+docs-doctest = { cmd = "sphinx-build -b doctest docs build/doctest", depends-on = ["docs-prepare"] }
 docs-serve = { cmd = "sphinx-autobuild --fail-on-warning --watch examples docs site", depends-on = ["docs-prepare"] }
 docs-communications = "MPLBACKEND=Agg python examples/communication_constellation.py"
 docs-earth-observation = "MPLBACKEND=Agg python examples/earth_observation_constellation.py"

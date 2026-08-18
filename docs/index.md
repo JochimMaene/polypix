@@ -8,7 +8,12 @@ html_theme.sidebar_secondary.remove: true
 :::{container} polypix-hero
 <p class="tagline">Which grid cells does this region cover? Answered for a whole batch in one call.</p>
 
-<p class="scope">Give it circles, polygons, or a swept sensor path. Get back the HEALPix cells they cover, as NumPy arrays.</p>
+{.polypix-badges}
+[![PyPI](https://img.shields.io/pypi/v/polypix.svg)](https://pypi.org/project/polypix/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-3776AB.svg?logo=python&logoColor=white)](https://pypi.org/project/polypix/)
+[![License](https://img.shields.io/pypi/l/polypix.svg)](https://www.apache.org/licenses/LICENSE-2.0)
+[![Tests](https://github.com/JochimMaene/polypix/actions/workflows/run-tests.yml/badge.svg)](https://github.com/JochimMaene/polypix/actions/workflows/run-tests.yml)
+[![Benchmarks](https://github.com/JochimMaene/polypix/actions/workflows/codspeed.yml/badge.svg)](https://github.com/JochimMaene/polypix/actions/workflows/codspeed.yml)
 
 <p class="polypix-actions"><a href="guide.html">Get started</a><a href="api.html">API reference</a></p>
 
@@ -21,15 +26,22 @@ Python is slow, and the geometry gets awkward at the poles and the date line.
 
 Two circles, one with a 5° radius and one with 8°:
 
-```{literalinclude} ../examples/docs_diagrams.py
-:language: python
-:dedent: 4
-:start-after: "--8<-- [start:quickstart]"
-:end-before: "--8<-- [end:quickstart]"
+```{doctest}
+>>> import numpy as np
+>>> import polypix as px
+
+>>> centers = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+>>> radii = np.deg2rad([5.0, 8.0])
+>>> coverage = px.cover_cap(centers, radii, resolution=8)
+
+>>> coverage.counts
+array([1502, 3824])
+>>> coverage[0][:4]
+array([358912, 358913, 358914, 359934], dtype=uint64)
 ```
 
-That covers 1,502 and 3,824 cells. `coverage[0]` holds the IDs for the first
-circle, `coverage[1]` the second.
+One call, both circles. `coverage[0]` holds the cell IDs for the first,
+`coverage[1]` the second.
 
 New to HEALPix? This is the grid those IDs refer to. It starts as 12 equal-area
 cells and splits each one into four at every step up in resolution:

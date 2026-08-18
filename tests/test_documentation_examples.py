@@ -1,9 +1,10 @@
 """Guards against documentation drifting away from runnable code.
 
-The documentation never hand-copies a code snippet. Every published example is
-pulled out of a real module with a `literalinclude` marker, so these tests only
-have to check two things: that the modules still run, and that the markers the
-pages ask for still exist.
+Published examples come from one of two places, neither hand-copied: a real
+module pulled in with a `literalinclude` marker, or a doctest block that
+`pixi run --environment docs docs-doctest` executes. These tests cover the
+first kind, checking that the modules still run and that the markers the pages
+ask for still exist.
 """
 
 from __future__ import annotations

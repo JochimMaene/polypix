@@ -198,23 +198,6 @@ def outline(axes: Any, points: npt.NDArray[np.float64]) -> None:
     axes.plot(points[:, 0], points[:, 1], color=REGION_LINE, linewidth=2.0, zorder=5)
 
 
-def quickstart_example() -> None:
-    """Run the landing-page example so its printed result cannot go stale."""
-    # --8<-- [start:quickstart]
-    import numpy as np
-
-    import polypix as px
-
-    centers = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
-    radii = np.deg2rad([5.0, 8.0])
-
-    coverage = px.cover_cap(centers, radii, resolution=8)
-    # --8<-- [end:quickstart]
-    # Guards the counts quoted on the landing page. Kept outside the published
-    # snippet so a first example reads as an example, not as a test.
-    assert coverage.counts.tolist() == [1502, 3824]
-
-
 def center_sampling(path: Path) -> None:
     """A cap, the cells it selects, and one cell it overlaps but misses."""
     cells = window_cells(RESOLUTION)
@@ -504,7 +487,6 @@ def sphere_levels(path: Path) -> None:
 
 
 def main() -> None:
-    quickstart_example()
     center_sampling(DOC_FIGURE_DIR / "center-sampling.svg")
     cover_cap(DOC_FIGURE_DIR / "cover-cap.svg")
     cover_footprint(DOC_FIGURE_DIR / "cover-footprint.svg")

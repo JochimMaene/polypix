@@ -12,6 +12,7 @@ release = package_version("polypix")
 extensions = [
     "myst_parser",
     "sphinx.ext.autodoc",
+    "sphinx.ext.doctest",
     "sphinx.ext.autosummary",
     "sphinx.ext.intersphinx",
 ]
