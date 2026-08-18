@@ -2,8 +2,18 @@
 
 ## Resolution and cell IDs
 
-Polypix uses fixed-resolution HEALPix RING ordering, and calls the HEALPix order
-`resolution`:
+HEALPix is a Hierarchical Equal Area isoLatitude Pixelation of a sphere, and all
+three parts of that name show up in how you use it. Cells subdivide into four,
+every cell covers exactly the same solid angle, and cell centers sit on rings of
+constant latitude.
+
+Equal area is what lets you count hits per cell and compare them without
+weighting by cell size. The rings are why Polypix returns RING ordering: a
+region's coverage falls into a contiguous span on each ring it touches, which is
+also why coverage cost tracks a region's latitude extent more than its shape.
+
+Polypix uses fixed-resolution RING ordering throughout, and calls the HEALPix
+order `resolution`:
 
 ```text
 nside      = 2 ** resolution
