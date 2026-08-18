@@ -139,6 +139,5 @@ and the tests and benchmarks that cover it.
 :hidden:
 :maxdepth: 1
 
-scope
 decisions
 ```

@@ -9,5 +9,4 @@ maintainer evidence rather than user instructions:
 - [API surface beyond constellation examples](https://github.com/JochimMaene/polypix/blob/main/decisions/api-surface-beyond-constellations.md)
 
 For what Polypix actually supports, see the [user guide](concepts.md) and the
-[API reference](api.md). For where the boundaries sit, see
-[Scope and stability](scope.md).
+[API reference](api.md).

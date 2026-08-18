@@ -151,10 +151,3 @@ site_counts = px.count_caps_per_cell(
 - [API reference](api.md) is the complete call contract.
 - [Interoperability](interoperability.md) covers handing data to other HEALPix
   and astronomy packages.
-
-```{toctree}
-:hidden:
-:maxdepth: 1
-
-install
-```

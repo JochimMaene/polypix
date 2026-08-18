@@ -1,4 +1,4 @@
-# Earth-observation coverage and revisit
+# How often does a satellite fly over?
 
 This case study follows ten idealized satellites for ten days. Each one-minute
 interval becomes a quadrilateral between two sampled swath edges. Polypix first

@@ -92,6 +92,7 @@ stays in your code, or in the libraries you already use.
 :maxdepth: 2
 
 guide
+install
 concepts
 ```
 
@@ -109,5 +110,6 @@ examples/earth-observation-constellation
 :maxdepth: 2
 
 api
+release-notes
 development
 ```
