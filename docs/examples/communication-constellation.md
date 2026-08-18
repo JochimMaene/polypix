@@ -1,83 +1,66 @@
-# Starlink snapshot visibility
+# How many satellites can you see?
 
-How many catalogued Starlink objects can each ground cell geometrically see at
-once? This example propagates a permanent [CelesTrak `STARLINK` snapshot][data]
-for one hour and maps the mean simultaneous object count above a 25° elevation
-mask.
+This case study maps how many catalogued Starlink objects are geometrically
+visible above a 25° elevation mask. It uses a pinned TLE catalog, propagates one
+hour at one-minute cadence, and accumulates exact spherical caps directly into
+a HEALPix count map.
 
-This is a geometric visibility study, not a map of operational Starlink
-service. It does not model operational status, beam assignment, capacity,
-gateways, terrain, atmosphere, or user terminals.
+This is catalog geometry, not Starlink service. Nothing here knows about
+satellite status, beams, capacity, gateways, terrain, or the atmosphere.
 
-Everything below is produced by running the [example source][source] during this
-documentation build.
+## Result
 
-```python exec="on" html="on" id="communication-constellation-result"
-from examples.communication_constellation import documentation_html
-
-print(documentation_html())
+```{raw} html
+:file: ../assets/generated/communications-availability.html
 ```
 
-Timings are single wall-clock measurements from the documentation builder, not
-controlled benchmarks. Plotting is listed separately because Matplotlib, not
-Polypix, dominates it.
+The timing table is one wall-clock run on the documentation builder. It is
+useful for seeing where this example spends time; it is not a controlled
+benchmark.
 
-## Model
+## Method
 
 | Parameter | Value |
 | --- | ---: |
-| Catalogued objects | 10,771 |
-| Catalog snapshot | CelesTrak `STARLINK`, 2026-07-29 |
-| Propagator | Astroz 0.12.0, SGP4 |
-| Analysis start | 2026-07-29 00:00 UTC |
-| Duration | 1 hour |
-| Sampling cadence | 60 s |
-| Time samples | 61 |
+| Catalog | 10,771 objects, pinned 2026-07-29 |
+| Propagation | Astroz 0.12.0, SGP4 |
+| Analysis window | 1 hour from 2026-07-29 00:00 UTC |
+| Cadence | 60 seconds, 61 samples |
 | Minimum elevation | 25° |
-| Visibility geometry | Exact spherical caps |
-| HEALPix resolution | 6 (49,152 cells) |
+| Grid | HEALPix resolution 6, 49,152 cells |
 
-The committed [TLE snapshot][snapshot] is the permanent input to this example.
-The documentation build never contacts CelesTrak, and the snapshot is not
-intended to be refreshed. Fixing both the catalog and analysis time makes the
-map deterministic and keeps a third-party network service out of CI.
+The TLE snapshot is committed to the repository. Pinning the catalog and the
+analysis time keeps this reproducible and keeps the docs build off the network.
 
-At each of the 61 timestamps a cell counts one satellite when its center falls
-inside that object's visibility footprint. The plotted value is the mean of
-those 61 instantaneous counts — not the number of distinct objects seen during
-the hour.
+Astroz produces Earth-fixed positions for every object and timestamp:
 
-A 25° minimum elevation defines a spherical cap around each sub-satellite
-point. Each exact cap radius follows from that object's propagated
-Earth-centered distance and a spherical Earth.
-
-## Satellite positions
-
-Astroz parses the pinned TLE catalog and propagates all 61 timestamps into one
-small dense batch of Earth-fixed positions:
-
-```python title="examples/communication_constellation.py"
---8<-- "examples/communication_constellation.py:communications-orbits"
+```{literalinclude} ../../examples/communication_constellation.py
+:language: python
+:caption: examples/communication_constellation.py
+:start-after: "--8<-- [start:communications-orbits]"
+:end-before: "--8<-- [end:communications-orbits]"
 ```
 
-## Counting visibility
+At each timestamp, the 10,771 altitude-dependent service caps are accumulated
+with one `count_caps_per_cell()` call:
 
-`count_caps_per_cell()` processes all 10,771 caps at one timestamp as a batch.
-It accumulates analytic RING spans directly into a 49,152-cell count array,
-without materializing the roughly 2.25 million repeated cap-cell IDs at that
-timestamp. Peak analysis memory therefore stays small across all 657,031 caps:
-
-```python title="examples/communication_constellation.py"
---8<-- "examples/communication_constellation.py:communications-coverage"
+```{literalinclude} ../../examples/communication_constellation.py
+:language: python
+:caption: examples/communication_constellation.py
+:start-after: "--8<-- [start:communications-coverage]"
+:end-before: "--8<-- [end:communications-coverage]"
 ```
 
-## Running it
+That count consumes analytic RING spans directly. It never builds the roughly
+2.25 million cap–cell IDs explicit coverage would hand back at every sample.
+
+## Run the example
 
 ```bash
 pixi run --environment docs docs-communications
 python examples/communication_constellation.py --output PATH
 ```
 
-[source]: https://github.com/JochimMaene/polypix/blob/main/examples/communication_constellation.py
-[snapshot]: https://github.com/JochimMaene/polypix/blob/main/examples/data/starlink-2026-07-29.tle
-[data]: https://celestrak.org/NORAD/elements/gp.php?GROUP=STARLINK&FORMAT=TLE
+[Full source](https://github.com/JochimMaene/polypix/blob/main/examples/communication_constellation.py)
+· [Pinned TLE snapshot](https://github.com/JochimMaene/polypix/blob/main/examples/data/starlink-2026-07-29.tle)
+· [CelesTrak](https://celestrak.org/NORAD/elements/gp.php?GROUP=STARLINK&FORMAT=TLE)

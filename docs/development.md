@@ -4,211 +4,141 @@
 
 ```text
 polypix/
-  __init__.py        Python API and input validation
-  _core.pyi          private compiled-extension typing stub
+  __init__.py         Python API and input validation
+  _core.pyi           private compiled-extension typing stub
   py.typed            PEP 561 marker
 rust/
   access.rs           segmented occupancy run and gap reduction
   geometry.rs         convex spherical-polygon validation
   lib.rs              PyO3 bindings and native-buffer safety
   ring.rs             HEALPix RING coverage and threading
-tests/
-  test_polypix.py     behavior tests
-  test_ring_geometry.py  independent HEALPix geometry fixtures
-benchmarks/
-  test_polypix_benchmarks.py  CodSpeed public-call regression benchmarks
-examples/
-  constellation.py                    shared orbit and plotting helpers
-  communication_constellation.py      one-hour Starlink snapshot visibility
-  data/                                permanent example input snapshots
-  earth_observation_constellation.py  ten-day observation and revisit analysis
-  documentation_assets.py             pre-build figure and measurement step
-tools/
-  generate_ring_geometry_fixtures.py  external-oracle fixture generator
-decisions/
-  owned-healpix-kernel.md          architecture and licensing evidence
-  cap-and-occupancy-primitives.md  measured cap/occupancy scope evidence
-  api-surface-beyond-constellations.md  pre-1.0 API discovery gate
-docs/
-  *.md                Zensical documentation pages
+tests/                behavior tests and independent geometry fixtures
+benchmarks/           CodSpeed public-call regression benchmarks
+examples/             the two documented case studies and their shared helpers
+tools/                external-oracle fixture generation and CI guards
+decisions/            architecture decision records and the project goal
+docs/                 Sphinx/MyST documentation sources
 ```
 
 ## Build model
 
 Polypix is a mixed Python/Rust project built by Maturin. PyO3 exposes the Rust
-kernel as `polypix._core`; the Python package provides the public NumPy-first
-API. The focused HEALPix RING kernel is owned by Polypix and has no HEALPix
-runtime dependency.
+kernel as `polypix._core`, and the Python package wraps it in the NumPy-first
+public API. The RING kernel is Polypix's own, with no HEALPix runtime
+dependency.
 
-PyPI wheels contain the compiled kernel. NumPy is the only runtime dependency:
-HEALPix C++, CFITSIO, CMake, and a C++ compiler are not part of the build or
-runtime dependency chain.
+Wheels ship the compiled kernel, and NumPy is the only runtime dependency.
+HEALPix C++, CFITSIO, CMake, and a C++ compiler appear nowhere in the build or
+runtime chain.
 
 ## Common commands
 
-Run tests:
+| Command | Does |
+| --- | --- |
+| `pixi run test` | Run the test suite |
+| `pixi run --environment test lint` | Ruff, formatting, mypy, and stub checks |
+| `pixi run maturin develop` | Build the extension in place |
+| `pixi run wheel` | Build a release-mode wheel |
+| `pixi run --environment bench bench` | Run the CodSpeed benchmarks locally |
+| `pixi run --environment docs docs-build` | Build the documentation |
+| `pixi run --environment docs docs-doctest` | Test interactive documentation examples |
+| `pixi run --environment docs docs-serve` | Preview with autobuild |
+| `pixi run --environment docs docs-figures` | Regenerate the example figures |
 
-```bash
-pixi run test
-```
+## Documentation
 
-Run Rust/Python linting, formatting, typing, and stub checks:
+Sources live in `docs/`, configured by `docs/conf.py`. Sphinx renders the
+Markdown through MyST with sphinx-book-theme.
 
-```bash
-pixi run --environment test lint
-```
+`docs-build` and `docs-serve` both run `docs-figures` first. That step executes
+both case studies and writes their maps and measurement tables into
+`docs/assets/generated/`, which the example pages then include directly, so the
+figures have to exist before Sphinx runs. After changing an example, regenerate
+them yourself; `docs-serve` will not do it on reload.
 
-Build the extension in the development environment:
-
-```bash
-pixi run maturin develop
-```
-
-Build documentation:
-
-```bash
-pixi run --environment docs docs-build
-```
-
-The communications example uses the docs-only Astroz binary dependency. The
-published documentation build runs on supported Linux x86-64 with glibc 2.36
-or newer; this does not change Polypix's runtime platform support.
-
-Run either standalone constellation example, writing its maps to the working
-directory:
+Each example also runs standalone, writing its maps to the working directory:
 
 ```bash
 pixi run --environment docs docs-communications
 pixi run --environment docs docs-earth-observation
 ```
 
-`docs-build` and `docs-serve` first run `docs-figures`, which executes both
-examples and writes their maps and measurements to `docs/assets/generated/`.
-The example pages then embed that output. Zensical collects the files under
-`docs/` before rendering pages, so a figure written while a page renders is
-never copied into the built site; the examples have to run first. Regenerate the
-figures with `pixi run --environment docs docs-figures` after changing an
-example, because `docs-serve` does not re-run them on reload.
+The communications example pulls in Astroz, a docs-only binary dependency. The
+published build runs on Linux x86-64 with glibc 2.36 or newer, which says
+nothing about Polypix's own runtime support.
 
-Preview documentation:
+`.github/workflows/docs.yml` builds the same site on pull requests and publishes
+`site/` to GitHub Pages on pushes to `main`.
 
-```bash
-pixi run --environment docs docs-serve
-```
+## Benchmarks and fixtures
 
-Build a release-mode wheel:
+CodSpeed reports deterministic instruction regressions for single-threaded
+benchmarks on pull requests and pushes to `main`. Benchmarks marked `parallel`
+are excluded, because Valgrind simulation serializes worker threads; the same
+workflow runs `tools/check_parallel_speedup.py` natively as a coarse wall-time
+guard on multicore scaling.
 
-```bash
-pixi run wheel
-```
+Cross-library benchmarks live in a separate comparison repository that is not
+public yet. Until it is linked here, this repository makes no cross-library
+performance claim.
 
-Run the CodSpeed benchmark suite locally:
-
-```bash
-pixi run --environment bench bench
-```
-
-Cross-library benchmarks and their optional dependencies live in a separate
-comparison repository. That repository is not public yet. Until it
-is linked here, this repository makes no public cross-library performance
-claim; it keeps only focused CodSpeed regression benchmarks and product
-correctness tests.
-
-The broad independent center-and-corner fixtures can be regenerated in a
-temporary environment containing `healpy`:
+The independent center-and-corner fixtures regenerate in a temporary environment
+containing `healpy`:
 
 ```bash
 python tools/generate_ring_geometry_fixtures.py
 ```
 
-`healpy` remains an external oracle, not a development or runtime dependency.
-
-CodSpeed simulation reports deterministic instruction regressions for
-single-threaded benchmarks through `.github/workflows/codspeed.yml` on pull
-requests and pushes to `main`. Benchmarks marked `parallel` are excluded
-because Valgrind simulation serializes worker threads. The same workflow runs
-`tools/check_parallel_speedup.py` natively as a coarse wall-time guard for
-actual multicore scaling.
-
-Architecture and licensing rationale is retained in the repository's
-`decisions/` directory and linked from the documentation. Decision records are
-maintainer evidence, not user-facing performance instructions.
+`healpy` is an external oracle, not a dependency of any kind.
 
 ## Release builds
 
-`.github/workflows/release.yml` uses Maturin to build a source distribution and
-CPython 3.12 stable-ABI wheels for:
+`.github/workflows/release.yml` builds a source distribution and CPython 3.12
+stable-ABI wheels for Linux x86-64 and ARM64, macOS 11+ on x86-64 and ARM64, and
+Windows x86-64. Pull requests build a smaller native-platform smoke matrix;
+releases and manual runs build everything.
 
-- Linux x86-64 and ARM64;
-- macOS 11 or newer on x86-64 and ARM64;
-- Windows x86-64.
+The version comes from `Cargo.toml`. Keep the Polypix entry in `Cargo.lock` in
+step with it.
 
-Each release wheel contains the Rust kernel. Pull requests build and test a
-smaller native-platform smoke matrix without importing from the source checkout;
-releases and manual workflow runs build the complete platform matrix.
-
-Publishing is release-driven. Publishing a GitHub release builds the artifacts
-and uploads them to PyPI through trusted publishing.
-
-## Release procedure
-
-The package version comes from `Cargo.toml`; keep its Polypix entry in
-`Cargo.lock` synchronized.
-
-1. Prepare a release pull request that sets the version, dates and completes the
-   matching `CHANGELOG.md` section, and updates license notices when needed. Run
-   the test, lint, and documentation commands above, then merge only after all
-   required workflows pass.
-2. On `main`, manually run **Build and publish** as a dry run. Manual runs build
-   and test the complete wheel matrix but do not publish to PyPI.
-3. Create a draft GitHub release tagged `v<version>` at the exact release
-   commit, using the changelog section as its notes. Publishing the release
-   rebuilds the artifacts and uploads them to PyPI through trusted publishing.
-4. When the workflow succeeds, verify the release from a clean environment:
+1. Open a release pull request setting the version, dating and completing the
+   `CHANGELOG.md` section, and updating license notices if they changed. Run the
+   test, lint, and docs commands, and merge only once the required workflows
+   pass.
+2. On `main`, run **Build and publish** manually as a dry run. Manual runs build
+   and test the full wheel matrix without publishing.
+3. Draft a GitHub release tagged `v<version>` at the release commit, using the
+   changelog section as its notes. Publishing it rebuilds the artifacts and
+   uploads them to PyPI through trusted publishing.
+4. Verify from a clean environment:
 
    ```bash
    python -m pip install --no-cache-dir polypix==<version>
    python -c "import polypix as px; print(px.__version__)"
    ```
 
-Check the PyPI metadata and wheel set. Published files are immutable; corrections
-require a new patch release.
-
-## Documentation publishing
-
-The documentation source lives in `docs/` and is configured by
-`zensical.toml`. Build it locally with:
-
-```bash
-pixi run --environment docs docs-build
-```
-
-The `.github/workflows/docs.yml` workflow builds the same site on pull requests
-and publishes `site/` to GitHub Pages on pushes to `main`.
+Check the PyPI metadata and wheel set before you walk away. Published files are
+immutable, so a mistake means a new patch release.
 
 ## License and notices
 
-Polypix is distributed under Apache-2.0. The cell-corner transform includes a
-small BSD-3-Clause adaptation from Astrometry.net. Keep these files current
-whenever native dependencies or adapted code change:
-
-- `LICENSE`;
-- `THIRD_PARTY_NOTICES.md`;
-- `Cargo.lock`.
-
-Release maintainers should check the locked Rust dependency graph before
-publishing and preserve every required third-party attribution.
+Apache-2.0. The cell-corner transform includes a small BSD-3-Clause adaptation
+from Astrometry.net. Keep `LICENSE`, `THIRD_PARTY_NOTICES.md`, and `Cargo.lock`
+current whenever native dependencies or adapted code change, and check the
+locked Rust dependency graph before publishing.
 
 ## Design constraints
 
-Keep the Python layer thin:
+Keep the Python layer thin: normalize inputs and build results in Python, do the
+expensive geometry, HEALPix, and parallel work in Rust, and return NumPy arrays
+rather than Python lists for anything large.
 
-- normalize ergonomic array inputs and construct results in Python;
-- perform expensive geometry, HEALPix, and parallel work in Rust;
-- return NumPy arrays rather than Python lists for large results.
+Adding a public function means updating `polypix/__init__.py`, `docs/api.md`,
+and the tests and benchmarks that cover it.
 
-When adding public functions, update:
+```{toctree}
+:hidden:
+:maxdepth: 1
 
-- `polypix/__init__.py`;
-- `docs/api.md`;
-- tests and benchmarks where applicable.
+decisions
+```

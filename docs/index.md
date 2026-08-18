@@ -1,88 +1,154 @@
+---
+html_theme.sidebar_secondary.remove: true
+---
+
+{.polypix-title}
 # Polypix
 
-Polypix maps directions to HEALPix RING cells and rasterizes exact spherical
-caps, convex footprints, and paired-edge sweeps by center inclusion. Fused cap
-counts and segmented occupancy summaries avoid enormous intermediate arrays in
-measured workloads.
+:::{container} polypix-hero
+<p class="tagline">Batch coverage of satellite footprints, swaths, and survey fields on an equal-area grid.</p>
 
-Use it when the spherical region geometry already exists and throughput matters.
-Satellite and sensor coverage is the leading application, though the vectors
-may belong to any spherical frame. Polypix does not model orbits, attitude,
-sensors, clocks, ellipsoids, or coordinate reference systems.
+{.polypix-badges}
+[![PyPI](https://img.shields.io/pypi/v/polypix.svg)](https://pypi.org/project/polypix/)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-3776AB.svg?logo=python&logoColor=white)](https://pypi.org/project/polypix/)
+[![License](https://img.shields.io/pypi/l/polypix.svg)](https://www.apache.org/licenses/LICENSE-2.0)
+[![Tests](https://github.com/JochimMaene/polypix/actions/workflows/run-tests.yml/badge.svg)](https://github.com/JochimMaene/polypix/actions/workflows/run-tests.yml)
+[![Benchmarks](https://github.com/JochimMaene/polypix/actions/workflows/codspeed.yml/badge.svg)](https://github.com/JochimMaene/polypix/actions/workflows/codspeed.yml)
+:::
 
-## Install
+Polypix turns batches of spherical regions into standard HEALPix cell IDs. Use
+the result for coverage maps, visibility counts, and revisit analysis.
+
+## Why Polypix
+
+- **Batch-first.** Arrays of regions go in; compact NumPy arrays come back.
+- **Equal area.** Counts can be compared without latitude weighting.
+- **Native execution.** Large calls can use multiple cores while the GIL is
+  released.
+- **Small runtime.** NumPy is the only dependency. Wheels include the native
+  kernel.
+
+## The grid
+
+Polypix answers on a HEALPix grid. It divides the sphere into cells of
+**exactly equal area**, starting from 12 cells and splitting each one into four
+at every step up in resolution. Each cell has an integer ID, and those IDs are
+what Polypix gives back.
+
+Because the cells have equal area, per-cell counts can be compared directly.
+
+```{figure} assets/generated/sphere-levels.png
+:alt: The same sphere partitioned at HEALPix resolutions 0 to 3, cell count rising from 12 to 768.
+:width: 100%
+:align: center
+
+Resolutions 0 to 3. Polypix goes to 29, where a cell is about 12 mm across on
+the ground. [Resolutions](resolutions.md) has the whole table.
+```
+
+## A first example
+
+Here are two circular ground footprints centered near Brussels and Bogotá.
+Polypix takes Cartesian directions, so the example first converts longitude and
+latitude:
+
+```{doctest}
+>>> import numpy as np
+>>> import polypix as px
+
+>>> def unit_vector(lon_deg, lat_deg):
+...     lon, lat = np.radians(lon_deg), np.radians(lat_deg)
+...     return np.stack(
+...         [np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)],
+...         axis=-1,
+...     )
+
+>>> centers = unit_vector([4.4, -74.1], [50.8, 4.6])   # Brussels, Bogota
+>>> radii = np.deg2rad([5.0, 8.0])                     # footprint half-angles
+
+>>> coverage = px.cover_cap(centers, radii, resolution=8)
+>>> coverage.counts
+array([1500, 3829])
+```
+
+At resolution 8 a nominal cell is about 25 km across. The cell IDs for each
+footprint are available as `coverage[0]` and `coverage[1]`:
+
+```{doctest}
+>>> coverage[0][:4]
+array([68085, 68086, 68087, 68088], dtype=uint64)
+```
+
+These are standard HEALPix RING indices in a NumPy `uint64` array.
+
+To run that yourself:
 
 ```bash
-python -m pip install polypix
+pip install polypix
 ```
 
-Wheels cover CPython 3.12+ on Linux, macOS, and Windows. See
-[Install](install.md).
+NumPy is the only runtime dependency. [Installation](install.md) covers wheels
+and source builds; [Getting started](guide.md) walks through the other region
+shapes.
 
-## Quick start
+## What that looks like at scale
 
-```python
-import numpy as np
-import polypix as px
+Two executable studies show the same operations at constellation scale.
 
-lon, lat = np.radians([[-5.0, 12.0, 10.0, -6.0], [-5.0, -4.0, 9.0, 7.0]])
-footprint = np.stack(
-    [np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)],
-    axis=-1,
-)
+<div class="example-gallery">
+  <a class="example-card" href="examples/communication-constellation.html">
+    <img src="generated/communications-availability.png" alt="Global Starlink visibility map">
+    <div>
+      <h2>How many satellites can you see?</h2>
+      <p>A one-hour Starlink snapshot, mapped cell by cell from real orbital data.</p>
+    </div>
+  </a>
+  <a class="example-card" href="examples/earth-observation-constellation.html">
+    <img src="generated/earth-observation-count.png" alt="Global Earth-observation count map">
+    <div>
+      <h2>How often does a satellite fly over?</h2>
+      <p>Ten days of Earth-observation coverage, mapped as revisit time.</p>
+    </div>
+  </a>
+</div>
 
-coverage = px.cover_footprint(footprint, resolution=8)
+## What Polypix leaves to you
+
+A cell counts as covered when its center falls inside your region. Polypix does
+not return every cell touched by the boundary.
+[Center-sampled coverage](concepts.md#center-sampled-coverage) shows exactly
+what that includes and excludes.
+
+Anything upstream of the geometry stays in your own code. Orbit propagation,
+attitude, sensor models, and ellipsoid intersection all happen before Polypix
+sees anything, and you hand it the caps or footprints that come out.
+
+```{toctree}
+:caption: Guides
+:hidden:
+:maxdepth: 2
+
+guide
+install
+concepts
+resolutions
+performance
 ```
 
-```pycon
->>> coverage.cells
-array([332313, 332314, 332315, ...], dtype=uint64)
->>> coverage.offsets
-array([   0, 3992], dtype=uint64)
->>> px.centers(coverage.cells, coverage.resolution).shape
-(3992, 3)
+```{toctree}
+:caption: Examples
+:hidden:
+
+examples/communication-constellation
+examples/earth-observation-constellation
 ```
 
-`cells` holds standard HEALPix RING indices at one resolution. `offsets` splits
-it into one segment per input footprint, so a batch of 10,000 footprints returns
-two arrays rather than 10,000 objects. See [Concepts](concepts.md) for batches,
-sweeps, candidate cells, and threading.
+```{toctree}
+:caption: Reference
+:hidden:
+:maxdepth: 2
 
-## Choose an operation
-
-| Input and desired result | Operation |
-| --- | --- |
-| Directions → RING cells | `cell_at()` |
-| Circular regions → explicit membership | `cover_cap()` |
-| Convex boundaries → explicit membership | `cover_footprint()` |
-| Paired sampled edges → interval membership | `cover_sweep()` |
-| Many caps → per-cell counts | `count_caps_per_cell()` |
-| Imported segmented arrays → validated result | `Coverage.from_arrays()` |
-| Aligned occupancy bins → run/gap aggregates | `summarize_occupancy()` (provisional in 0.x) |
-
-See [Guide and recipes](guide.md) for small dependency-free examples. The two
-constellation studies below are executable performance case studies, not the
-starting point for learning the API.
-
-## Examples
-
-Two constellation studies execute during every documentation build, so their
-maps and timings match the code that produced them.
-
-- [Starlink snapshot visibility](examples/communication-constellation.md) —
-  657,031 exact service caps from a pinned catalog of 10,771 objects.
-- [Earth-observation revisit](examples/earth-observation-constellation.md) —
-  observation counts and revisit gaps over ten days, 144,000 swept intervals.
-
-## Documentation
-
-| Page | Contents |
-| --- | --- |
-| [Install](install.md) | Wheels, source builds |
-| [Guide and recipes](guide.md) | Operation chooser and small worked examples |
-| [Concepts](concepts.md) | Cell IDs, geometry rules, batches, threading |
-| [API](api.md) | Complete public interface |
-| [Performance and memory](performance.md) | Resolution, output sizing, candidates, threading |
-| [Interoperability](interoperability.md) | HEALPix conventions and NumPy ecosystem seams |
-| [Development](development.md) | Contributing and releases |
-| [Project goal](project-goal.md) | Scope and feature admission |
+api
+release-notes
+development
+```
