@@ -61,6 +61,10 @@ jobs:
           PIXI_CACHE_DIR: ${{ runner.temp }}/pixi-cache
         run: pixi run --environment docs docs-doctest
 
+      - name: Verify Pages artifact
+        if: github.event_name != 'pull_request'
+        run: test -s site/index.html
+
       - name: Upload Pages artifact
         if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@v3
