@@ -52,7 +52,8 @@ upstream. Pass Polypix the cap or footprint that falls out of them.
 
 Standard RING IDs go straight to healpy, astropy-healpix, or cdshealpix for
 everything Polypix leaves out: ordering conversion, neighbors, interpolation,
-resampling, harmonics, file formats.
+resampling, harmonics, file formats. [Scope](scope.md) covers when to reach for
+one of those instead of Polypix.
 
 Two things to watch when you hand data over:
 
