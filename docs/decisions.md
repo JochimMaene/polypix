@@ -8,6 +8,5 @@ maintainer evidence rather than user instructions:
 - [Exact caps and segmented occupancy](https://github.com/JochimMaene/polypix/blob/main/decisions/cap-and-occupancy-primitives.md)
 - [API surface beyond constellation examples](https://github.com/JochimMaene/polypix/blob/main/decisions/api-surface-beyond-constellations.md)
 
-For the supported product contract, use [Concepts](concepts.md) and the
-[API reference](api.md). For the current scope and admission rules, use the
-[Project goal](project-goal.md).
+For what Polypix actually supports, see the [user guide](concepts.md) and the
+[API reference](api.md).

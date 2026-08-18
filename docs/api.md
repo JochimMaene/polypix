@@ -4,9 +4,10 @@
 import polypix as px
 ```
 
-For task-oriented examples see [Guide and recipes](guide.md); for allocation
+For task-oriented examples see [Getting started](guide.md); for allocation
 and threading trade-offs see [Performance and memory](performance.md); for
-HEALPix and NumPy handoff conventions see [Interoperability](interoperability.md).
+HEALPix and NumPy handoff conventions see
+[Handing cells to other libraries](concepts.md#handing-cells-to-other-libraries).
 
 | Object | Purpose |
 | --- | --- |
@@ -31,30 +32,41 @@ Cover convex spherical footprints by HEALPix cell-center inclusion.
 
 **Parameters**
 
-- **`footprints_xyz`** : *array_like or sequence of array_like* —
-  one `(vertices, 3)` footprint, a dense `(footprints, vertices, 3)` batch, or a
-  sequence of `(vertices, 3)` arrays for a ragged batch. Vectors are finite,
-  nonzero, and expressed in one caller-defined Cartesian frame; magnitudes are
-  normalized internally.
-- **`resolution`** : *int* — HEALPix resolution, 0 through 29. Returned cells
-  satisfy `0 <= cell < 12 * 4 ** resolution`.
-- **`candidate_cells`** : *array_like of int, optional* — RING indices at
-  `resolution` restricting which centers are tested. Set semantics; duplicates
-  are ignored. An empty set returns empty segments without dropping input items.
-- **`threads`** : *int, optional* — `None` selects the automatic policy, `1` is
-  sequential, and larger values set the reusable worker-pool maximum, capped by
-  the host.
+`footprints_xyz`
+: *array_like or sequence of array_like*. One `(vertices, 3)` footprint, a
+  dense `(footprints, vertices, 3)` batch, or a sequence of `(vertices, 3)`
+  arrays for a ragged batch. Vectors are finite, nonzero, and expressed in
+  one caller-defined Cartesian frame; magnitudes are normalized internally.
+
+`resolution`
+: *int*. HEALPix resolution, 0 through 29. Returned cells satisfy `0 <= cell
+  < 12 * 4 ** resolution`.
+
+`candidate_cells`
+: *array_like of int, optional*. RING indices at `resolution` restricting
+  which centers are tested. Set semantics; duplicates are ignored. An empty
+  set returns empty segments without dropping input items.
+
+`threads`
+: *int, optional*. `None` selects the automatic policy, `1` is sequential,
+  and larger values set the reusable worker-pool maximum, capped by the
+  host.
 
 **Returns**
 
-- **`Coverage`** — flat RING indices with offsets delimiting one segment per
-  input footprint.
+`Coverage`
+: Flat RING indices with offsets delimiting one segment per input footprint.
 
 **Raises**
 
-- **`TypeError`** — inputs have incompatible numeric types.
-- **`ValueError`** — invalid shapes, resolution, vectors, or polygon geometry.
-- **`MemoryError`** — the explicit segmented result cannot be materialized.
+`TypeError`
+: Inputs have incompatible numeric types.
+
+`ValueError`
+: Invalid shapes, resolution, vectors, or polygon geometry.
+
+`MemoryError`
+: The explicit segmented result cannot be materialized.
 
 **Notes**
 
@@ -77,7 +89,8 @@ Threading does not change membership, segment order, or cell order on the same
 build and platform.
 
 See [Geometry contract](#geometry-contract) for the accepted polygons and
-[Candidate cells](concepts.md#candidate-cells) for the performance trade-offs.
+[Restricting coverage to known cells](concepts.md#restricting-coverage-to-known-cells)
+for the performance trade-offs.
 
 ## cover_cap
 
@@ -89,27 +102,36 @@ Cover exact spherical caps by HEALPix cell-center inclusion.
 
 **Parameters**
 
-- **`centers_xyz`** : *array_like* — one `(3,)` Cartesian direction vector or a
-  `(caps, 3)` batch in one caller-defined frame. Finite nonzero vectors are
-  normalized internally.
-- **`radii_rad`** : *float or array_like* — one finite angular radius shared by
-  every center when passed as a scalar, or exact shape `(caps,)` with one
-  radius per center. A length-one array is not broadcast. Radii are in radians
-  and must lie in the closed interval `[0, pi]`.
-- **`resolution`**, **`candidate_cells`**, **`threads`** — as in
-  [`cover_footprint`](#cover_footprint).
+`centers_xyz`
+: *array_like*. One `(3,)` Cartesian direction vector or a `(caps, 3)` batch
+  in one caller-defined frame. Finite nonzero vectors are normalized
+  internally.
+
+`radii_rad`
+: *float or array_like*. One finite angular radius shared by every center
+  when passed as a scalar, or exact shape `(caps,)` with one radius per
+  center. A length-one array is not broadcast. Radii are in radians and must
+  lie in the closed interval `[0, pi]`.
+
+`resolution`, `candidate_cells`, `threads`
+: As in [`cover_footprint`](#cover_footprint).
 
 **Returns**
 
-- **`Coverage`** — one segment per input cap. A single `(3,)` center retains
-  one segment.
+`Coverage`
+: One segment per input cap. A single `(3,)` center retains one segment.
 
 **Raises**
 
-- **`TypeError`** — inputs have incompatible numeric types.
-- **`ValueError`** — shapes, vectors, radii, resolution, or candidates are invalid.
-- **`MemoryError`** — the explicit segmented result cannot be materialized;
-  use `count_caps_per_cell()` if counts are the intended result.
+`TypeError`
+: Inputs have incompatible numeric types.
+
+`ValueError`
+: Shapes, vectors, radii, resolution, or candidates are invalid.
+
+`MemoryError`
+: The explicit segmented result cannot be materialized; use
+  `count_caps_per_cell()` if counts are the intended result.
 
 **Notes**
 
@@ -138,23 +160,31 @@ inputs follow [`cover_cap`](#cover_cap).
 
 **Parameters**
 
-- **`centers_xyz`**, **`radii_rad`**, **`resolution`**, **`threads`** — as in
-  [`cover_cap`](#cover_cap).
-- **`cells`** : *int or array_like of int, optional* — positional RING IDs to
-  query. A scalar returns shape `(1,)`; an empty input returns shape `(0,)`.
-  Order and duplicates are preserved.
+`centers_xyz`, `radii_rad`, `resolution`, `threads`
+: As in [`cover_cap`](#cover_cap).
+
+`cells`
+: *int or array_like of int, optional*. Positional RING IDs to query. A
+  scalar returns shape `(1,)`; an empty input returns shape `(0,)`. Order
+  and duplicates are preserved.
 
 **Returns**
 
-- **`ndarray`** — C-contiguous `int64` counts. With `cells=None`, its length is
-  `12 * 4**resolution`; otherwise it matches the positional query length.
+`ndarray`
+: C-contiguous `int64` counts. With `cells=None`, its length is `12 *
+  4**resolution`; otherwise it matches the positional query length.
 
 **Raises**
 
-- **`TypeError`** — inputs have incompatible numeric types.
-- **`ValueError`** — shapes, vectors, radii, resolution, or cell IDs are invalid.
-- **`MemoryError`** — a requested dense result cannot be materialized; pass
-  `cells=` to use positional query mode instead.
+`TypeError`
+: Inputs have incompatible numeric types.
+
+`ValueError`
+: Shapes, vectors, radii, resolution, or cell IDs are invalid.
+
+`MemoryError`
+: A requested dense result cannot be materialized; pass `cells=` to use
+  positional query mode instead.
 
 With `cells=None`, the result is a dense `int64` array of length
 `12 * 4**resolution`, indexed by RING cell ID. Internally, contiguous RING spans
@@ -202,22 +232,30 @@ called a HEALPix "strip".
 
 **Parameters**
 
-- **`left_edge_xyz`**, **`right_edge_xyz`** : *array_like* — `(samples, 3)`
-  vector arrays of equal length, with at least two samples.
-- **`resolution`**, **`candidate_cells`**, **`threads`** — as in
-  [`cover_footprint`](#cover_footprint).
+`left_edge_xyz`, `right_edge_xyz`
+: *array_like*. `(samples, 3)` vector arrays of equal length, with at least
+  two samples.
+
+`resolution`, `candidate_cells`, `threads`
+: As in [`cover_footprint`](#cover_footprint).
 
 **Returns**
 
-- **`Coverage`** — for `N` paired samples, `N - 1` segments, where segment `i`
-  covers the quadrilateral `[left[i], right[i], right[i+1], left[i+1]]`.
+`Coverage`
+: For `N` paired samples, `N - 1` segments, where segment `i` covers the
+  quadrilateral `[left[i], right[i], right[i+1], left[i+1]]`.
 
 **Raises**
 
-- **`TypeError`** — inputs have incompatible numeric types.
-- **`ValueError`** — mismatched edge lengths, fewer than two samples, or an
-  invalid or zero-area segment.
-- **`MemoryError`** — the explicit segmented result cannot be materialized.
+`TypeError`
+: Inputs have incompatible numeric types.
+
+`ValueError`
+: Mismatched edge lengths, fewer than two samples, or an invalid or zero-
+  area segment.
+
+`MemoryError`
+: The explicit segmented result cannot be materialized.
 
 **Notes**
 
@@ -267,20 +305,22 @@ so high-resolution sparse IDs do not imply a dense global allocation.
 
 **Parameters**
 
-- **`sources`** : *Coverage or nonempty sequence of Coverage* — one segmented
-  result per independent source, all with the same resolution and segment
-  count.
+`sources`
+: *Coverage or nonempty sequence of Coverage*. One segmented result per
+  independent source, all with the same resolution and segment count.
 
 **Returns**
 
-- **`OccupancySummary`** — sparse ascending cells with per-cell run and gap
-  aggregates.
+`OccupancySummary`
+: Sparse ascending cells with per-cell run and gap aggregates.
 
 **Raises**
 
-- **`TypeError`** — `sources` contains another type or an invalid resolution.
-- **`ValueError`** — the sequence is empty or source grids or segment counts
-  differ.
+`TypeError`
+: `sources` contains another type or an invalid resolution.
+
+`ValueError`
+: The sequence is empty or source grids or segment counts differ.
 
 **Notes**
 
@@ -297,19 +337,26 @@ Return the HEALPix RING cell containing each Cartesian direction.
 
 **Parameters**
 
-- **`vectors_xyz`** : *array_like* — one `(3,)` vector or a `(vectors, 3)`
-  batch. Vectors must be finite and nonzero; magnitudes are ignored.
-- **`resolution`** : *int* — HEALPix resolution, 0 through 29.
+`vectors_xyz`
+: *array_like*. One `(3,)` vector or a `(vectors, 3)` batch. Vectors must be
+  finite and nonzero; magnitudes are ignored.
+
+`resolution`
+: *int*. HEALPix resolution, 0 through 29.
 
 **Returns**
 
-- **`ndarray`** — shape `(vectors,)`, dtype `uint64`. A single `(3,)` vector
-  returns shape `(1,)`; an empty `(0, 3)` batch returns shape `(0,)`.
+`ndarray`
+: Shape `(vectors,)`, dtype `uint64`. A single `(3,)` vector returns shape
+  `(1,)`; an empty `(0, 3)` batch returns shape `(0,)`.
 
 **Raises**
 
-- **`TypeError`** — incompatible numeric input.
-- **`ValueError`** — invalid shape, vector, or resolution.
+`TypeError`
+: Incompatible numeric input.
+
+`ValueError`
+: Invalid shape, vector, or resolution.
 
 The operation quantizes each direction to one cell. The exact center round trip
 is:
@@ -339,19 +386,25 @@ Return unit-vector centers for HEALPix RING indices.
 
 **Parameters**
 
-- **`cells`** : *int or array_like of int* — RING indices at `resolution`.
-- **`resolution`** : *int* — HEALPix resolution, 0 through 29.
+`cells`
+: *int or array_like of int*. RING indices at `resolution`.
+
+`resolution`
+: *int*. HEALPix resolution, 0 through 29.
 
 **Returns**
 
-- **`ndarray`** — shape `(cells, 3)`, dtype `float64`. A scalar cell returns
-  `(1, 3)`; empty input returns `(0, 3)`.
+`ndarray`
+: Shape `(cells, 3)`, dtype `float64`. A scalar cell returns `(1, 3)`; empty
+  input returns `(0, 3)`.
 
 **Raises**
 
-- **`TypeError`** — non-integer input.
-- **`ValueError`** — invalid resolution, negative values, or out-of-range
-  indices.
+`TypeError`
+: Non-integer input.
+
+`ValueError`
+: Invalid resolution, negative values, or out-of-range indices.
 
 **Notes**
 
@@ -370,14 +423,15 @@ order.
 The curved cell edges are not sampled between these corners. Do not treat the
 four returned points as an exact great-circle polygon for the cell.
 
-**Parameters** — as in [`centers`](#centers).
+**Parameters**: as in [`centers`](#centers).
 
 **Returns**
 
-- **`ndarray`** — shape `(cells, 4, 3)`, dtype `float64`. A scalar cell retains
-  the leading axis and returns `(1, 4, 3)`. The first corner is not repeated.
+`ndarray`
+: Shape `(cells, 4, 3)`, dtype `float64`. A scalar cell retains the leading
+  axis and returns `(1, 4, 3)`. The first corner is not repeated.
 
-**Raises** — as in [`centers`](#centers).
+**Raises**: as in [`centers`](#centers).
 
 ## Coverage
 
@@ -403,15 +457,22 @@ coverage = px.Coverage.from_arrays(
 
 **Attributes**
 
-- **`cells`** : *ndarray* — flat one-dimensional `uint64` array of standard
-  HEALPix RING indices.
-- **`offsets`** : *ndarray* — `uint64` segment boundaries, length
-  `item_count + 1`.
-- **`resolution`** : *int* — the resolution shared by every returned cell.
-- **`segment_count`** : *int* — number of input items, equal to
-  `len(offsets) - 1` and `len(coverage)`.
-- **`counts`** : *ndarray* — newly allocated `intp` array equal to
-  `np.diff(offsets)`.
+`cells`
+: *ndarray*. Flat one-dimensional `uint64` array of standard HEALPix RING
+  indices.
+
+`offsets`
+: *ndarray*. `uint64` segment boundaries, length `item_count + 1`.
+
+`resolution`
+: *int*. The resolution shared by every returned cell.
+
+`segment_count`
+: *int*. Number of input items, equal to `len(offsets) - 1` and
+  `len(coverage)`.
+
+`counts`
+: *ndarray*. Newly allocated `intp` array equal to `np.diff(offsets)`.
 
 Indexing returns a zero-copy, read-only view of one segment and supports
 negative integer indices:
@@ -430,7 +491,7 @@ Duplicate cells across different segments are valid. Duplicate cells within
 one segment are not. Imported segments retain their supplied cell order.
 
 `Coverage` uses identity equality. Compare `cells`, `offsets`, and
-`resolution` explicitly when value equality is needed — this avoids an
+`resolution` explicitly when value equality is needed. That avoids an
 implicit linear scan of arrays that may be very large.
 
 Read-only means Polypix returns these NumPy arrays with `WRITEABLE=False` and
@@ -446,15 +507,22 @@ construction is intentionally disabled.
 
 **Attributes**
 
-- **`cells`** : *ndarray* — ascending observed RING IDs, dtype `uint64`.
-- **`run_counts`** : *ndarray* — sum of runs counted independently for
-  each source, aligned with `cells`, dtype `uint64`.
-- **`merged_gap_steps_sum`**, **`merged_gap_counts`** : *ndarray* — sum and
-  count of merged-window gaps, dtype `uint64`.
-- **`resolution`**, **`segment_count`** : *int* — common grid resolution and
-  number of ordered input segments.
-- **`mean_merged_gap_steps`** : *ndarray* — derived `float64` mean, with `NaN`
-  where no complete revisit gap was measured.
+`cells`
+: *ndarray*. Ascending observed RING IDs, dtype `uint64`.
+
+`run_counts`
+: *ndarray*. Sum of runs counted independently for each source, aligned with
+  `cells`, dtype `uint64`.
+
+`merged_gap_steps_sum`, `merged_gap_counts`
+: *ndarray*. Sum and count of merged-window gaps, dtype `uint64`.
+
+`resolution`, `segment_count`
+: *int*. Common grid resolution and number of ordered input segments.
+
+`mean_merged_gap_steps`
+: *ndarray*. Derived `float64` mean, with `NaN` where no complete revisit
+  gap was measured.
 
 `OccupancySummary` uses identity equality for the same reason as `Coverage`.
 Its arrays follow the same read-only contract, and `len(summary)` is the number
@@ -489,9 +557,9 @@ Two numerical limits apply. Footprints below roughly `1e-8` radians in angular
 extent are unsupported and may be rejected as degenerate; the crossover depends
 on vertex layout and conditioning. Concavity at the same scale can be
 numerically indistinguishable from a collinear edge. Center inclusion uses a
-nominal `1e-14` dot-product tolerance — a predicate threshold, not a bound on
-absolute error, since uncertainty also depends on edge length and the equivalent
-center-evaluation path. Only centers numerically indistinguishable from a
+nominal `1e-14` dot-product tolerance. That is a predicate threshold, not a
+bound on absolute error, since uncertainty also depends on edge length and the
+equivalent center-evaluation path. Only centers numerically indistinguishable from a
 boundary are strategy-sensitive.
 
 Caps do not have polygon conditioning or convexity limits. Their boundary uses

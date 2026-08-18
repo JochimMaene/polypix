@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Added scale-invariant batch direction-to-RING indexing through `cell_at()`,
+  including automatic parallelism for large inputs.
+- Added exact spherical-cap coverage through `cover_cap()`.
+- Added fused dense or queried per-cell cap counts through
+  `count_caps_per_cell()`.
+- Added sparse source-run and merged-gap reduction through
+  `summarize_occupancy()` and `OccupancySummary`.
+
+### Changed
+
+- Made `Coverage` a validated, read-only segmented interchange type with
+  `from_arrays()`, segment indexing, `len()`, and zero-copy native results.
+- Renamed the paired-edge operation from `cover_strip()` to `cover_sweep()` and
+  the four-point cell transform from `boundaries()` to `corners()` while the
+  project remains pre-1.0.
+- Cached scan-ring geometry at common resolutions, reused sweep sample
+  normalization, and removed repeated polygon-longitude transforms.
+- Reworked the executable Starlink example around exact caps and the
+  Earth-observation example around native segmented occupancy reduction.
+
 ## 0.3.0 — 2026-07-28
 
 Version 0.3 is a deliberate pre-1.0 cleanup. It replaces the native backend,

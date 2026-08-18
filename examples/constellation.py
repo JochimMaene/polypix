@@ -13,6 +13,14 @@ import numpy as np
 import numpy.typing as npt
 
 import polypix as px
+from examples.palette import (
+    MAP_BACKGROUND,
+    MAP_GRID,
+    MAP_MUTED,
+    MAP_PANEL,
+    MAP_RULE,
+    MAP_TEXT,
+)
 
 EARTH_RADIUS_KM = 6_378.137
 EARTH_MU_KM3_S2 = 398_600.4418
@@ -20,12 +28,11 @@ EARTH_ROTATION_RAD_S = 7.2921150e-5
 
 # Figures for the documentation build are written here and copied into the
 # generated site. The path is relative to the repository root, which is the
-# working directory during a Zensical build.
+# working directory during a Sphinx build.
 DOC_FIGURE_DIR = Path("docs/assets/generated")
 
-# Path from a page at docs/examples/<name>.md to DOC_FIGURE_DIR. Zensical
-# resolves it against the Markdown source and rewrites it for the built URL.
-DOC_FIGURE_URL = "../assets/generated"
+# Path from a built page at examples/<name>.html to the assets copied by Sphinx.
+DOC_FIGURE_URL = "../generated"
 
 
 def write_measurements(path: Path, measurements: dict[str, Any]) -> None:
@@ -177,8 +184,9 @@ def tiling_marker_size(
     width_pt = axes.get_window_extent().width / figure.dpi * 72.0  # type: ignore[attr-defined]
     cell_deg = math.degrees(math.sqrt(4.0 * math.pi / (12 * 4**resolution)))
     spacing_pt = width_pt * cell_deg / 360.0
-    # Circular markers need to be wider than the spacing to close the gaps.
-    return float((1.45 * spacing_pt) ** 2)
+    # Overlap neighboring markers enough to avoid white seams after PNG
+    # downsampling in the documentation site.
+    return float((2.1 * spacing_pt) ** 2)
 
 
 def plot_global_map(
@@ -191,11 +199,8 @@ def plot_global_map(
     ],
     visible: npt.NDArray[np.bool_],
     resolution: int,
-    title: str,
-    subtitle: str,
     colorbar_label: str,
-    footer: str,
-    cmap: str,
+    cmap: Any,
     norm: object,
     colorbar_ticks: Sequence[float] | None = None,
     extend: str = "neither",
@@ -206,36 +211,22 @@ def plot_global_map(
     from matplotlib.ticker import NullLocator, ScalarFormatter
 
     longitude, latitude = coordinates
-    figure = plt.figure(figsize=(12.0, 6.8), facecolor="#07111f")
-    axes = figure.add_subplot(projection="mollweide", facecolor="#101c2d")
+    figure = plt.figure(figsize=(12.0, 5.75), facecolor=MAP_BACKGROUND)
+    axes = figure.add_subplot(projection="mollweide", facecolor=MAP_PANEL)
     points = axes.scatter(
         longitude[visible],
         latitude[visible],
         c=values[visible],
         cmap=cmap,
         norm=norm,
-        marker=".",
+        marker="o",
         s=tiling_marker_size(figure, axes, resolution=resolution),
         linewidths=0,
         rasterized=True,
     )
-    axes.grid(color="white", alpha=0.16, linewidth=0.6)
-    axes.tick_params(colors="#a9b7ca", labelsize=8)
-    figure.suptitle(
-        title,
-        color="white",
-        fontsize=18,
-        fontweight="bold",
-        y=0.965,
-    )
-    figure.text(
-        0.5,
-        0.915,
-        subtitle,
-        color="#b8c5d6",
-        fontsize=10,
-        ha="center",
-    )
+    axes.grid(color=MAP_GRID, alpha=0.28, linewidth=0.55)
+    axes.tick_params(colors=MAP_MUTED, labelsize=8)
+    axes.spines["geo"].set_edgecolor(MAP_RULE)
     colorbar = figure.colorbar(
         points,
         ax=axes,
@@ -245,23 +236,15 @@ def plot_global_map(
         aspect=45,
         extend=extend,
     )
-    colorbar.set_label(colorbar_label, color="white", fontsize=10)
-    colorbar.ax.tick_params(colors="#c6d1df", labelsize=8)
-    colorbar.outline.set_edgecolor("#53657a")
+    colorbar.set_label(colorbar_label, color=MAP_TEXT, fontsize=10)
+    colorbar.ax.tick_params(colors=MAP_MUTED, labelsize=8)
+    colorbar.outline.set_edgecolor(MAP_RULE)
     if colorbar_ticks is not None:
         # A logarithmic scale otherwise labels an hours axis "10^0".
         colorbar.ax.xaxis.set_minor_locator(NullLocator())
         colorbar.set_ticks(list(colorbar_ticks))
         colorbar.ax.xaxis.set_major_formatter(ScalarFormatter())
-    figure.text(
-        0.5,
-        0.035,
-        footer,
-        color="#b8c5d6",
-        fontsize=9,
-        ha="center",
-    )
-    figure.subplots_adjust(left=0.035, right=0.965, top=0.86, bottom=0.14)
+    figure.subplots_adjust(left=0.025, right=0.975, top=0.97, bottom=0.13)
 
     encoded = BytesIO()
     figure.savefig(encoded, format="png", dpi=dpi, facecolor=figure.get_facecolor())

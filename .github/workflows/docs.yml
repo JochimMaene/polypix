@@ -8,17 +8,23 @@ on:
       - ".github/workflows/docs.yml"
       - "docs/**"
       - "examples/**"
+      - "polypix/**"
+      - "rust/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - "pyproject.toml"
       - "pixi.lock"
-      - "zensical.toml"
   pull_request:
     paths:
       - ".github/workflows/docs.yml"
       - "docs/**"
       - "examples/**"
+      - "polypix/**"
+      - "rust/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - "pyproject.toml"
       - "pixi.lock"
-      - "zensical.toml"
 
 permissions:
   contents: read
@@ -49,6 +55,11 @@ jobs:
         env:
           PIXI_CACHE_DIR: ${{ runner.temp }}/pixi-cache
         run: pixi run --environment docs docs-build
+
+      - name: Test documentation examples
+        env:
+          PIXI_CACHE_DIR: ${{ runner.temp }}/pixi-cache
+        run: pixi run --environment docs docs-doctest
 
       - name: Upload Pages artifact
         if: github.event_name != 'pull_request'

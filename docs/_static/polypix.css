@@ -1,0 +1,203 @@
+/* Brand palette, derived from docs/_static/polypix.svg. examples/palette.py
+   mirrors these values for the figures.
+
+   Scoped to the theme's own selector on purpose: pydata defines these under
+   html[data-theme=...], which beats :root, so overrides placed there are
+   silently ignored. */
+html[data-theme="light"] {
+  --pst-color-primary: #17607d;
+  --pst-color-secondary: #a8475c;
+  --polypix-muted: #536273;
+  --polypix-surface: #f5f7fa;
+  --polypix-rule: #dce2e8;
+}
+
+html[data-theme="dark"] {
+  --pst-color-primary: #2db7d4;
+  --pst-color-secondary: #d98a9c;
+  --polypix-muted: #aeb9c5;
+  --polypix-surface: #19232f;
+  --polypix-rule: #344252;
+}
+
+/* The mark is portrait, so cap its height in the sidebar brand. */
+.bd-sidebar-primary .navbar-brand img {
+  max-height: 3rem;
+  width: auto;
+}
+
+/* Landing page hero. */
+.polypix-title > h1 {
+  font-size: clamp(2.4rem, 5vw, 3.2rem);
+  margin: 1.5rem 0 0.75rem;
+}
+
+.polypix-hero {
+  margin: 0 0 2.5rem;
+  max-width: 44rem;
+}
+
+.polypix-hero .tagline {
+  font-size: clamp(1.1rem, 2vw, 1.35rem);
+  line-height: 1.45;
+}
+
+.polypix-badges img {
+  display: inline-block;
+  margin: 0 0.3rem 0.4rem 0;
+}
+
+.polypix-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem;
+  margin-top: 1.2rem;
+}
+
+.polypix-actions a {
+  border: 1px solid var(--pst-color-primary);
+  border-radius: 0.35rem;
+  font-weight: 600;
+  padding: 0.5rem 0.9rem;
+  text-decoration: none;
+}
+
+.polypix-actions a:first-child {
+  background: var(--pst-color-primary);
+  color: white;
+}
+
+/* The dark theme's primary is the light logo cyan, so white text on it fails
+   contrast. Use the logo navy instead. */
+html[data-theme="dark"] .polypix-actions a:first-child {
+  color: #0c1c3b;
+}
+
+.polypix-install {
+  align-items: center;
+  background: var(--polypix-surface);
+  border: 1px solid var(--polypix-rule);
+  border-radius: 0.45rem;
+  display: inline-flex;
+  font-family: var(--pst-font-family-monospace);
+  gap: 0.75rem;
+  margin: 1.2rem 0 0;
+  padding: 0.6rem 1rem;
+}
+
+.polypix-install::before {
+  color: var(--polypix-muted);
+  content: "$";
+}
+
+/* Example cards, used on the landing page and the examples index. */
+.example-gallery {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 1.4rem 0 2.2rem;
+}
+
+.example-card {
+  border: 1px solid var(--polypix-rule);
+  border-radius: 0.45rem;
+  color: inherit;
+  display: block;
+  overflow: hidden;
+  text-decoration: none;
+  transition: border-color 120ms ease;
+}
+
+.example-card:hover {
+  border-color: var(--pst-color-primary);
+}
+
+.example-card img {
+  /* The maps are about 2.1:1 with a colorbar along the bottom. Cropping to the
+     globe keeps the thumbnail readable instead of showing a slice of it. */
+  aspect-ratio: 2.75 / 1;
+  display: block;
+  object-fit: cover;
+  object-position: center top;
+  width: 100%;
+}
+
+.example-card div {
+  padding: 0.9rem 1rem 1rem;
+}
+
+.example-card h2 {
+  font-size: 1.05rem;
+  margin: 0 0 0.3rem;
+}
+
+.example-card p {
+  color: var(--polypix-muted);
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+/* Figures and tables emitted by the case-study examples. */
+.example-figure img {
+  border: 1px solid var(--polypix-rule);
+  display: block;
+  width: 100%;
+}
+
+.example-figure figcaption {
+  color: var(--polypix-muted);
+  font-size: 0.9rem;
+  margin-top: 0.6rem;
+}
+
+.example-metrics {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 1.4rem 0 2.2rem;
+}
+
+.example-metrics > div {
+  border-left: 2px solid var(--pst-color-primary);
+  padding-left: 0.8rem;
+}
+
+.example-metrics strong,
+.example-metrics span {
+  display: block;
+}
+
+.example-metrics strong {
+  font-size: 1.3rem;
+}
+
+.example-metrics span {
+  color: var(--polypix-muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.example-timings td:last-child,
+.example-timings th:last-child {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* Wide numeric reference tables: keep every row on one line. */
+.polypix-reftable {
+  font-size: 0.86rem;
+}
+
+.polypix-reftable td,
+.polypix-reftable th {
+  padding: 0.3rem 0.55rem;
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .example-gallery,
+  .example-metrics {
+    grid-template-columns: 1fr;
+  }
+}

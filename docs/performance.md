@@ -1,29 +1,18 @@
 # Performance and memory
 
-Polypix optimizes complete public-call throughput: conversion, validation,
-native computation, allocation, and result construction. The output shape is
-often more important than the arithmetic kernel.
+Timing a Polypix call covers input normalization, validation, native work, and
+output allocation. On large jobs, how big a result you asked for usually matters
+more than how fast the geometric predicate is.
 
-## Choose a resolution deliberately
+## Grid size
 
-Polypix defines `nside = 2**resolution`. Increasing resolution by one
-quadruples the grid and halves the nominal linear cell scale.
+Each step up in resolution quadruples the cell count and halves the cell size,
+so a dense global map goes from 6 MiB at resolution 8 to 1.5 GiB at 12.
+[Resolutions](resolutions.md) has the full table.
 
-| Resolution | Cells | Nominal cell scale | Dense `int64` array |
-| ---: | ---: | ---: | ---: |
-| 4 | 3,072 | 3.66° | 24 KiB |
-| 6 | 49,152 | 0.92° | 384 KiB |
-| 8 | 786,432 | 0.23° | 6 MiB |
-| 10 | 12,582,912 | 3.44 arcmin | 96 MiB |
-| 12 | 201,326,592 | 0.86 arcmin | 1.5 GiB |
+## Size the result first
 
-The scale is `sqrt(cell area)`, not a bound on a cell's width. Resolutions up
-to 29 are accepted because sparse transforms and selected-cell queries can use
-very large IDs; a complete grid is not practical at those resolutions.
-
-## Account for the result first
-
-Approximate public output storage, excluding temporary native chunks:
+Public output storage, ignoring temporary native chunks:
 
 | Result | Storage |
 | --- | --- |
@@ -34,12 +23,11 @@ Approximate public output storage, excluding temporary native chunks:
 | Dense cap counts | `8 * cell_count` bytes |
 | Sparse `OccupancySummary` | `32 * observed_cell_count` bytes |
 
-Parallel explicit coverage builds ordered worker chunks and merges them. Peak
-native output memory can therefore approach twice the final `cells` array.
-Allocation failures while materializing coverage raise `MemoryError`.
+Parallel coverage builds ordered worker chunks and merges them, so peak native
+memory can reach roughly twice the final `cells` array. If allocation fails you
+get a `MemoryError` rather than a crash.
 
-If a complete explicit result is too large, batch the input regions and consume
-each result before continuing:
+When the whole result will not fit, batch the input and consume each chunk:
 
 ```python
 for start in range(0, len(footprints), 10_000):
@@ -47,27 +35,24 @@ for start in range(0, len(footprints), 10_000):
     consume(chunk)
 ```
 
-Concatenating all chunks afterward does not reduce final output memory.
+Concatenating all chunks recreates the original memory requirement.
 
-## Avoid materialized intermediates
+## Ask for the smallest useful result
 
-Choose the result closest to the downstream question:
-
-| Needed result | Preferred path | Avoided intermediate |
+| What you need | Use | What you avoid |
 | --- | --- | --- |
-| Explicit membership per region | `cover_cap()`, `cover_footprint()`, or `cover_sweep()` | None; membership is the result |
-| Number of caps per cell | `count_caps_per_cell()` | One cell ID per cap-cell hit plus `bincount()` |
+| Membership per region | `cover_cap()`, `cover_footprint()`, `cover_sweep()` | nothing; membership is the point |
+| Caps per cell | `count_caps_per_cell()` | one cell ID per cap-cell hit, plus a `bincount()` |
 | Runs and merged gaps over aligned bins | `summarize_occupancy()` | Python work per source and segment |
 
-Occupancy summarization consumes `Coverage`, so sweep membership is still
-materialized. It fuses the measured temporal reduction, not the geometry and
-reducer into one domain-specific operation. See the
-[architecture decisions](decisions.md) for the benchmark evidence.
+Occupancy summarization still consumes a `Coverage`, so sweep membership does
+get materialized. It fuses the reduction, not the geometry. The
+[architecture decisions](decisions.md) carry the benchmark evidence.
 
 ## Dense counts versus selected cells
 
-Dense `count_caps_per_cell()` consumes analytic RING span endpoints. It is
-often faster than evaluating many individual query cells:
+Dense `count_caps_per_cell()` consumes analytic RING spans and is often faster
+than evaluating individual query cells:
 
 ```python
 dense = px.count_caps_per_cell(centers_xyz, radii_rad, resolution=8)
@@ -79,58 +64,45 @@ sparse = px.count_caps_per_cell(
 )
 ```
 
-Use dense mode when the full array comfortably fits. Use `cells=` when the grid
-would be too large and the requested set is genuinely small. In both cases the
-predicate is evaluated at HEALPix cell centers, not at original directions
-that may have been quantized with `cell_at()`.
+Go dense whenever the array fits comfortably. Use `cells=` when the grid would
+be enormous and your query set is genuinely small. Its cost grows with both the
+cap count and the number of cells you ask for, so it is not a general-purpose
+escape hatch.
 
-## Candidate cells
+Either way the predicate is evaluated at cell centers. If those IDs came out of
+`cell_at()`, you are testing the cell, not the direction you started with.
 
-`candidate_cells=` restricts coverage to a **set of grid centers**. Inputs are
-sorted and deduplicated when necessary; candidate order and duplicates have no
-output meaning. This differs from the positional `cells=` argument to cap
-counting:
+## Two arguments that look similar
 
-| Argument | Semantics | Output alignment |
+| Argument | Semantics | Output |
 | --- | --- | --- |
-| `candidate_cells=` | Set filter for explicit coverage | Native cell order |
-| `cells=` | Positional cap-count query | Preserves order and duplicates |
+| `candidate_cells=` | set filter for coverage | native cell order |
+| `cells=` | positional cap-count query | preserves your order and duplicates |
 
-Candidate filtering is useful for a sparse existing AOI. A dense candidate set
-can be slower than unrestricted RING scanning. It remains center sampled and
-does not create a conservative no-false-negative spatial index.
+They are not interchangeable. Candidate planning also retains normalized
+geometry for the whole batch and may cache a bounded span of candidate centers,
+so chunk very large batches if that retained state starts to matter.
 
-Candidate planning retains normalized geometry for the batch and may cache a
-bounded span of candidate centers. Chunk very large batches when this retained
-preparation state matters.
+## Geometry shape
 
-## Geometry shape affects polygon work
+Polygon coverage scans a conservative spherical bounding box and tests centers
+against every edge, which makes compact convex footprints the fast path. A large
+diagonal or pole-containing footprint can cost far more per returned cell.
 
-Polygon coverage scans a conservative spherical bounding box and tests cell
-centers against every edge. Compact convex footprints are the intended fast
-path. Large diagonal or pole-containing footprints can require much more work
-per returned cell.
-
-For elongated sampled regions, `cover_sweep()` keeps each interval's bounds
-tight. Sampling density remains part of the geometry contract because samples
-are connected by minor great-circle arcs.
-
-Exact caps use analytic per-ring longitude spans. Their dense counts avoid
-expanding cap-cell membership entirely.
+For long thin regions, `cover_sweep()` keeps each interval's bounds tight. That
+is what it is for. Caps use analytic per-ring longitude spans, and their dense
+counts skip cap-cell membership entirely.
 
 ## Input layout
 
-Compatible C-contiguous `float64` direction and geometry arrays are borrowed
-without conversion. Non-contiguous or other real numeric inputs are converted
-once. Ragged footprint sequences are validated and concatenated. Prefer dense
-contiguous batches when input preparation is visible in a high-rate workload.
+C-contiguous `float64` arrays are borrowed as-is. Anything else gets converted
+once, and ragged footprint sequences are validated and concatenated first. If
+input preparation shows up in your profile, feed it dense contiguous batches.
 
-Do not mutate borrowed arrays from another Python thread while a Polypix call
-is running; native kernels release the GIL.
+Native kernels release the GIL, so do not mutate a borrowed array from another
+thread while a call is running.
 
 ## Threading
-
-Coverage and cap-count operations accept `threads=`:
 
 ```python
 serial = px.cover_footprint(batch, resolution=8, threads=1)
@@ -138,9 +110,9 @@ automatic = px.cover_footprint(batch, resolution=8)  # threads=None
 ```
 
 Automatic mode stays sequential below measured crossovers. `cell_at()`,
-`centers()`, and `corners()` also auto-parallelize large arrays but expose no
-thread control.
+`centers()`, and `corners()` parallelize large arrays too, but expose no
+control.
 
-If an outer executor already runs several Polypix calls concurrently, use
-`threads=1` inside each call to avoid nested oversubscription. Thread settings
-do not change result membership or ordering on the same build and platform.
+If you already run several Polypix calls concurrently from your own executor,
+pass `threads=1` inside each to avoid oversubscription. Thread count never
+changes membership or ordering on the same build and platform.

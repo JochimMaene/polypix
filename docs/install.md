@@ -1,7 +1,7 @@
 # Install
 
 ```bash
-python -m pip install polypix
+pip install polypix
 ```
 
 NumPy is the only runtime dependency.
@@ -23,7 +23,7 @@ A source build requires a stable Rust toolchain and CPython 3.12 or newer. The
 Maturin backend fetches and compiles the Rust dependencies:
 
 ```bash
-python -m pip install -e .
+pip install -e .
 ```
 
 The supported development environment is Pixi, which provisions Python, NumPy,
