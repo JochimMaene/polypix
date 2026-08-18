@@ -1,4 +1,4 @@
-# Snapshot visibility from 10,771 service caps
+# How many satellites can you see?
 
 This case study maps how many catalogued Starlink objects are geometrically
 visible above a 25° elevation mask. It uses a pinned TLE catalog, propagates one

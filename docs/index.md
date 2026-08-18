@@ -61,6 +61,7 @@ stays in your code, or in the libraries you already use.
 ## Why Polypix?
 
 - **Fast**: a native kernel that releases the GIL, so one call uses every core.
+  See real timings in the [examples](#examples).
 - **Batch-first**: 10,000 regions come back as two arrays, not 10,000 objects.
 - **No special cases**: the poles and the date line are ordinary 3D vectors.
 - **No wasted work**: if you only need counts per cell, it never builds the pairs.
@@ -72,15 +73,15 @@ stays in your code, or in the libraries you already use.
   <a class="example-card" href="examples/communication-constellation.html">
     <img src="generated/communications-availability.png" alt="Global Starlink visibility map">
     <div>
-      <h2>Snapshot visibility</h2>
-      <p>657,031 exact caps reduced directly to per-cell counts.</p>
+      <h2>How many satellites can you see?</h2>
+      <p>A one-hour Starlink snapshot, mapped cell by cell from real orbital data.</p>
     </div>
   </a>
   <a class="example-card" href="examples/earth-observation-constellation.html">
     <img src="generated/earth-observation-count.png" alt="Global Earth-observation count map">
     <div>
-      <h2>Earth-observation revisit</h2>
-      <p>144,000 swept intervals reduced to observations and revisit gaps.</p>
+      <h2>How often does a satellite fly over?</h2>
+      <p>Ten days of Earth-observation coverage, mapped as revisit time.</p>
     </div>
   </a>
 </div>
