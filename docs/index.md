@@ -87,13 +87,27 @@ stays in your code, or in the libraries you already use.
 </div>
 
 ```{toctree}
+:caption: Guides
 :hidden:
 :maxdepth: 2
 
 guide
 concepts
+```
+
+```{toctree}
+:caption: Examples
+:hidden:
+
 examples/communication-constellation
 examples/earth-observation-constellation
+```
+
+```{toctree}
+:caption: Reference
+:hidden:
+:maxdepth: 2
+
 api
 development
 ```
