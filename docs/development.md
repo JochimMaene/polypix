@@ -41,6 +41,7 @@ runtime chain.
 | `pixi run wheel` | Build a release-mode wheel |
 | `pixi run --environment bench bench` | Run the CodSpeed benchmarks locally |
 | `pixi run --environment docs docs-build` | Build the documentation |
+| `pixi run --environment docs docs-doctest` | Test interactive documentation examples |
 | `pixi run --environment docs docs-serve` | Preview with autobuild |
 | `pixi run --environment docs docs-figures` | Regenerate the example figures |
 

@@ -113,16 +113,6 @@ def test_readme_quick_start_prints_what_it_claims() -> None:
     assert captured.getvalue().strip() == claimed.group("output").strip()
 
 
-def test_readme_quick_start_matches_the_landing_page() -> None:
-    """Both show the same example; a value edited in one must reach the other."""
-    index = (DOCS / "index.md").read_text()
-    for line in readme_quick_start().splitlines():
-        statement = line.split("#", 1)[0].rstrip()
-        if not statement or statement.startswith("print("):
-            continue
-        assert statement in index, f"docs/index.md no longer shows {statement!r}"
-
-
 def test_guide_fixtures_the_diagrams_ask_for_exist() -> None:
     """Every name the figures pull out of the guide is defined by the guide."""
     from examples.doc_snippets import run_guide

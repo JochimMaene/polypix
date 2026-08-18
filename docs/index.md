@@ -6,7 +6,7 @@ html_theme.sidebar_secondary.remove: true
 # Polypix
 
 :::{container} polypix-hero
-<p class="tagline">Which grid cells does this region cover? Answered for millions of satellite footprints, swaths, and survey fields at once.</p>
+<p class="tagline">Batch coverage of satellite footprints, swaths, and survey fields on an equal-area grid.</p>
 
 {.polypix-badges}
 [![PyPI](https://img.shields.io/pypi/v/polypix.svg)](https://pypi.org/project/polypix/)
@@ -16,25 +16,17 @@ html_theme.sidebar_secondary.remove: true
 [![Benchmarks](https://github.com/JochimMaene/polypix/actions/workflows/codspeed.yml/badge.svg)](https://github.com/JochimMaene/polypix/actions/workflows/codspeed.yml)
 :::
 
-You have ten thousand satellite footprints, or a survey's worth of telescope
-fields, and you need to know what each one covers on the ground or on the sky.
-Polypix turns those regions into cell IDs on an equal-area grid — the whole
-batch in one call.
+Polypix turns batches of spherical regions into standard HEALPix cell IDs. Use
+the result for coverage maps, visibility counts, and revisit analysis.
 
 ## Why Polypix
 
-- **One call, not a loop.** Ten thousand regions go in as one array and come
-  back as one array. There is no Python-level iteration over regions.
-- **Equal-area cells.** Every cell covers exactly the same solid angle, so hit
-  counts are directly comparable. No `cos(lat)` weighting before you take a
-  mean, and no cells crowding together at the poles the way a
-  longitude/latitude grid does.
-- **Fast.** A native kernel that releases the GIL, so one call uses every core.
-  The [Starlink example](examples/communication-constellation.md) covers 657,031
-  spherical caps in roughly half a second.
-- **No special cases.** The poles and the date line are ordinary 3D vectors.
-- **Small.** NumPy is the only dependency, and the wheels need no compiler and
-  no system HEALPix library.
+- **Batch-first.** Arrays of regions go in; compact NumPy arrays come back.
+- **Equal area.** Counts can be compared without latitude weighting.
+- **Native execution.** Large calls can use multiple cores while the GIL is
+  released.
+- **Small runtime.** NumPy is the only dependency. Wheels include the native
+  kernel.
 
 ## The grid
 
@@ -43,11 +35,7 @@ Polypix answers on a HEALPix grid. It divides the sphere into cells of
 at every step up in resolution. Each cell has an integer ID, and those IDs are
 what Polypix gives back.
 
-Equal area is the property that matters for analysis. Count how many satellites
-see each cell, and you can compare those counts, average them, or histogram
-them directly — every cell represents the same amount of sky or ground. The
-same count on a longitude/latitude grid has to be area-weighted first, because
-its cells shrink towards the poles.
+Because the cells have equal area, per-cell counts can be compared directly.
 
 ```{figure} assets/generated/sphere-levels.png
 :alt: The same sphere partitioned at HEALPix resolutions 0 to 3, cell count rising from 12 to 768.
@@ -60,9 +48,9 @@ the ground. [Resolutions](resolutions.md) has the whole table.
 
 ## A first example
 
-Here are two satellites, each looking down at a circle of ground. Polypix works
-in Cartesian directions rather than longitude and latitude, so here is a short
-helper to convert:
+Here are two circular ground footprints centered near Brussels and Bogotá.
+Polypix takes Cartesian directions, so the example first converts longitude and
+latitude:
 
 ```{doctest}
 >>> import numpy as np
@@ -83,17 +71,15 @@ helper to convert:
 array([1500, 3829])
 ```
 
-That single call covered both footprints. At resolution 8 a cell is roughly
-25 km across, which is why the 5° footprint lands on 1,500 of them and the 8°
-one on 3,829. The cell IDs for each footprint come back as `coverage[0]` and
-`coverage[1]`:
+At resolution 8 a nominal cell is about 25 km across. The cell IDs for each
+footprint are available as `coverage[0]` and `coverage[1]`:
 
 ```{doctest}
 >>> coverage[0][:4]
 array([68085, 68086, 68087, 68088], dtype=uint64)
 ```
 
-These are standard HEALPix RING indices in a plain NumPy `uint64` array.
+These are standard HEALPix RING indices in a NumPy `uint64` array.
 
 To run that yourself:
 
@@ -107,9 +93,7 @@ shapes.
 
 ## What that looks like at scale
 
-The same two calls, run over real constellations. Both studies rebuild on every
-documentation build, so their maps and timings come from the code shown on the
-page.
+Two executable studies show the same operations at constellation scale.
 
 <div class="example-gallery">
   <a class="example-card" href="examples/communication-constellation.html">
@@ -130,8 +114,8 @@ page.
 
 ## What Polypix leaves to you
 
-A cell counts as covered when its center falls inside your region, so Polypix
-is the wrong tool if you need every cell a region touches even slightly.
+A cell counts as covered when its center falls inside your region. Polypix does
+not return every cell touched by the boundary.
 [Center-sampled coverage](concepts.md#center-sampled-coverage) shows exactly
 what that includes and excludes.
 

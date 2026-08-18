@@ -12,8 +12,7 @@ Linux, macOS, and Windows. [Installation](install.md) covers source builds.
 
 ## What you call
 
-Polypix has four entry points. Which one you want depends on the shape of the
-thing you are covering:
+Four common geometry operations cover most uses:
 
 | You have | Call | You get back |
 | --- | --- | --- |
@@ -22,7 +21,7 @@ thing you are covering:
 | The swath a sensor paints as it moves | `cover_sweep()` | the cells under each interval of the swath |
 | Individual pointings, ground tracks, sample points | `cell_at()` | the one cell each direction falls in |
 
-All four take a whole batch at once, and all four measure angles in **radians**.
+All four take batches. Angular arguments, where present, are in **radians**.
 
 ## Setup
 
@@ -54,8 +53,8 @@ and the rest of the page uses them throughout:
 ...     return np.stack((longitude, latitude), axis=-1)
 ```
 
-Keep both alongside your own code; they are yours rather than ours, and
-[Why Polypix stops at directions](concepts.md#direction-geometry) explains why.
+[Direction geometry](concepts.md#direction-geometry) explains why these
+conversions stay outside Polypix.
 
 The examples below all work at resolution 4, where a cell is about 400 km
 across. That is coarse enough that you can count the cells in the pictures and
@@ -81,9 +80,8 @@ Here are two caps of different sizes, given in degrees and converted:
 array([9, 4])
 ```
 
-Both caps came back in one result. `cap_coverage.counts` is how many cells each one
-got: the 6° cap covers nine cells, the 4° cap four. The IDs themselves are a
-read-only view per region:
+Both caps came back in one result. Indexing it returns a read-only view for one
+region:
 
 ```{doctest}
 >>> cap_coverage[0]
@@ -120,8 +118,7 @@ array([16])
 array([1312, 1376, 1377, 1439, 1440, 1441], dtype=uint64)
 ```
 
-One footprint in, one segment out, holding the sixteen cells whose centers fall
-inside it.
+One footprint produces one segment in the result.
 
 ```{figure} assets/generated/cover-footprint.svg
 :alt: A convex polygon and the grid cells it covers.
@@ -155,8 +152,7 @@ edges 3.2° either side of it:
 array([2, 2, 2, 4, 2, 2])
 ```
 
-Seven samples give six intervals, so the result has six segments — one per time
-step, each with its own cells:
+Seven samples give six intervals, with one result segment per interval:
 
 ```{doctest}
 >>> swath_coverage[3]
@@ -171,11 +167,8 @@ array([1376, 1440, 1504, 1568], dtype=uint64)
 Each pair of consecutive samples becomes one quadrilateral, and each quadrilateral is its own segment in the result.
 ```
 
-One segment per time step is what makes revisit analysis work later: each
-segment is an observation interval you can put a timestamp against. Note that
-your sampling *is* the geometry here. Polypix joins adjacent samples with minor
-great-circle arcs, and it cannot tell a sparse sample from a deliberate one, so
-sample densely enough that each arc is the swath edge you meant.
+Polypix joins adjacent samples with minor great-circle arcs. Sample densely
+enough that those arcs represent the intended swath edge.
 
 ## Assign pointings to cells
 
@@ -203,8 +196,7 @@ array([[-11.25,   7.18],
        [ 14.06,  -9.59]])
 ```
 
-The last point went in at 12.0° longitude and came back at 14.06°, because that
-is where the center of its cell sits. Only cell centers round-trip exactly:
+Only cell centers round-trip exactly:
 
 ```{doctest}
 >>> px.cell_at(point_centers, resolution=4)
@@ -221,21 +213,28 @@ array([1374, 1695, 1441, 1762], dtype=uint64)
 
 ## Turn cells into a map
 
-Cell IDs are ordinary integers in `[0, 12 * 4 ** resolution)`, so a global
-coverage map is a `bincount`:
+Cell IDs are integers in `[0, 12 * 4 ** resolution)`, so a global coverage map
+can be built with `bincount`:
 
-```python
-cell_count = 12 * 4**resolution
-hits = np.bincount(coverage.cells, minlength=cell_count)
+```{doctest}
+>>> resolution = 4
+>>> coverage = cap_coverage
+>>> cell_count = 12 * 4**resolution
+>>> hits = np.bincount(
+...     coverage.cells.astype(np.intp, copy=False), minlength=cell_count
+... )
+>>> hits.shape
+(3072,)
 ```
 
-`hits[i]` is now how many regions covered cell `i`. To plot it yourself, ask for
-the cell centers and convert them back to degrees:
+`hits[i]` is the number of regions that selected cell `i`. Convert occupied
+cell centers to longitude and latitude before plotting:
 
-```python
-occupied = np.flatnonzero(hits)
-lonlat = to_lonlat(px.centers(occupied, resolution))
-plt.scatter(lonlat[:, 0], lonlat[:, 1], c=hits[occupied])
+```{doctest}
+>>> occupied = np.flatnonzero(hits)
+>>> lonlat = to_lonlat(px.centers(occupied, resolution))
+>>> lonlat.shape == (occupied.size, 2)
+True
 ```
 
 ```{figure} assets/generated/earth-observation-count.png
@@ -243,49 +242,48 @@ plt.scatter(lonlat[:, 0], lonlat[:, 1], c=hits[occupied])
 :width: 100%
 :align: center
 
-The same two steps at mission scale: 144,000 swath intervals from ten
-satellites, counted per cell. [How often does a satellite fly
-over?](examples/earth-observation-constellation.md) builds this end to end.
+At mission scale, the same reduction counts 144,000 swath intervals from ten
+satellites. [How often does a satellite fly
+over?](examples/earth-observation-constellation.md) builds the analysis end to
+end.
 ```
 
-Because every HEALPix cell covers exactly the same solid angle, those counts are
-directly comparable — no area weighting before you take a mean, a histogram, or
-a latitude profile.
+Equal-area cells make these counts directly comparable without area weighting.
 
-If counting was the only thing you wanted, you can skip the membership step
-entirely and let `count_caps_per_cell()` accumulate the counts for you, which is
-what the next section covers.
+## Count overlaps without building membership
 
-## Count overlaps without building them
+If you only need cap counts per cell, avoid building the region–cell pairs:
 
-If the question is really "how many satellites see each cell?", skip the
-membership step:
-
-```python
-counts = px.count_caps_per_cell(centers, radii, resolution=8)
+```{doctest}
+>>> counts = px.count_caps_per_cell(
+...     unit_vector(cap_lon, cap_lat),
+...     np.radians(cap_radius_deg),
+...     resolution=4,
+... )
+>>> counts.shape
+(3072,)
 ```
 
-The result is indexed by RING cell ID, and you never build a `Coverage`
-holding the same cell once per covering cap. At high resolution, ask about a
-short list of cells instead — a handful of ground stations, say:
+At high resolution, query only the cells you need:
 
-```python
-site_counts = px.count_caps_per_cell(
-    centers,
-    radii,
-    resolution=16,
-    cells=site_cells,
-)
+```{doctest}
+>>> site_cells = point_cells[:2]
+>>> site_counts = px.count_caps_per_cell(
+...     unit_vector(cap_lon, cap_lat),
+...     np.radians(cap_radius_deg),
+...     resolution=4,
+...     cells=site_cells,
+... )
+>>> site_counts.shape
+(2,)
 ```
 
 ## When a region comes back empty
 
 A cell is covered when its **center** falls inside your region. A region smaller
-or thinner than a cell can therefore contain no center at all, and its segment
-comes back empty — that is the rule working, not a bug. If a call returns fewer
-cells than you expected, raise `resolution` until cells are smaller than the
-smallest feature you care about. [Resolutions](resolutions.md#picking-one) has
-the sizes, and [center-sampled
+or thinner than a cell can therefore return an empty segment. Raise `resolution`
+until cells are smaller than the smallest feature you need to resolve.
+[Resolutions](resolutions.md#picking-one) has the sizes, and [center-sampled
 coverage](concepts.md#center-sampled-coverage) shows exactly what the rule
 includes and excludes.
 

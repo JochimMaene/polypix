@@ -35,7 +35,7 @@ for start in range(0, len(footprints), 10_000):
     consume(chunk)
 ```
 
-Concatenating the chunks afterwards obviously gets you back to where you started.
+Concatenating all chunks recreates the original memory requirement.
 
 ## Ask for the smallest useful result
 

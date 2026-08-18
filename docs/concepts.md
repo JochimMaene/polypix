@@ -66,15 +66,9 @@ round-trip exactly; arbitrary directions do not. A direction sitting numerically
 on a cell edge is a floating-point tie. It is repeatable for one build and
 platform, but the API does not promise it across platforms.
 
-Polypix attaches no unit, frame, body, datum, CRS, or epoch to these arrays,
-and that is the reason it takes directions rather than longitudes: the moment a
-library accepts a longitude it has to take a position on datums and reference
-frames, which is a far larger commitment than this one wants to make. Astropy,
-Skyfield, Orekit, SPICE wrappers, and your own sensor models already do that
-work. Orbit propagation, attitude, sensor projection, minimum elevation,
-off-nadir limits, ellipsoid intersection, refraction, terrain: all of it happens
-before Polypix sees anything, and you hand it the caps or footprints that fall
-out.
+Polypix attaches no frame, datum, unit, or epoch metadata. Coordinate
+transforms, orbit propagation, attitude, and sensor projection happen upstream;
+pass the resulting directions or regions to Polypix.
 
 ## Center-sampled coverage
 
@@ -101,8 +95,7 @@ limits are in the [geometry contract](api.md#geometry-contract).
 
 When you only want to know *how many* caps cover each cell, reach for
 `count_caps_per_cell()` rather than `cover_cap()`. It accumulates counts
-directly instead of emitting the same cell ID once per covering cap, which for
-visibility-density maps is usually the whole game.
+directly instead of emitting one cell ID per cap–cell pair.
 
 ## Batches and segments
 

@@ -11,9 +11,7 @@ release = package_version("polypix")
 
 extensions = [
     "myst_parser",
-    "sphinx.ext.autodoc",
     "sphinx.ext.doctest",
-    "sphinx.ext.autosummary",
     "sphinx.ext.intersphinx",
 ]
 
@@ -29,8 +27,6 @@ myst_enable_extensions = [
 ]
 myst_heading_anchors = 4
 
-autosummary_generate = True
-autodoc_typehints = "description"
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
     "numpy": ("https://numpy.org/doc/stable/", None),
