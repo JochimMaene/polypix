@@ -82,7 +82,7 @@ you sixteen times the memory for detail you are not using.
 Some rough anchors:
 
 - **Resolution 6** (≈100 km) suits constellation coverage and revisit studies.
-  Both [case studies](examples/index.md) use it.
+  Both [examples](index.md#examples) use it.
 - **Resolution 8–10** (25 km down to 6 km) suits regional analysis and most
   sensor-footprint work.
 - **Resolution 12** (1.6 km) is about where a dense global map stops being

@@ -92,7 +92,20 @@ stays in your code, or in the libraries you already use.
 
 guide
 concepts
-examples/index
+```
+
+```{toctree}
+:caption: Examples
+:hidden:
+
+examples/communication-constellation
+examples/earth-observation-constellation
+```
+
+```{toctree}
+:hidden:
+:maxdepth: 2
+
 api
 development
 ```
