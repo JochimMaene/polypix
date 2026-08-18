@@ -1,6 +1,6 @@
-"""One colour palette for the logo, the diagrams, and the case-study maps.
+"""One color palette for the logo, the diagrams, and the case-study maps.
 
-Everything here is derived from the two colours in `docs/_static/polypix.svg`,
+Everything here is derived from the two colors in `docs/_static/polypix.svg`,
 so the site, the explanatory diagrams, and the global maps stay recognisably
 the same product. `docs/_static/polypix.css` mirrors the theme values.
 """
@@ -14,7 +14,7 @@ NAVY_DEEP = "#0c1c3b"
 NAVY = "#162240"
 CYAN = "#2db7d4"
 
-# Link and accent colours, sampled off the navy-to-cyan ramp so they carry
+# Link and accent colors, sampled off the navy-to-cyan ramp so they carry
 # enough contrast on white for body text.
 PRIMARY = "#17607d"
 SECONDARY = "#a8475c"
@@ -37,17 +37,17 @@ MAP_MUTED = "#4c5d6e"
 MAP_RULE = "#aab4bf"
 MAP_GRID = "#667788"
 
-# Data colormaps are NOT brand colours.
+# Data colormaps are NOT brand colors.
 #
 # A colormap's job is to encode magnitude, and a ramp hand-mixed from two logo
-# colours is neither perceptually uniform nor well ordered: the first attempt
+# colors is neither perceptually uniform nor well ordered: the first attempt
 # banded visibly and collapsed most of the range into one muddy mid-teal. These
 # are ColorBrewer sequential schemes instead, picked from the blue and brown
 # families so they still sit next to the logo, and both run light-to-dark
 # because the maps render on a white page.
 #
 # Brand consistency lives in the chrome above and in the explanatory diagrams,
-# where colour is categorical rather than quantitative.
+# where color is categorical rather than quantitative.
 COUNT_CMAP = "YlGnBu"
 GAP_CMAP = "YlOrBr"
 

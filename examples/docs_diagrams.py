@@ -68,7 +68,7 @@ def unit_vector(lon_deg, lat_deg):
 
 
 def window_cells(resolution: int) -> npt.NDArray[np.uint64]:
-    """Return every cell whose centre falls inside the drawing window."""
+    """Return every cell whose center falls inside the drawing window."""
     longitude, latitude = np.meshgrid(
         np.linspace(WINDOW_LON[0], WINDOW_LON[1], 400),
         np.linspace(WINDOW_LAT[0], WINDOW_LAT[1], 400),
@@ -86,7 +86,7 @@ def cell_polygons(
     centers = to_lonlat(px.centers(cells, resolution))
     polygons = []
     for corner, center in zip(corners, centers, strict=True):
-        # Keep every corner on the same side of the seam as its own centre.
+        # Keep every corner on the same side of the seam as its own center.
         longitude = corner[:, 0] - 360.0 * np.round((corner[:, 0] - center[0]) / 360.0)
         polygons.append(np.stack((longitude, corner[:, 1]), axis=-1))
     return polygons
@@ -140,7 +140,7 @@ def draw_grid(
     highlight: dict[int, str] | None = None,
     centers: bool = True,
 ) -> None:
-    """Draw cell outlines, fill the covered cells, and mark cell centres."""
+    """Draw cell outlines, fill the covered cells, and mark cell centers."""
     from matplotlib.patches import Polygon
 
     covered = covered or set()
@@ -161,8 +161,8 @@ def draw_grid(
         )
     if centers:
         points = to_lonlat(px.centers(cells, resolution))
-        # Only genuinely covered cells get the emphasised centre. A highlighted
-        # near-miss keeps the plain marker, because its centre is what excluded it.
+        # Only genuinely covered cells get the emphasised center. A highlighted
+        # near-miss keeps the plain marker, because its center is what excluded it.
         inside = np.array([int(c) in covered for c in cells])
         axes.scatter(
             points[~inside, 0], points[~inside, 1], s=5, color=GRID_CENTER, zorder=3
@@ -198,6 +198,23 @@ def outline(axes: Any, points: npt.NDArray[np.float64]) -> None:
     axes.plot(points[:, 0], points[:, 1], color=REGION_LINE, linewidth=2.0, zorder=5)
 
 
+def quickstart_example() -> None:
+    """Run the landing-page example so its printed result cannot go stale."""
+    # --8<-- [start:quickstart]
+    import numpy as np
+
+    import polypix as px
+
+    centers = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    radii = np.deg2rad([5.0, 8.0])
+
+    coverage = px.cover_cap(centers, radii, resolution=8)
+    # --8<-- [end:quickstart]
+    # Guards the counts quoted on the landing page. Kept outside the published
+    # snippet so a first example reads as an example, not as a test.
+    assert coverage.counts.tolist() == [1502, 3824]
+
+
 def center_sampling(path: Path) -> None:
     """A cap, the cells it selects, and one cell it overlaps but misses."""
     cells = window_cells(RESOLUTION)
@@ -228,7 +245,7 @@ def center_sampling(path: Path) -> None:
     if missed is not None:
         anchor = missed[1].mean(axis=0)
         axes.annotate(
-            "overlapped,\ncentre outside",
+            "overlapped,\ncenter outside",
             xy=(anchor[0], anchor[1]),
             xytext=(anchor[0] + 2.4, anchor[1] + 1.4),
             color=LABEL,
@@ -319,7 +336,7 @@ def cover_sweep(path: Path) -> None:
 
 
 def cell_at(path: Path) -> None:
-    """Scattered directions, the cell each lands in, and that cell's centre."""
+    """Scattered directions, the cell each lands in, and that cell's center."""
     # --8<-- [start:cell-at]
     lon = [-11.0, -3.0, 5.0, 12.0]
     lat = [6.0, -7.0, 2.0, -9.0]
@@ -373,7 +390,7 @@ def touching_cells(resolution: int) -> dict[int, set[int]]:
     enough and needs no neighbour lookup the library does not offer. Cells that
     meet at a single point are deliberately not counted: a shared vertex is not
     visible enough to read as one region, and including it makes the graph too
-    dense to colour from a small palette.
+    dense to color from a small palette.
     """
     cells = np.arange(12 * 4**resolution, dtype=np.uint64)
     corners = np.round(px.corners(cells, resolution), 7)
@@ -401,7 +418,7 @@ def touching_cells(resolution: int) -> dict[int, set[int]]:
 def distinct_colors(resolution: int, palette: list[str]) -> list[str]:
     """Assign palette entries so no two touching cells get the same one.
 
-    Greedy, worst first. A HEALPix grid is planar, so four colours always
+    Greedy, worst first. A HEALPix grid is planar, so four colors always
     suffice and the palette has room to spare.
     """
     touching = touching_cells(resolution)
@@ -409,7 +426,7 @@ def distinct_colors(resolution: int, palette: list[str]) -> list[str]:
     used = [0] * len(palette)
     for cell in sorted(touching, key=lambda c: -len(touching[c])):
         taken = {assigned[n] for n in touching[cell] if n in assigned}
-        # Take the least-used free colour, not the first one. Picking the first
+        # Take the least-used free color, not the first one. Picking the first
         # leaves the dark end of the palette unused and the sphere washed out.
         choice = min(
             (i for i in range(len(palette)) if i not in taken),
@@ -428,8 +445,8 @@ def sphere_levels(path: Path) -> None:
 
     HEALPix cell edges are curved, and `corners()` returns only four points per
     cell, so drawing a coarse cell as a flat quadrilateral would misrepresent
-    its shape. Instead this draws a fine mesh and colours each fine cell by the
-    coarse cell its centre falls in, which recovers the true curved boundaries
+    its shape. Instead this draws a fine mesh and colors each fine cell by the
+    coarse cell its center falls in, which recovers the true curved boundaries
     using nothing but the public API.
     """
     import matplotlib.pyplot as plt
@@ -487,6 +504,7 @@ def sphere_levels(path: Path) -> None:
 
 
 def main() -> None:
+    quickstart_example()
     center_sampling(DOC_FIGURE_DIR / "center-sampling.svg")
     cover_cap(DOC_FIGURE_DIR / "cover-cap.svg")
     cover_footprint(DOC_FIGURE_DIR / "cover-footprint.svg")

@@ -84,11 +84,11 @@ When your input is points rather than regions, use `cell_at()`:
 ```
 
 ```{figure} assets/generated/cell-at.svg
-:alt: Four directions, each snapped to the grid cell containing it, with an arrow to that cell's centre.
+:alt: Four directions, each snapped to the grid cell containing it, with an arrow to that cell's center.
 :width: 100%
 :align: center
 
-`cell_at()` gives you the cell a direction falls in. `centers()` then gives that cell's centre, which is the arrow head, not where you started.
+`cell_at()` gives you the cell a direction falls in. `centers()` then gives that cell's center, which is the arrow head, not where you started.
 ```
 
 Note that `cell_centers` holds grid representatives, not the directions you
