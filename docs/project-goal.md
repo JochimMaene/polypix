@@ -1,18 +1,18 @@
-# Project Goal
+# Project goal
 
 ## Goal
 
 Polypix will become the default permissively licensed Python engine for
 converting large batches of valid convex spherical footprints and paired-edge
 strips into deterministic, center-sampled HEALPix RING cells through a
-minimal NumPy-first API and leading measured end-to-end CPU performance.
+minimal NumPy-first API and measured end-to-end CPU performance.
 
 This document defines the direction of the project while it remains in `0.x`.
-It is deliberately narrower than a roadmap. Some target API decisions below
+It is narrower than a roadmap. Some target API decisions below
 are breaking changes from the current release and will be introduced only with
 the necessary correctness, packaging, and performance evidence.
 
-## Primary User And Job
+## Primary user and job
 
 Polypix is for engineers and researchers running high-volume coverage
 simulations or spatial-indexing pipelines. They already have body-centered
@@ -26,7 +26,7 @@ Polypix begins after footprint generation. It does not model orbits,
 trajectories, attitude, sensors, fields of view, ellipsoid intersections, time,
 or access intervals.
 
-## Product Contract
+## Product contract
 
 ### Geometry
 
@@ -67,7 +67,7 @@ arc between consecutive samples represents the intended physical boundary.
 Polypix rejects exactly ambiguous geometry but cannot detect an undersampled
 trajectory whose minor arcs are mathematically valid.
 
-### Coverage Rule
+### Coverage rule
 
 A cell is covered when its center lies inside the footprint or on its boundary.
 Center sampling is the only coverage rule. Intersection, full-containment,
@@ -82,7 +82,7 @@ tolerance. Numerical uncertainty also depends on edge conditioning and the
 equivalent center-evaluation path; strategy differences are confined to
 centers numerically indistinguishable from a boundary.
 
-### Grid And Cell IDs
+### Grid and cell IDs
 
 HEALPix is the first and only committed grid. Polypix uses fixed-resolution
 RING ordering and calls the HEALPix order a `resolution`:
@@ -103,7 +103,7 @@ workload advantage. It would use an independently optimized implementation and
 ecosystem-native IDs. Polypix will not build a speculative grid protocol before
 that evidence exists.
 
-### Result Model
+### Result model
 
 Every coverage operation returns one `Coverage`, including a single footprint.
 Its canonical representation is:
@@ -120,9 +120,9 @@ promised to be ascending. Polypix never sorts solely for presentation.
 Explicit cells are the only committed result representation. Users can form a
 strip union explicitly with NumPy when needed.
 
-### Intended Public API
+### Intended public API
 
-The target public surface is intentionally small:
+The target public surface is:
 
 ```python
 cover_footprint(
@@ -160,7 +160,7 @@ library.
 There are no public grid objects, polygon classes, configuration objects,
 backend selectors, or algorithm controls.
 
-## Performance Contract
+## Performance contract
 
 Polypix optimizes first for complete public-call throughput over large batches
 of small convex footprints and strip intervals. Benchmarks include input
@@ -203,7 +203,7 @@ performance trade-offs. Public simplicity normally wins over marginal speed.
 Material end-to-end gains may justify contained internal complexity when the
 gain and maintenance cost are both measured.
 
-## Architecture And Distribution
+## Architecture and distribution
 
 The architecture consists of:
 
@@ -250,7 +250,7 @@ boundaries, hemisphere limits, invalid geometry, empty batches, ragged inputs,
 candidate sets, and parallel execution. Performance work may change strategy,
 never results.
 
-## Feature Admission
+## Feature admission
 
 A proposed feature earns a place only when all of the following are true:
 
@@ -266,7 +266,7 @@ Speculative abstractions, convenience aliases, and "someone might need this"
 are not sufficient. Feature trade-offs are assessed case by case with measured
 costs; there is no universal percentage threshold.
 
-## Explicit Non-Goals
+## Explicit non-goals
 
 The following are outside the committed product:
 
@@ -282,7 +282,7 @@ The following are outside the committed product:
 - multiple native backends or a generic grid abstraction;
 - a pure-Python fallback.
 
-## Evidence-Gated Experiments
+## Evidence-gated experiments
 
 Experiments are not roadmap promises. They exist to answer a measured question
 and are discarded when they do not justify their cost.
@@ -296,7 +296,7 @@ model.
 Other possible experiments include a second grid, GPU execution, or another
 coverage rule. Each must independently pass the feature-admission test.
 
-## Stability And Success
+## Stability and success
 
 While Polypix remains in `0.x`, clean breaking changes are preferred over
 deprecation aliases and compatibility layers. Each release is still tested,
@@ -306,8 +306,7 @@ Before 1.0, the target license, standard cell IDs, public API, supported wheel
 matrix, deterministic correctness, and benchmark contract must all be proven.
 After 1.0, Polypix follows semantic versioning and normal deprecation periods.
 
-The north star is to become the default Python choice for this focused job.
+The goal is to become the default Python choice for this focused job.
 PyPI downloads, downstream dependents, citations, and recurring real-world
 users are evidence of adoption, not reasons to broaden scope. Popularity should
-follow from being fast, correct, easy to install, easy to use, and deliberately
-small.
+follow from being fast, correct, easy to install, easy to use, and small.

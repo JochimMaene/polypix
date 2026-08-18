@@ -5,15 +5,18 @@
 //! has no general HEALPix runtime dependency.
 
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::f64::consts::TAU;
 use std::ops::Range;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use rayon::prelude::*;
 
+use crate::error::{NativeError, NativeResult};
 use crate::geometry::{
-    contains_center, dot, nearly_equal, normalize, prepare_polygon, validate_polygon, Polygon,
-    Vec3, CONTAINMENT_EPSILON,
+    contains_center, dot, nearly_equal, normalize, polygon_contains, prepare_polygon,
+    validate_polygon, Polygon, Vec3, CONTAINMENT_EPSILON,
 };
 
 pub(crate) const MAX_RESOLUTION: u8 = 29;
@@ -30,12 +33,15 @@ const CANDIDATE_PREPARATION_WORK: usize = 1 << 8;
 const CANDIDATE_RANGE_PROBE_WORK: usize = 1 << 5;
 const CANDIDATE_CENTER_CACHE_REUSE: usize = 3;
 const CANDIDATE_CENTER_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
+const CAP_COUNT_PARALLEL_MAX_BYTES: usize = 256 * 1024 * 1024;
 // Public transform measurements include allocation and pool startup. Boundaries
 // cross over earlier because each cell computes four face-coordinate corners.
 const CENTER_PARALLEL_MIN_CELLS: usize = 1 << 16;
 const BOUNDARY_PARALLEL_MIN_CELLS: usize = 1 << 14;
+const CELL_AT_PARALLEL_MIN_VECTORS: usize = 1 << 15;
 const SCAN_WORK_SAMPLE_SIZE: usize = 64;
 const ROTATION_RESYNC_STEPS: u64 = 64;
+const MAX_CACHED_SCAN_RING_RESOLUTION: u8 = 12;
 const INDEX_UNCERTAINTY_ULPS: f64 = 128.0;
 const LONGITUDE_BOUNDS_EPSILON: f64 = 1.0e-14;
 type CachedPool = Mutex<Option<(usize, Arc<rayon::ThreadPool>)>>;
@@ -45,6 +51,7 @@ pub(crate) struct Coverage {
     pub(crate) offsets: Vec<u64>,
 }
 
+#[derive(Clone, Copy)]
 struct Ring {
     start: u64,
     cells: u64,
@@ -53,10 +60,28 @@ struct Ring {
     radial: f64,
 }
 
+struct ScanRing {
+    ring: Ring,
+    step: f64,
+    step_sine: f64,
+    step_cosine: f64,
+}
+
 struct Quad {
     vertices: [Vec3; 4],
     edge_normals: [Vec3; 4],
     len: usize,
+}
+
+struct Cap {
+    axis: Vec3,
+    cosine_radius: f64,
+    squared_chord_radius: f64,
+    full_sphere: bool,
+    minimum_z: f64,
+    maximum_z: f64,
+    longitude: f64,
+    radial: f64,
 }
 
 enum PreparedFootprint {
@@ -71,36 +96,53 @@ fn longitude_bounds(vertices: &[Vec3], edge_normals: &[Vec3]) -> ([(f64, f64); 2
         return ([(0.0, TAU), (0.0, 0.0)], 1);
     }
 
-    let mut longitudes = vertices
-        .iter()
-        .map(|vertex| vertex[1].atan2(vertex[0]).rem_euclid(TAU))
-        .collect::<Vec<_>>();
-    longitudes.sort_unstable_by(f64::total_cmp);
+    // Common quads and 16-gons stay entirely on the stack. Each longitude is
+    // evaluated once, then the active slice is sorted in place. Keeping equal
+    // longitudes is important: thin north/south edges commonly have two
+    // vertices at the same longitude.
+    let mut inline_vertex_longitudes = [0.0_f64; 16];
+    let mut allocated_vertex_longitudes = Vec::new();
+    let vertex_longitudes = if vertices.len() <= inline_vertex_longitudes.len() {
+        &mut inline_vertex_longitudes[..vertices.len()]
+    } else {
+        allocated_vertex_longitudes.resize(vertices.len(), 0.0);
+        &mut allocated_vertex_longitudes
+    };
+    for (longitude, vertex) in vertex_longitudes.iter_mut().zip(vertices) {
+        *longitude = vertex[1].atan2(vertex[0]).rem_euclid(TAU);
+    }
 
+    let mut inline_sorted_longitudes = [0.0_f64; 16];
+    let mut allocated_sorted_longitudes = Vec::new();
+    let sorted_longitudes = if vertices.len() <= inline_sorted_longitudes.len() {
+        &mut inline_sorted_longitudes[..vertices.len()]
+    } else {
+        allocated_sorted_longitudes.resize(vertices.len(), 0.0);
+        &mut allocated_sorted_longitudes
+    };
+    sorted_longitudes.copy_from_slice(vertex_longitudes);
+    sorted_longitudes.sort_unstable_by(f64::total_cmp);
     let mut largest_gap = -1.0;
     let mut gap_index = 0;
-    for index in 0..longitudes.len() {
-        let next = if index + 1 == longitudes.len() {
-            longitudes[0] + TAU
+    for index in 0..sorted_longitudes.len() {
+        let next = if index + 1 == sorted_longitudes.len() {
+            sorted_longitudes[0] + TAU
         } else {
-            longitudes[index + 1]
+            sorted_longitudes[index + 1]
         };
-        let gap = next - longitudes[index];
+        let gap = next - sorted_longitudes[index];
         if gap > largest_gap {
             largest_gap = gap;
             gap_index = index;
         }
     }
-
-    let start = longitudes[(gap_index + 1) % longitudes.len()];
+    let start = sorted_longitudes[(gap_index + 1) % sorted_longitudes.len()];
     let end = start + TAU - largest_gap;
-    for (&edge_start, &edge_end) in vertices
-        .iter()
-        .zip(vertices.iter().cycle().skip(1))
-        .take(vertices.len())
-    {
-        let mut start_longitude = edge_start[1].atan2(edge_start[0]).rem_euclid(TAU);
-        let mut end_longitude = edge_end[1].atan2(edge_end[0]).rem_euclid(TAU);
+    for index in 0..vertices.len() {
+        let edge_start = vertices[index];
+        let edge_end = vertices[(index + 1) % vertices.len()];
+        let mut start_longitude = vertex_longitudes[index];
+        let mut end_longitude = vertex_longitudes[(index + 1) % vertices.len()];
         if start_longitude < start {
             start_longitude += TAU;
         }
@@ -201,6 +243,34 @@ fn ring_info(nside: u64, ring: u64) -> Ring {
     }
 }
 
+fn cached_scan_rings(resolution: u8) -> Option<&'static [ScanRing]> {
+    if resolution > MAX_CACHED_SCAN_RING_RESOLUTION {
+        return None;
+    }
+    static TABLES: OnceLock<Vec<OnceLock<Vec<ScanRing>>>> = OnceLock::new();
+    let tables = TABLES.get_or_init(|| {
+        (0..=MAX_CACHED_SCAN_RING_RESOLUTION)
+            .map(|_| OnceLock::new())
+            .collect()
+    });
+    Some(tables[resolution as usize].get_or_init(|| {
+        let nside = 1_u64 << resolution;
+        (1..4 * nside)
+            .map(|ring_index| {
+                let ring = ring_info(nside, ring_index);
+                let step = TAU / ring.cells as f64;
+                let (step_sine, step_cosine) = step.sin_cos();
+                ScanRing {
+                    ring,
+                    step,
+                    step_sine,
+                    step_cosine,
+                }
+            })
+            .collect()
+    }))
+}
+
 fn integer_sqrt(value: u64) -> u64 {
     let mut root = (value as f64).sqrt() as u64;
     while (root as u128 + 1) * (root as u128 + 1) <= value as u128 {
@@ -244,6 +314,105 @@ pub(crate) fn center(cell: u64, resolution: u8) -> Vec3 {
     let longitude = (offset as f64 + ring.shift) * TAU / ring.cells as f64;
     let (sine, cosine) = longitude.sin_cos();
     [ring.radial * cosine, ring.radial * sine, ring.z]
+}
+
+// Map one normalized direction through the analytical HEALPix RING
+// partition. The formulas use integer arithmetic after locating the ring so
+// pixel IDs remain exact through resolution 29.
+fn normalized_cell_at(direction: Vec3, resolution: u8) -> u64 {
+    let [x, y, z] = direction;
+    let nside = 1_u64 << resolution;
+    let nside_float = nside as f64;
+    let absolute_z = z.abs();
+    let radial = x.hypot(y);
+    // Longitude is undefined at an exact pole. Assign both poles to the
+    // longitude-zero pixel rather than letting signed zero choose a quadrant.
+    let longitude = if radial == 0.0 {
+        0.0
+    } else {
+        y.atan2(x).rem_euclid(TAU)
+    };
+    let longitude_quadrants = longitude / (TAU / 4.0);
+    let cap_cell_count = 2 * nside * (nside - 1);
+
+    if absolute_z <= 2.0 / 3.0 {
+        // The ascending and descending face-diagonal indices identify both
+        // the iso-latitude ring and the longitude index within that ring.
+        let longitude_coordinate = nside_float * (0.5 + longitude_quadrants);
+        let latitude_coordinate = nside_float * (0.75 * z);
+        let ascending = (longitude_coordinate - latitude_coordinate).floor() as i64;
+        let descending = (longitude_coordinate + latitude_coordinate).floor() as i64;
+        let local_ring = nside as i64 + 1 + ascending - descending;
+        let shift = 1 - (local_ring & 1);
+        let ring_cells = 4 * nside as i64;
+        let longitude_index =
+            ((ascending + descending - nside as i64 + shift + 1) / 2).rem_euclid(ring_cells);
+        return cap_cell_count + (local_ring as u64 - 1) * 4 * nside + longitude_index as u64;
+    }
+
+    let longitude_fraction = longitude_quadrants - longitude_quadrants.floor();
+    // Near a pole, `1 - |z|` loses all useful bits at high resolution: the
+    // first several resolution-29 ring centers have z == +/-1. Recover the
+    // same quantity from sin(theta)^2 / (1 + |z|) instead, which retains the
+    // radial components produced by `center()` and by callers.
+    let one_minus_absolute_z = radial * radial / (1.0 + absolute_z);
+    let polar_scale = nside_float * (3.0 * one_minus_absolute_z).sqrt();
+    // The polar branch is open at |z| == 2/3. Guard last-bit rounding at that
+    // transition so it cannot construct a non-polar ring.
+    let maximum_polar_scale = f64::from_bits(nside_float.to_bits() - 1);
+    let polar_scale = polar_scale.min(maximum_polar_scale);
+    let ascending = (longitude_fraction * polar_scale).floor() as u64;
+    let descending = ((1.0 - longitude_fraction) * polar_scale).floor() as u64;
+    let polar_ring = ascending + descending + 1;
+    let longitude_index =
+        ((longitude_quadrants * polar_ring as f64).floor() as u64) % (4 * polar_ring);
+
+    if z > 0.0 {
+        2 * polar_ring * (polar_ring - 1) + longitude_index
+    } else {
+        12 * nside * nside - 2 * polar_ring * (polar_ring + 1) + longitude_index
+    }
+}
+
+pub(crate) fn cells_at(vectors: &[f64], resolution: u8) -> NativeResult<Vec<u64>> {
+    debug_assert!(resolution <= MAX_RESOLUTION);
+    debug_assert!(vectors.len().is_multiple_of(3));
+    let vector_count = vectors.len() / 3;
+    let mut cells = Vec::new();
+    cells.try_reserve_exact(vector_count).map_err(|_| {
+        NativeError::materialization("Cell lookup result is too large to materialize.")
+    })?;
+    cells.resize(vector_count, 0_u64);
+    if vector_count < CELL_AT_PARALLEL_MIN_VECTORS {
+        for (index, (cell, values)) in cells.iter_mut().zip(vectors.chunks_exact(3)).enumerate() {
+            let direction = normalize([values[0], values[1], values[2]])
+                .map_err(|error| format!("vectors_xyz[{index}] {error}"))?;
+            *cell = normalized_cell_at(direction, resolution);
+        }
+        return Ok(cells);
+    }
+    let first_error = AtomicUsize::new(usize::MAX);
+    cells
+        .par_iter_mut()
+        .zip(vectors.par_chunks_exact(3))
+        .enumerate()
+        .for_each(
+            |(index, (cell, values))| match normalize([values[0], values[1], values[2]]) {
+                Ok(direction) => *cell = normalized_cell_at(direction, resolution),
+                Err(_) => {
+                    first_error.fetch_min(index, Ordering::Relaxed);
+                }
+            },
+        );
+    let error_index = first_error.load(Ordering::Relaxed);
+    if error_index != usize::MAX {
+        let start = error_index * 3;
+        let values = &vectors[start..start + 3];
+        let error = normalize([values[0], values[1], values[2]])
+            .expect_err("the recorded invalid vector remains invalid");
+        return Err(format!("vectors_xyz[{error_index}] {error}").into());
+    }
+    Ok(cells)
 }
 
 // Independently derived from the published HEALPix RING numbering and
@@ -434,22 +603,236 @@ fn ring_range(nside: u64, minimum_z: f64, maximum_z: f64) -> (u64, u64) {
     (first, last)
 }
 
+impl Cap {
+    #[inline(always)]
+    fn contains(&self, point: Vec3) -> bool {
+        if self.full_sphere {
+            return true;
+        }
+        let dx = point[0] - self.axis[0];
+        let dy = point[1] - self.axis[1];
+        let dz = point[2] - self.axis[2];
+        dx * dx + dy * dy + dz * dz <= self.squared_chord_radius
+    }
+
+    #[inline(always)]
+    fn contains_on_ring(&self, ring: &Ring, step: f64, offset: u64) -> bool {
+        if self.full_sphere {
+            return true;
+        }
+        let longitude = (offset as f64 + ring.shift) * step;
+        let (sine, cosine) = longitude.sin_cos();
+        let dx = ring.radial * cosine - self.axis[0];
+        let dy = ring.radial * sine - self.axis[1];
+        let dz = ring.z - self.axis[2];
+        dx * dx + dy * dy + dz * dz <= self.squared_chord_radius
+    }
+}
+
+fn prepare_caps(centers: &[f64], radii: &[f64]) -> Result<Vec<Cap>, String> {
+    debug_assert!(centers.len().is_multiple_of(3));
+    debug_assert_eq!(centers.len() / 3, radii.len());
+    centers
+        .chunks_exact(3)
+        .zip(radii)
+        .enumerate()
+        .map(|(index, (values, &radius))| {
+            let axis = normalize([values[0], values[1], values[2]])
+                .map_err(|error| format!("centers_xyz[{index}] {error}"))?;
+            if !radius.is_finite() || !(0.0..=std::f64::consts::PI).contains(&radius) {
+                return Err(format!(
+                    "radii_rad[{index}] must be finite and between 0 and pi."
+                ));
+            }
+            let effective_radius = (radius + CONTAINMENT_EPSILON).min(std::f64::consts::PI);
+            let (sine_radius, cosine_radius) = effective_radius.sin_cos();
+            let half_chord = (0.5 * effective_radius).sin();
+            let radial = axis[0].hypot(axis[1]);
+            // A cap reaches a pole exactly when the axis-to-pole dot product
+            // satisfies the same cosine predicate as any other point.
+            let maximum_z = if axis[2] >= cosine_radius {
+                1.0
+            } else {
+                axis[2] * cosine_radius + radial * sine_radius
+            };
+            let minimum_z = if -axis[2] >= cosine_radius {
+                -1.0
+            } else {
+                axis[2] * cosine_radius - radial * sine_radius
+            };
+            Ok(Cap {
+                axis,
+                cosine_radius,
+                squared_chord_radius: 4.0 * half_chord * half_chord,
+                full_sphere: effective_radius == std::f64::consts::PI,
+                minimum_z: minimum_z.clamp(-1.0, 1.0),
+                maximum_z: maximum_z.clamp(-1.0, 1.0),
+                longitude: axis[1].atan2(axis[0]).rem_euclid(TAU),
+                radial,
+            })
+        })
+        .collect()
+}
+
+fn cap_interval_range(
+    cap: &Cap,
+    ring: &Ring,
+    step: f64,
+    start: f64,
+    end: f64,
+    next_unscanned: &mut i64,
+) -> Option<Range<u64>> {
+    let first_value = start / step - ring.shift;
+    let last_value = end / step - ring.shift;
+    let index_uncertainty = INDEX_UNCERTAINTY_ULPS * f64::EPSILON * ring.cells as f64;
+    let ambiguous_first = (first_value - first_value.round()).abs() <= index_uncertainty;
+    let ambiguous_last = (last_value - last_value.round()).abs() <= index_uncertainty;
+    let nominal_first = first_value.ceil() as i64;
+    let nominal_last = last_value.floor() as i64;
+    let mut first = nominal_first - i64::from(ambiguous_first);
+    let mut last = nominal_last + i64::from(ambiguous_last);
+    first = first.max(0).max(*next_unscanned);
+    last = last.min((ring.cells - 1) as i64);
+    // The continuous solve is already much more precise than one discrete
+    // center. Invoke the definitive chord predicate only when an endpoint is
+    // numerically indistinguishable from an integer ring index; ordinary spans
+    // avoid two libm calls per crossed ring.
+    if ambiguous_first || ambiguous_last {
+        while first <= last && !cap.contains_on_ring(ring, step, first as u64) {
+            first += 1;
+        }
+        while last >= first && !cap.contains_on_ring(ring, step, last as u64) {
+            last -= 1;
+        }
+    }
+    if first > last {
+        return None;
+    }
+    *next_unscanned = last + 1;
+    Some(ring.start + first as u64..ring.start + last as u64 + 1)
+}
+
+fn visit_cap_ranges(cap: &Cap, resolution: u8, mut visit: impl FnMut(Range<u64>)) {
+    let nside = 1_u64 << resolution;
+    if cap.full_sphere {
+        visit(0..(12_u64 << (2 * resolution)));
+        return;
+    }
+    let (first_ring, last_ring) = ring_range(nside, cap.minimum_z, cap.maximum_z);
+    let ring_table = cached_scan_rings(resolution);
+
+    for ring_index in first_ring..=last_ring {
+        let uncached;
+        let scan_ring = if let Some(table) = ring_table {
+            &table[(ring_index - 1) as usize]
+        } else {
+            let ring = ring_info(nside, ring_index);
+            let step = TAU / ring.cells as f64;
+            let (step_sine, step_cosine) = step.sin_cos();
+            uncached = ScanRing {
+                ring,
+                step,
+                step_sine,
+                step_cosine,
+            };
+            &uncached
+        };
+        let ring = &scan_ring.ring;
+        let radial_difference = ring.radial - cap.radial;
+        let z_difference = ring.z - cap.axis[2];
+        let minimum_squared_distance =
+            radial_difference * radial_difference + z_difference * z_difference;
+        let longitude_amplitude = 4.0 * cap.radial * ring.radial;
+        if longitude_amplitude == 0.0 {
+            if minimum_squared_distance <= cap.squared_chord_radius {
+                visit(ring.start..ring.start + ring.cells);
+            }
+            continue;
+        }
+
+        let available = cap.squared_chord_radius - minimum_squared_distance;
+        if available >= longitude_amplitude {
+            visit(ring.start..ring.start + ring.cells);
+            continue;
+        }
+        let numerical_guard = 64.0
+            * f64::EPSILON
+            * (1.0 + cap.squared_chord_radius + minimum_squared_distance + longitude_amplitude);
+        if available < -numerical_guard {
+            continue;
+        }
+
+        // The continuous intersection is only an endpoint estimate. The
+        // definitive chord predicate below corrects the neighboring discrete
+        // centers, including a last-bit tangency.
+        let bounded_available = available.max(0.0).min(longitude_amplitude);
+        let half_width = if bounded_available <= 0.5 * longitude_amplitude {
+            2.0 * (bounded_available / longitude_amplitude).sqrt().asin()
+        } else {
+            2.0 * bounded_available
+                .sqrt()
+                .atan2((longitude_amplitude - bounded_available).max(0.0).sqrt())
+        };
+        let start = cap.longitude - half_width;
+        let end = cap.longitude + half_width;
+        let intervals = if start < 0.0 {
+            [(0.0, end), (start + TAU, TAU)]
+        } else if end > TAU {
+            [(0.0, end - TAU), (start, TAU)]
+        } else {
+            [(start, end), (0.0, 0.0)]
+        };
+        let interval_count = if start < 0.0 || end > TAU { 2 } else { 1 };
+        let step = scan_ring.step;
+        let mut next_unscanned = 0;
+        for &(interval_start, interval_end) in intervals.iter().take(interval_count) {
+            if let Some(range) = cap_interval_range(
+                cap,
+                ring,
+                step,
+                interval_start,
+                interval_end,
+                &mut next_unscanned,
+            ) {
+                visit(range);
+            }
+        }
+    }
+}
+
 fn cover_centers(
     vertices: &[Vec3],
     edge_normals: &[Vec3],
     resolution: u8,
     cells: &mut Vec<u64>,
     contains: impl Fn(f64, f64, f64) -> bool,
-) {
+) -> NativeResult<()> {
     let nside = 1_u64 << resolution;
     let (minimum_z, maximum_z) = polygon_z_bounds(vertices, edge_normals);
     let (first_ring, last_ring) = ring_range(nside, minimum_z, maximum_z);
     let (longitude_intervals, interval_count) = longitude_bounds(vertices, edge_normals);
+    let ring_table = cached_scan_rings(resolution);
 
     for ring_index in first_ring..=last_ring {
-        let ring = ring_info(nside, ring_index);
-        let step = TAU / ring.cells as f64;
-        let (step_sine, step_cosine) = step.sin_cos();
+        let uncached;
+        let scan_ring = if let Some(table) = ring_table {
+            &table[(ring_index - 1) as usize]
+        } else {
+            let ring = ring_info(nside, ring_index);
+            let step = TAU / ring.cells as f64;
+            let (step_sine, step_cosine) = step.sin_cos();
+            uncached = ScanRing {
+                ring,
+                step,
+                step_sine,
+                step_cosine,
+            };
+            &uncached
+        };
+        let ring = &scan_ring.ring;
+        let step = scan_ring.step;
+        let step_sine = scan_ring.step_sine;
+        let step_cosine = scan_ring.step_cosine;
         let mut next_unscanned = 0;
 
         for &(start, end) in longitude_intervals.iter().take(interval_count) {
@@ -487,6 +870,13 @@ fn cover_centers(
             let mut y = ring.radial * sine;
             for offset in first..=last as u64 {
                 if contains(x, y, ring.z) {
+                    if cells.len() == cells.capacity() {
+                        cells.try_reserve(1024).map_err(|_| {
+                            NativeError::materialization(
+                                "Coverage result is too large to materialize.",
+                            )
+                        })?;
+                    }
                     cells.push(ring.start + offset);
                 }
 
@@ -508,16 +898,17 @@ fn cover_centers(
             }
         }
     }
+    Ok(())
 }
 
-fn cover_quad_centers(quad: &Quad, resolution: u8, cells: &mut Vec<u64>) {
+fn cover_quad_centers(quad: &Quad, resolution: u8, cells: &mut Vec<u64>) -> NativeResult<()> {
     cover_centers(
         &quad.vertices[..quad.len],
         &quad.edge_normals[..quad.len],
         resolution,
         cells,
         |x, y, z| quad_contains(quad, x, y, z),
-    );
+    )
 }
 
 // The fixed-size path mirrors prepare_polygon deliberately: stack storage and
@@ -526,10 +917,20 @@ fn cover_quad_centers(quad: &Quad, resolution: u8, cells: &mut Vec<u64>) {
 fn prepare_quad(raw: &[f64], input_names: [&str; 4], allow_pinch: bool) -> Result<Quad, String> {
     debug_assert_eq!(raw.len(), 12);
     let mut vertices = [[0.0; 3]; 4];
-    let mut len = 0;
-    for (values, input_name) in raw.chunks_exact(3).zip(input_names) {
-        let vertex = normalize([values[0], values[1], values[2]])
+    for (index, (values, input_name)) in raw.chunks_exact(3).zip(input_names).enumerate() {
+        vertices[index] = normalize([values[0], values[1], values[2]])
             .map_err(|error| format!("{input_name} {error}"))?;
+    }
+    prepare_normalized_quad(vertices, allow_pinch)
+}
+
+fn prepare_normalized_quad(
+    normalized_vertices: [Vec3; 4],
+    allow_pinch: bool,
+) -> Result<Quad, String> {
+    let mut vertices = [[0.0; 3]; 4];
+    let mut len = 0;
+    for vertex in normalized_vertices {
         if !allow_pinch || len == 0 || !nearly_equal(vertices[len - 1], vertex) {
             vertices[len] = vertex;
             len += 1;
@@ -584,11 +985,11 @@ impl PreparedFootprint {
     fn contains(&self, point: Vec3) -> bool {
         match self {
             Self::Quad(quad) => quad_contains(quad, point[0], point[1], point[2]),
-            Self::Polygon(polygon) => contains_center(&polygon.edge_normals, point),
+            Self::Polygon(polygon) => polygon_contains(polygon, point),
         }
     }
 
-    fn cover(&self, resolution: u8, cells: &mut Vec<u64>) {
+    fn cover(&self, resolution: u8, cells: &mut Vec<u64>) -> NativeResult<()> {
         match self {
             Self::Quad(quad) => cover_quad_centers(quad, resolution, cells),
             Self::Polygon(polygon) => cover_centers(
@@ -596,7 +997,7 @@ impl PreparedFootprint {
                 &polygon.edge_normals,
                 resolution,
                 cells,
-                |x, y, z| contains_center(&polygon.edge_normals, [x, y, z]),
+                |x, y, z| polygon_contains(polygon, [x, y, z]),
             ),
         }
     }
@@ -616,33 +1017,80 @@ pub(crate) fn validate_cell_range(
     Ok(())
 }
 
-pub(crate) fn centers(cells: &[u64], resolution: u8) -> Vec<f64> {
+pub(crate) fn validate_coverage_arrays(
+    cells: &[u64],
+    offsets: &[u64],
+    resolution: u8,
+) -> Result<(), String> {
+    if offsets.is_empty() {
+        return Err("offsets must contain at least the initial zero.".to_owned());
+    }
+    if offsets[0] != 0 {
+        return Err("offsets must start at zero.".to_owned());
+    }
+    if offsets.windows(2).any(|pair| pair[0] > pair[1]) {
+        return Err("offsets must be nondecreasing.".to_owned());
+    }
+    if offsets[offsets.len() - 1] != cells.len() as u64 {
+        return Err("offsets[-1] must equal the number of cells.".to_owned());
+    }
+    validate_cell_range(cells, resolution, "cells")?;
+
+    let mut seen = HashSet::new();
+    for (segment_index, pair) in offsets.windows(2).enumerate() {
+        let segment = &cells[pair[0] as usize..pair[1] as usize];
+        if segment.windows(2).all(|values| values[0] < values[1]) {
+            continue;
+        }
+        seen.clear();
+        if segment.iter().any(|&cell| !seen.insert(cell)) {
+            return Err(format!(
+                "cells within segment {segment_index} must be unique."
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn centers(cells: &[u64], resolution: u8) -> NativeResult<Vec<f64>> {
+    let output_count = cells.len().checked_mul(3).ok_or_else(|| {
+        NativeError::materialization("Center result is too large to materialize.")
+    })?;
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(output_count)
+        .map_err(|_| NativeError::materialization("Center result is too large to materialize."))?;
     if cells.len() < CENTER_PARALLEL_MIN_CELLS {
-        let mut values = Vec::with_capacity(cells.len() * 3);
         for &cell in cells {
             values.extend(center(cell, resolution));
         }
-        return values;
+        return Ok(values);
     }
-    let mut values = vec![0.0; cells.len() * 3];
+    values.resize(output_count, 0.0);
     values
         .par_chunks_mut(3)
         .zip(cells.par_iter())
         .for_each(|(output, &cell)| output.copy_from_slice(&center(cell, resolution)));
-    values
+    Ok(values)
 }
 
-pub(crate) fn boundaries(cells: &[u64], resolution: u8) -> Vec<f64> {
+pub(crate) fn corners(cells: &[u64], resolution: u8) -> NativeResult<Vec<f64>> {
+    let output_count = cells.len().checked_mul(12).ok_or_else(|| {
+        NativeError::materialization("Corner result is too large to materialize.")
+    })?;
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(output_count)
+        .map_err(|_| NativeError::materialization("Corner result is too large to materialize."))?;
     if cells.len() < BOUNDARY_PARALLEL_MIN_CELLS {
-        let mut values = Vec::with_capacity(cells.len() * 12);
         for &cell in cells {
             for corner in boundary(cell, resolution) {
                 values.extend(corner);
             }
         }
-        return values;
+        return Ok(values);
     }
-    let mut values = vec![0.0; cells.len() * 12];
+    values.resize(output_count, 0.0);
     let fill = |output: &mut [f64], cell| {
         for (corner_output, corner) in output.chunks_exact_mut(3).zip(boundary(cell, resolution)) {
             corner_output.copy_from_slice(&corner);
@@ -652,7 +1100,7 @@ pub(crate) fn boundaries(cells: &[u64], resolution: u8) -> Vec<f64> {
         .par_chunks_mut(12)
         .zip(cells.par_iter())
         .for_each(|(output, &cell)| fill(output, cell));
-    values
+    Ok(values)
 }
 
 fn candidate_cells<'a>(
@@ -745,22 +1193,25 @@ fn candidate_centers(
     candidates: &[u64],
     resolution: u8,
     parallel: bool,
-) -> Option<Vec<Vec3>> {
-    let range = candidate_cache_range(plan)?;
+) -> NativeResult<Option<Vec<Vec3>>> {
+    let Some(range) = candidate_cache_range(plan) else {
+        return Ok(None);
+    };
     let cells = &candidates[range];
-    Some(if parallel {
-        cells
-            .par_iter()
-            .copied()
-            .map(|cell| center(cell, resolution))
-            .collect()
+    let mut centers = Vec::new();
+    centers.try_reserve_exact(cells.len()).map_err(|_| {
+        NativeError::materialization("Coverage result is too large to materialize.")
+    })?;
+    if parallel {
+        centers.resize(cells.len(), [0.0; 3]);
+        centers
+            .par_iter_mut()
+            .zip(cells.par_iter())
+            .for_each(|(output, &cell)| *output = center(cell, resolution));
     } else {
-        cells
-            .iter()
-            .copied()
-            .map(|cell| center(cell, resolution))
-            .collect()
-    })
+        centers.extend(cells.iter().map(|&cell| center(cell, resolution)));
+    }
+    Ok(Some(centers))
 }
 
 fn compute_candidate_chunk(
@@ -770,48 +1221,77 @@ fn compute_candidate_chunk(
     candidates: &[u64],
     range: Range<usize>,
     resolution: u8,
-) -> Coverage {
-    let mut coverage = Coverage {
-        // Candidate hit rates vary from empty to dense; reserving from the
-        // candidate-set size overallocates badly for sparse queries.
-        cells: Vec::new(),
-        offsets: Vec::with_capacity(range.len() + 1),
-    };
+) -> NativeResult<Coverage> {
+    // Candidate hit rates vary from empty to dense; reserving from the full
+    // candidate-set size overallocates badly for sparse queries. Grow
+    // fallibly as hits arrive instead.
+    let cells = Vec::new();
+    let mut offsets = Vec::new();
+    let offset_count = range.len().checked_add(1).ok_or_else(|| {
+        NativeError::materialization("Coverage result is too large to materialize.")
+    })?;
+    offsets.try_reserve_exact(offset_count).map_err(|_| {
+        NativeError::materialization("Coverage result is too large to materialize.")
+    })?;
+    let mut coverage = Coverage { cells, offsets };
     coverage.offsets.push(0);
     for index in range {
         let candidate_range = plan.ranges[index].clone();
         if let Some(centers) = centers {
-            coverage
-                .cells
-                .extend(candidate_range.filter_map(|candidate_index| {
-                    footprints[index]
-                        .contains(centers[candidate_index - plan.center_start])
-                        .then_some(candidates[candidate_index])
-                }));
+            for candidate_index in candidate_range {
+                let point = centers[candidate_index - plan.center_start];
+                if footprints[index].contains(point) {
+                    push_coverage_cell(&mut coverage.cells, candidates[candidate_index])?;
+                }
+            }
         } else {
-            coverage
-                .cells
-                .extend(candidate_range.filter_map(|candidate_index| {
-                    footprints[index]
-                        .contains(center(candidates[candidate_index], resolution))
-                        .then_some(candidates[candidate_index])
-                }));
+            for candidate_index in candidate_range {
+                let point = center(candidates[candidate_index], resolution);
+                if footprints[index].contains(point) {
+                    push_coverage_cell(&mut coverage.cells, candidates[candidate_index])?;
+                }
+            }
         }
         coverage.offsets.push(coverage.cells.len() as u64);
     }
-    coverage
+    Ok(coverage)
 }
 
-fn merge_coverages(chunks: Vec<Coverage>) -> Coverage {
-    let polygon_count: usize = chunks
+#[inline]
+fn push_coverage_cell(cells: &mut Vec<u64>, cell: u64) -> NativeResult<()> {
+    if cells.len() == cells.capacity() {
+        cells.try_reserve(1).map_err(|_| {
+            NativeError::materialization("Coverage result is too large to materialize.")
+        })?;
+    }
+    cells.push(cell);
+    Ok(())
+}
+
+fn merge_coverages(chunks: Vec<Coverage>) -> NativeResult<Coverage> {
+    let polygon_count = chunks.iter().try_fold(0_usize, |total, chunk| {
+        total.checked_add(chunk.offsets.len().saturating_sub(1))
+    });
+    let cell_count = chunks
         .iter()
-        .map(|chunk| chunk.offsets.len().saturating_sub(1))
-        .sum();
-    let cell_count: usize = chunks.iter().map(|chunk| chunk.cells.len()).sum();
-    let mut coverage = Coverage {
-        cells: Vec::with_capacity(cell_count),
-        offsets: Vec::with_capacity(polygon_count + 1),
+        .try_fold(0_usize, |total, chunk| total.checked_add(chunk.cells.len()));
+    let (Some(polygon_count), Some(cell_count)) = (polygon_count, cell_count) else {
+        return Err(NativeError::materialization(
+            "Coverage result is too large to materialize.",
+        ));
     };
+    let mut cells = Vec::new();
+    cells.try_reserve_exact(cell_count).map_err(|_| {
+        NativeError::materialization("Coverage result is too large to materialize.")
+    })?;
+    let mut offsets = Vec::new();
+    let offset_count = polygon_count.checked_add(1).ok_or_else(|| {
+        NativeError::materialization("Coverage result is too large to materialize.")
+    })?;
+    offsets.try_reserve_exact(offset_count).map_err(|_| {
+        NativeError::materialization("Coverage result is too large to materialize.")
+    })?;
+    let mut coverage = Coverage { cells, offsets };
     coverage.offsets.push(0);
 
     for chunk in chunks {
@@ -825,7 +1305,7 @@ fn merge_coverages(chunks: Vec<Coverage>) -> Coverage {
                 .map(|offset| base + offset),
         );
     }
-    coverage
+    Ok(coverage)
 }
 
 fn estimated_cap_cells(raw: &[f64], resolution: u8) -> usize {
@@ -960,8 +1440,8 @@ fn run_with_parallelism<T: Send>(
 fn compute_coverage_chunks(
     item_count: usize,
     parallel: bool,
-    chunk: impl Fn(std::ops::Range<usize>) -> Result<Coverage, String> + Send + Sync,
-) -> Result<Coverage, String> {
+    chunk: impl Fn(std::ops::Range<usize>) -> NativeResult<Coverage> + Send + Sync,
+) -> NativeResult<Coverage> {
     if !parallel || item_count == 0 {
         return chunk(0..item_count);
     }
@@ -979,15 +1459,15 @@ fn compute_coverage_chunks(
     // Rayon preserves indexed collection order. Resolve errors afterward so
     // multiple invalid chunks always report the lowest input range.
     let chunks = chunks.into_iter().collect::<Result<Vec<_>, _>>()?;
-    Ok(merge_coverages(chunks))
+    merge_coverages(chunks)
 }
 
 fn dispatch_coverage(
     item_count: usize,
     parallel_worthwhile: bool,
     threads: Option<usize>,
-    chunk: impl Fn(std::ops::Range<usize>) -> Result<Coverage, String> + Send + Sync,
-) -> Result<Coverage, String> {
+    chunk: impl Fn(std::ops::Range<usize>) -> NativeResult<Coverage> + Send + Sync,
+) -> NativeResult<Coverage> {
     // The outer result covers pool creation; `?` leaves the chunk computation
     // result returned by the selected execution context.
     run_with_parallelism(item_count, parallel_worthwhile, threads, |parallel| {
@@ -1001,13 +1481,20 @@ fn expected_cells_per_footprint(resolution: u8) -> usize {
     1_usize << resolution.saturating_sub(3).min(6)
 }
 
+fn expected_cells_per_strip_segment(resolution: u8) -> usize {
+    // Swept intervals are commonly longer than compact footprints. The EO
+    // workload returns about 64 cells per resolution-6 segment; bounding this
+    // at 64 avoids repeated growth without scaling reservations indefinitely.
+    1_usize << resolution.min(6)
+}
+
 fn compute_candidate_coverage(
     item_count: usize,
     candidates: &[u64],
     resolution: u8,
     threads: Option<usize>,
     prepare: impl Fn(usize) -> Result<PreparedFootprint, String> + Send + Sync,
-) -> Result<Coverage, String> {
+) -> NativeResult<Coverage> {
     let prepare_all = |parallel| {
         let prepared = if parallel {
             (0..item_count)
@@ -1022,16 +1509,16 @@ fn compute_candidate_coverage(
         prepared.into_iter().collect::<Result<Vec<_>, _>>()
     };
     let compute_planned = |footprints: &[PreparedFootprint], plan: &CandidatePlan, parallel| {
-        let centers = candidate_centers(plan, candidates, resolution, parallel);
+        let centers = candidate_centers(plan, candidates, resolution, parallel)?;
         compute_coverage_chunks(item_count, parallel, |range| {
-            Ok(compute_candidate_chunk(
+            compute_candidate_chunk(
                 footprints,
                 plan,
                 centers.as_deref(),
                 candidates,
                 range,
                 resolution,
-            ))
+            )
         })
     };
     // Planning performs two binary searches per footprint. This proxy tracks
@@ -1069,10 +1556,29 @@ fn compute_mixed_chunk(
     offsets: &[u64],
     range: Range<usize>,
     resolution: u8,
-) -> Result<Coverage, String> {
+) -> NativeResult<Coverage> {
+    let expected_cells = range
+        .len()
+        .checked_mul(expected_cells_per_footprint(resolution))
+        .ok_or_else(|| {
+            NativeError::materialization("Coverage result is too large to materialize.")
+        })?;
+    let mut cells = Vec::new();
+    cells.try_reserve_exact(expected_cells).map_err(|_| {
+        NativeError::materialization("Coverage result is too large to materialize.")
+    })?;
+    let mut offsets_output = Vec::new();
+    let offset_count = range.len().checked_add(1).ok_or_else(|| {
+        NativeError::materialization("Coverage result is too large to materialize.")
+    })?;
+    offsets_output
+        .try_reserve_exact(offset_count)
+        .map_err(|_| {
+            NativeError::materialization("Coverage result is too large to materialize.")
+        })?;
     let mut coverage = Coverage {
-        cells: Vec::with_capacity(range.len() * expected_cells_per_footprint(resolution)),
-        offsets: Vec::with_capacity(range.len() + 1),
+        cells,
+        offsets: offsets_output,
     };
     coverage.offsets.push(0);
     for index in range {
@@ -1080,8 +1586,8 @@ fn compute_mixed_chunk(
         let end = offsets[index + 1] as usize;
         let raw = &vertices[start * 3..end * 3];
         let footprint = PreparedFootprint::from_raw(raw)
-            .map_err(|error| format!("footprints_xyz[{index}]: {error}"))?;
-        footprint.cover(resolution, &mut coverage.cells);
+            .map_err(|error| NativeError::from(format!("footprints_xyz[{index}]: {error}")))?;
+        footprint.cover(resolution, &mut coverage.cells)?;
         coverage.offsets.push(coverage.cells.len() as u64);
     }
     Ok(coverage)
@@ -1093,7 +1599,7 @@ fn compute_mixed_coverage(
     resolution: u8,
     candidates: Option<&[u64]>,
     threads: Option<usize>,
-) -> Result<Coverage, String> {
+) -> NativeResult<Coverage> {
     debug_assert!(vertices.len().is_multiple_of(3));
     let vertex_count = vertices.len() / 3;
     debug_assert!(!offsets.is_empty());
@@ -1135,7 +1641,7 @@ pub(crate) fn cover(
     resolution: u8,
     raw_candidates: Option<&[u64]>,
     threads: Option<usize>,
-) -> Result<Coverage, String> {
+) -> NativeResult<Coverage> {
     debug_assert!(resolution <= MAX_RESOLUTION);
     let candidates = candidate_cells(raw_candidates, resolution)?;
     compute_mixed_coverage(
@@ -1145,6 +1651,304 @@ pub(crate) fn cover(
         candidates.as_deref(),
         threads,
     )
+}
+
+fn expected_cells_for_cap(cap: &Cap, resolution: u8) -> usize {
+    let sphere_fraction = 0.5 * (1.0 - cap.cosine_radius).clamp(0.0, 2.0);
+    let cell_count = (12_u64 << (2 * resolution)) as f64;
+    (sphere_fraction * cell_count).min(usize::MAX as f64).ceil() as usize
+}
+
+fn compute_cap_chunk(caps: &[Cap], range: Range<usize>, resolution: u8) -> NativeResult<Coverage> {
+    let expected_cells = range.clone().fold(0_usize, |total, index| {
+        total.saturating_add(expected_cells_for_cap(&caps[index], resolution))
+    });
+    let mut cells = Vec::new();
+    cells.try_reserve_exact(expected_cells).map_err(|_| {
+        NativeError::materialization("Coverage result is too large to materialize.")
+    })?;
+    let mut offsets = Vec::new();
+    let offset_count = range.len().checked_add(1).ok_or_else(|| {
+        NativeError::materialization("Coverage result is too large to materialize.")
+    })?;
+    offsets.try_reserve_exact(offset_count).map_err(|_| {
+        NativeError::materialization("Coverage result is too large to materialize.")
+    })?;
+    let mut coverage = Coverage { cells, offsets };
+    coverage.offsets.push(0);
+    for index in range {
+        let mut allocation_error = false;
+        visit_cap_ranges(&caps[index], resolution, |cells| {
+            if allocation_error {
+                return;
+            }
+            let Ok(additional) = usize::try_from(cells.end - cells.start) else {
+                allocation_error = true;
+                return;
+            };
+            if coverage.cells.try_reserve(additional).is_err() {
+                allocation_error = true;
+                return;
+            }
+            coverage.cells.extend(cells);
+        });
+        if allocation_error {
+            return Err(NativeError::materialization(
+                "Coverage result is too large to materialize.",
+            ));
+        }
+        coverage.offsets.push(coverage.cells.len() as u64);
+    }
+    Ok(coverage)
+}
+
+fn plan_cap_candidates(caps: &[Cap], candidates: &[u64], resolution: u8) -> CandidatePlan {
+    let ranges = caps
+        .iter()
+        .map(|cap| candidate_range(candidates, resolution, cap.minimum_z, cap.maximum_z))
+        .collect::<Vec<_>>();
+    let total_visits = ranges
+        .iter()
+        .fold(0_usize, |total, range| total.saturating_add(range.len()));
+    let center_start = ranges.iter().map(|range| range.start).min().unwrap_or(0);
+    let center_end = ranges.iter().map(|range| range.end).max().unwrap_or(0);
+    CandidatePlan {
+        ranges,
+        center_start,
+        center_end,
+        total_visits,
+    }
+}
+
+fn compute_cap_candidate_chunk(
+    caps: &[Cap],
+    plan: &CandidatePlan,
+    centers: Option<&[Vec3]>,
+    candidates: &[u64],
+    range: Range<usize>,
+    resolution: u8,
+) -> NativeResult<Coverage> {
+    let cells = Vec::new();
+    let mut offsets = Vec::new();
+    let offset_count = range.len().checked_add(1).ok_or_else(|| {
+        NativeError::materialization("Coverage result is too large to materialize.")
+    })?;
+    offsets.try_reserve_exact(offset_count).map_err(|_| {
+        NativeError::materialization("Coverage result is too large to materialize.")
+    })?;
+    let mut coverage = Coverage { cells, offsets };
+    coverage.offsets.push(0);
+    for index in range {
+        let candidate_range = plan.ranges[index].clone();
+        if let Some(centers) = centers {
+            for candidate_index in candidate_range {
+                let point = centers[candidate_index - plan.center_start];
+                if caps[index].contains(point) {
+                    push_coverage_cell(&mut coverage.cells, candidates[candidate_index])?;
+                }
+            }
+        } else {
+            for candidate_index in candidate_range {
+                let point = center(candidates[candidate_index], resolution);
+                if caps[index].contains(point) {
+                    push_coverage_cell(&mut coverage.cells, candidates[candidate_index])?;
+                }
+            }
+        }
+        coverage.offsets.push(coverage.cells.len() as u64);
+    }
+    Ok(coverage)
+}
+
+pub(crate) fn cover_caps(
+    centers: &[f64],
+    radii: &[f64],
+    resolution: u8,
+    raw_candidates: Option<&[u64]>,
+    threads: Option<usize>,
+) -> NativeResult<Coverage> {
+    debug_assert!(resolution <= MAX_RESOLUTION);
+    let caps = prepare_caps(centers, radii)?;
+    let candidates = candidate_cells(raw_candidates, resolution)?;
+    if let Some(candidates) = candidates.as_deref() {
+        let plan = plan_cap_candidates(&caps, candidates, resolution);
+        let centers = candidate_centers(&plan, candidates, resolution, false)?;
+        return dispatch_coverage(
+            caps.len(),
+            plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS,
+            threads,
+            |range| {
+                compute_cap_candidate_chunk(
+                    &caps,
+                    &plan,
+                    centers.as_deref(),
+                    candidates,
+                    range,
+                    resolution,
+                )
+            },
+        );
+    }
+
+    let parallel_work = caps.iter().fold(
+        caps.len().saturating_mul(SCAN_PREPARATION_WORK),
+        |total, cap| total.saturating_add(expected_cells_for_cap(cap, resolution)),
+    );
+    dispatch_coverage(
+        caps.len(),
+        parallel_work >= SCAN_PARALLEL_MIN_WORK,
+        threads,
+        |range| compute_cap_chunk(&caps, range, resolution),
+    )
+}
+
+fn zeroed_cap_deltas(cell_count: usize) -> NativeResult<Vec<i64>> {
+    let length = cell_count.checked_add(1).ok_or_else(|| {
+        NativeError::materialization("Dense cap-overlap result is too large to materialize.")
+    })?;
+    let mut deltas = Vec::new();
+    deltas.try_reserve_exact(length).map_err(|_| {
+        NativeError::materialization("Dense cap-overlap result is too large to materialize.")
+    })?;
+    deltas.resize(length, 0_i64);
+    Ok(deltas)
+}
+
+fn count_cap_chunk(
+    caps: &[Cap],
+    range: Range<usize>,
+    resolution: u8,
+    cell_count: usize,
+) -> NativeResult<Vec<i64>> {
+    let mut deltas = zeroed_cap_deltas(cell_count)?;
+    for index in range {
+        visit_cap_ranges(&caps[index], resolution, |cells| {
+            deltas[cells.start as usize] += 1;
+            deltas[cells.end as usize] -= 1;
+        });
+    }
+    Ok(deltas)
+}
+
+pub(crate) fn count_caps_per_cell(
+    centers: &[f64],
+    radii: &[f64],
+    resolution: u8,
+    raw_cells: Option<&[u64]>,
+    threads: Option<usize>,
+) -> NativeResult<Vec<i64>> {
+    debug_assert!(resolution <= MAX_RESOLUTION);
+    let caps = prepare_caps(centers, radii)?;
+    let raw_cell_count = 12_u64 << (2 * resolution);
+    let cell_count = usize::try_from(raw_cell_count).map_err(|_| {
+        NativeError::materialization("Dense cap-overlap result is too large to materialize.")
+    })?;
+    if caps.len() > i64::MAX as usize {
+        return Err("Too many caps to represent overlap counts as int64."
+            .to_owned()
+            .into());
+    }
+    if let Some(cells) = raw_cells {
+        validate_cell_range(cells, resolution, "cells")?;
+        let work = cells.len().saturating_mul(caps.len());
+        let mut counts = Vec::new();
+        counts.try_reserve_exact(cells.len()).map_err(|_| {
+            NativeError::materialization("Selected cap-overlap result is too large to materialize.")
+        })?;
+        counts.resize(cells.len(), 0_i64);
+        return run_with_parallelism(
+            cells.len(),
+            work >= CANDIDATE_PARALLEL_MIN_VISITS,
+            threads,
+            |parallel| {
+                let count = |cell: u64| {
+                    let point = center(cell, resolution);
+                    caps.iter().filter(|cap| cap.contains(point)).count() as i64
+                };
+                if parallel {
+                    counts
+                        .par_iter_mut()
+                        .zip(cells.par_iter())
+                        .for_each(|(output, &cell)| *output = count(cell));
+                } else {
+                    for (output, &cell) in counts.iter_mut().zip(cells) {
+                        *output = count(cell);
+                    }
+                }
+                counts
+            },
+        )
+        .map_err(NativeError::from);
+    }
+    if caps.is_empty() {
+        let mut counts = zeroed_cap_deltas(cell_count)?;
+        counts.pop();
+        return Ok(counts);
+    }
+
+    let parallel_work = caps.iter().fold(
+        caps.len().saturating_mul(SCAN_PREPARATION_WORK),
+        |total, cap| total.saturating_add(expected_cells_for_cap(cap, resolution)),
+    );
+    let available_workers = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1);
+    let maximum_workers = match threads {
+        Some(requested) => requested.min(available_workers),
+        None => rayon::current_num_threads(),
+    }
+    .min(caps.len());
+    let local_bytes = cell_count
+        .checked_add(1)
+        .and_then(|length| length.checked_mul(std::mem::size_of::<i64>()))
+        .and_then(|bytes| bytes.checked_mul(maximum_workers))
+        .unwrap_or(usize::MAX);
+    run_with_parallelism(
+        caps.len(),
+        parallel_work >= SCAN_PARALLEL_MIN_WORK && local_bytes <= CAP_COUNT_PARALLEL_MAX_BYTES,
+        threads,
+        |parallel| {
+            let worker_count = if parallel {
+                rayon::current_num_threads().min(caps.len())
+            } else {
+                1
+            };
+            let chunk_size = caps.len().div_ceil(worker_count);
+            let ranges = (0..caps.len())
+                .step_by(chunk_size)
+                .map(|start| start..(start + chunk_size).min(caps.len()))
+                .collect::<Vec<_>>();
+            let partial = if parallel {
+                ranges
+                    .into_par_iter()
+                    .map(|range| count_cap_chunk(&caps, range, resolution, cell_count))
+                    .collect::<Vec<_>>()
+            } else {
+                ranges
+                    .into_iter()
+                    .map(|range| count_cap_chunk(&caps, range, resolution, cell_count))
+                    .collect::<Vec<_>>()
+            };
+            let mut partial = partial.into_iter().collect::<Result<Vec<_>, _>>()?;
+            let mut deltas = partial
+                .pop()
+                .expect("at least one cap produces one partial result");
+            for other in partial {
+                for (total, value) in deltas.iter_mut().zip(other) {
+                    *total += value;
+                }
+            }
+            let mut running = 0_i64;
+            for value in deltas.iter_mut().take(cell_count) {
+                running += *value;
+                debug_assert!(running >= 0);
+                *value = running;
+            }
+            debug_assert_eq!(running + deltas[cell_count], 0);
+            deltas.pop();
+            Ok(deltas)
+        },
+    )?
 }
 
 fn strip_quad(left: &[f64], right: &[f64], index: usize) -> [f64; 12] {
@@ -1167,19 +1971,12 @@ fn strip_quad(left: &[f64], right: &[f64], index: usize) -> [f64; 12] {
 }
 
 fn prepare_strip_footprint(
-    left: &[f64],
-    right: &[f64],
+    left: &[Vec3],
+    right: &[Vec3],
     index: usize,
 ) -> Result<PreparedFootprint, String> {
-    let raw = strip_quad(left, right, index);
-    prepare_quad(
-        &raw,
-        [
-            "left_edge_xyz",
-            "right_edge_xyz",
-            "right_edge_xyz",
-            "left_edge_xyz",
-        ],
+    prepare_normalized_quad(
+        [left[index], right[index], right[index + 1], left[index + 1]],
         true,
     )
     .map(PreparedFootprint::Quad)
@@ -1187,32 +1984,45 @@ fn prepare_strip_footprint(
 }
 
 fn compute_strip_chunk(
-    left: &[f64],
-    right: &[f64],
+    left: &[Vec3],
+    right: &[Vec3],
     range: Range<usize>,
     resolution: u8,
-) -> Result<Coverage, String> {
+) -> NativeResult<Coverage> {
     let count = range.len();
-    let mut coverage = Coverage {
-        cells: Vec::with_capacity(count * expected_cells_per_footprint(resolution)),
-        offsets: Vec::with_capacity(count + 1),
-    };
+    let expected_cells = count
+        .checked_mul(expected_cells_per_strip_segment(resolution))
+        .ok_or_else(|| {
+            NativeError::materialization("Coverage result is too large to materialize.")
+        })?;
+    let mut cells = Vec::new();
+    cells.try_reserve_exact(expected_cells).map_err(|_| {
+        NativeError::materialization("Coverage result is too large to materialize.")
+    })?;
+    let mut offsets = Vec::new();
+    let offset_count = count.checked_add(1).ok_or_else(|| {
+        NativeError::materialization("Coverage result is too large to materialize.")
+    })?;
+    offsets.try_reserve_exact(offset_count).map_err(|_| {
+        NativeError::materialization("Coverage result is too large to materialize.")
+    })?;
+    let mut coverage = Coverage { cells, offsets };
     coverage.offsets.push(0);
     for index in range {
         let footprint = prepare_strip_footprint(left, right, index)?;
-        footprint.cover(resolution, &mut coverage.cells);
+        footprint.cover(resolution, &mut coverage.cells)?;
         coverage.offsets.push(coverage.cells.len() as u64);
     }
     Ok(coverage)
 }
 
-pub(crate) fn cover_strip(
+pub(crate) fn cover_sweep(
     left: &[f64],
     right: &[f64],
     resolution: u8,
     raw_candidates: Option<&[u64]>,
     threads: Option<usize>,
-) -> Result<Coverage, String> {
+) -> NativeResult<Coverage> {
     debug_assert!(resolution <= MAX_RESOLUTION);
     debug_assert!(left.len().is_multiple_of(3));
     debug_assert!(right.len().is_multiple_of(3));
@@ -1221,13 +2031,25 @@ pub(crate) fn cover_strip(
     debug_assert!(sample_count >= 2);
     let segment_count = sample_count - 1;
     let candidates = candidate_cells(raw_candidates, resolution)?;
+    let normalize_samples = |values: &[f64], name: &str| {
+        values
+            .chunks_exact(3)
+            .enumerate()
+            .map(|(index, value)| {
+                normalize([value[0], value[1], value[2]])
+                    .map_err(|error| format!("{name}[{index}] {error}"))
+            })
+            .collect::<Result<Vec<_>, _>>()
+    };
+    let normalized_left = normalize_samples(left, "left_edge_xyz")?;
+    let normalized_right = normalize_samples(right, "right_edge_xyz")?;
     if let Some(candidates) = candidates.as_deref() {
         return compute_candidate_coverage(
             segment_count,
             candidates,
             resolution,
             threads,
-            |index| prepare_strip_footprint(left, right, index),
+            |index| prepare_strip_footprint(&normalized_left, &normalized_right, index),
         );
     }
     let parallel_work = strip_parallel_work(left, right, segment_count, resolution, threads);
@@ -1235,17 +2057,17 @@ pub(crate) fn cover_strip(
         segment_count,
         parallel_work >= SCAN_PARALLEL_MIN_WORK,
         threads,
-        |range| compute_strip_chunk(left, right, range, resolution),
+        |range| compute_strip_chunk(&normalized_left, &normalized_right, range, resolution),
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        accumulated_scan_work, candidate_cache_range, integer_sqrt, ring_info, ring_of_cell,
-        ring_start, ring_to_face_xy, CandidatePlan, CANDIDATE_CENTER_CACHE_MAX_BYTES,
-        CANDIDATE_CENTER_CACHE_REUSE, ROTATION_RESYNC_STEPS, SCAN_PREPARATION_WORK,
-        SCAN_WORK_SAMPLE_SIZE, TAU,
+        accumulated_scan_work, candidate_cache_range, cells_at, center, integer_sqrt, ring_info,
+        ring_of_cell, ring_start, ring_to_face_xy, CandidatePlan, CANDIDATE_CENTER_CACHE_MAX_BYTES,
+        CANDIDATE_CENTER_CACHE_REUSE, CELL_AT_PARALLEL_MIN_VECTORS, MAX_RESOLUTION,
+        ROTATION_RESYNC_STEPS, SCAN_PREPARATION_WORK, SCAN_WORK_SAMPLE_SIZE, TAU,
     };
     use crate::geometry::CONTAINMENT_EPSILON;
 
@@ -1270,6 +2092,190 @@ mod tests {
                 assert_eq!(ring_of_cell(start, nside), ring);
                 assert_eq!(ring_of_cell(next_start - 1, nside), ring);
             }
+        }
+    }
+
+    #[test]
+    fn direction_index_round_trips_every_low_resolution_center() {
+        for resolution in 0..=6 {
+            let cell_count = 12_u64 << (2 * resolution);
+            let vectors = (0..cell_count)
+                .flat_map(|cell| center(cell, resolution))
+                .collect::<Vec<_>>();
+            let actual = cells_at(&vectors, resolution).expect("cell centers are valid vectors");
+            assert_eq!(actual, (0..cell_count).collect::<Vec<_>>());
+        }
+    }
+
+    #[test]
+    fn direction_index_matches_external_ring_fixtures() {
+        // Generated independently with healpy 1.19.0 after scale-resistant
+        // normalization of the input vectors.
+        let vectors = [
+            [0.2672612419124244, 0.5345224838248488, 0.8017837257372732],
+            [-0.4558423058385518, 0.5698028822981898, 0.6837634587578277],
+            [
+                0.6584754724302423,
+                -0.7525433970631341,
+                0.009406792463289177,
+            ],
+            [9.999999999975e-7, -1.999999999995e-6, 0.9999999999975],
+            [-2.999999999985e-6, 9.99999999995e-7, -0.999999999995],
+            [
+                0.9578262852211513,
+                -9.578262852211514e-13,
+                0.2873478855663454,
+            ],
+            [
+                -0.8192319205190405,
+                8.192319205190405e-10,
+                -0.5734623443633283,
+            ],
+            [0.13375998748853218, -0.4958906853233388, 0.8580213831581456],
+        ];
+        let flat = vectors.into_iter().flatten().collect::<Vec<_>>();
+        let fixtures = [
+            (0, [0, 1, 7, 3, 9, 4, 6, 3]),
+            (1, [5, 6, 26, 3, 45, 12, 32, 10]),
+            (3, [64, 123, 395, 3, 765, 272, 608, 55]),
+            (
+                8,
+                [
+                    78_151, 124_857, 390_517, 3, 786_429, 279_040, 619_520, 56_644,
+                ],
+            ),
+            (
+                16,
+                [
+                    5_107_911_284,
+                    8_149_267_364,
+                    25_527_416_103,
+                    3,
+                    51_539_607_549,
+                    18_364_891_136,
+                    40_547_647_488,
+                    3_658_766_826,
+                ],
+            ),
+            (
+                MAX_RESOLUTION,
+                [
+                    342_791_708_007_862_944,
+                    546_893_863_235_213_651,
+                    1_713_114_317_439_948_189,
+                    4_323_703,
+                    3_458_764_513_811_896_020,
+                    1_232_447_918_997_241_856,
+                    2_721_117_860_851_089_407,
+                    245_535_301_084_867_451,
+                ],
+            ),
+        ];
+
+        for (resolution, expected) in fixtures {
+            assert_eq!(cells_at(&flat, resolution).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn direction_index_retains_resolution_29_polar_distance() {
+        let resolution = MAX_RESOLUTION;
+        let nside = 1_u64 << resolution;
+        let cell_count = 12 * nside * nside;
+        let mut cells = Vec::new();
+        for ring in 1..=32 {
+            let north_start = ring_start(nside, ring);
+            let south_start = ring_start(nside, 4 * nside - ring);
+            for offset in [0, 2 * ring, 4 * ring - 1] {
+                cells.push(north_start + offset);
+                cells.push(south_start + offset);
+            }
+        }
+        cells.extend([0, 3, cell_count - 4, cell_count - 1]);
+        cells.sort_unstable();
+        cells.dedup();
+        let vectors = cells
+            .iter()
+            .flat_map(|&cell| center(cell, resolution))
+            .collect::<Vec<_>>();
+
+        assert_eq!(cells_at(&vectors, resolution).unwrap(), cells);
+    }
+
+    #[test]
+    fn direction_index_is_scale_invariant_and_rejects_invalid_vectors() {
+        let directions = [[1.0, 2.0, 3.0], [-4.0, 5.0, -6.0]];
+        let reference = directions.into_iter().flatten().collect::<Vec<_>>();
+        let tiny = reference
+            .iter()
+            .map(|value| value * 1.0e-300)
+            .collect::<Vec<_>>();
+        let huge = reference
+            .iter()
+            .map(|value| value * 1.0e300)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            cells_at(&tiny, 12).unwrap(),
+            cells_at(&reference, 12).unwrap()
+        );
+        assert_eq!(
+            cells_at(&huge, 12).unwrap(),
+            cells_at(&reference, 12).unwrap()
+        );
+
+        assert_eq!(
+            cells_at(&[1.0, 0.0, 0.0, f64::NAN, 0.0, 1.0], 3)
+                .unwrap_err()
+                .to_string(),
+            "vectors_xyz[1] must contain only finite values."
+        );
+        assert_eq!(
+            cells_at(&[0.0, 0.0, 0.0], 3).unwrap_err().to_string(),
+            "vectors_xyz[0] must not be zero-length."
+        );
+
+        let vector_count = CELL_AT_PARALLEL_MIN_VECTORS + 1;
+        let mut parallel = [1.0, 0.0, 0.0].repeat(vector_count);
+        parallel[17 * 3] = f64::NAN;
+        parallel[(vector_count - 2) * 3..(vector_count - 1) * 3].fill(0.0);
+        assert_eq!(
+            cells_at(&parallel, 3).unwrap_err().to_string(),
+            "vectors_xyz[17] must contain only finite values."
+        );
+    }
+
+    #[test]
+    fn direction_index_assigns_poles_and_exact_transitions_deterministically() {
+        let negative_zero = -0.0;
+        let transition_x = 5.0_f64.sqrt();
+        let vectors = [
+            [0.0, 0.0, 1.0],
+            [negative_zero, negative_zero, 1.0],
+            [0.0, negative_zero, -1.0],
+            [negative_zero, 0.0, -1.0],
+            [transition_x, 0.0, 2.0],
+            [transition_x, 0.0, -2.0],
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+
+        for resolution in [0, 1, MAX_RESOLUTION] {
+            let nside = 1_u64 << resolution;
+            let cell_count = 12 * nside * nside;
+            let cap_cell_count = 2 * nside * (nside - 1);
+            let south_transition_start = cap_cell_count + 8 * nside * nside;
+            assert_eq!(
+                cells_at(&vectors, resolution).unwrap(),
+                [
+                    0,
+                    0,
+                    cell_count - 4,
+                    cell_count - 4,
+                    cap_cell_count,
+                    south_transition_start,
+                ]
+            );
         }
     }
 

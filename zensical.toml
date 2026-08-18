@@ -5,14 +5,21 @@ site_author = "Jochim Maene"
 copyright = "&copy; 2026 Jochim Maene"
 docs_dir = "docs"
 site_dir = "site"
+watch = ["examples"]
 nav = [
   { "Overview" = "index.md" },
-  { "Project Goal" = "project-goal.md" },
+  { "Examples" = [
+    { "Communications constellation" = "examples/communication-constellation.md" },
+    { "Earth-observation constellation" = "examples/earth-observation-constellation.md" },
+  ] },
   { "Install" = "install.md" },
   { "Concepts" = "concepts.md" },
   { "API" = "api.md" },
   { "Changelog" = "https://github.com/JochimMaene/polypix/blob/main/CHANGELOG.md" },
-  { "Development" = "development.md" },
+  { "Project" = [
+    { "Development" = "development.md" },
+    { "Project goal" = "project-goal.md" },
+  ] },
 ]
 
 [project.theme]
@@ -23,3 +30,9 @@ features = [
   "navigation.footer",
   "toc.follow",
 ]
+
+[project.markdown_extensions.pymdownx.snippets]
+base_path = ["."]
+check_paths = true
+
+[project.plugins.markdown-exec]

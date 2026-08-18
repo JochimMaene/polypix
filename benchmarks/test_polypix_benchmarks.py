@@ -108,6 +108,47 @@ def large_strip_edges() -> tuple[np.ndarray, np.ndarray]:
 
 
 @pytest.fixture(scope="module")
+def constellation_caps() -> tuple[np.ndarray, np.ndarray]:
+    random = np.random.default_rng(20260811)
+    centers = random.normal(size=(10_771, 3))
+    centers /= np.linalg.norm(centers, axis=1, keepdims=True)
+    radii = random.uniform(0.06, 0.155, size=centers.shape[0])
+    return centers, radii
+
+
+@pytest.fixture(scope="module")
+def eo_shaped_coverage() -> px.Coverage:
+    interval_count = 14_400
+    cells_per_interval = 64
+    cell_count = 12 * 4**6
+    interval = np.arange(interval_count, dtype=np.uint64)[:, np.newaxis]
+    within = np.arange(cells_per_interval, dtype=np.uint64)[np.newaxis, :]
+    cells = ((131 * interval + 17 * within) % cell_count).reshape(-1)
+    offsets = np.arange(
+        0,
+        cells.size + 1,
+        cells_per_interval,
+        dtype=np.uint64,
+    )
+    return px.Coverage.from_arrays(cells=cells, offsets=offsets, resolution=6)
+
+
+@pytest.fixture(scope="module")
+def many_sparse_sources() -> list[px.Coverage]:
+    empty = px.Coverage.from_arrays(
+        cells=np.empty(0, dtype=np.uint64),
+        offsets=np.asarray([0, 0], dtype=np.uint64),
+        resolution=8,
+    )
+    populated = px.Coverage.from_arrays(
+        cells=np.asarray([123], dtype=np.uint64),
+        offsets=np.asarray([0, 1], dtype=np.uint64),
+        resolution=8,
+    )
+    return [empty] * 2_048 + [populated]
+
+
+@pytest.fixture(scope="module")
 def cells(footprints: np.ndarray) -> np.ndarray:
     return px.cover_footprint(footprints, resolution=7, threads=1).cells
 
@@ -355,33 +396,33 @@ def test_cover_with_multi_million_sorted_candidates(
     assert coverage.offsets.shape == (65,)
 
 
-def test_cover_strip(benchmark, strip_edges: tuple[np.ndarray, np.ndarray]) -> None:
+def test_cover_sweep(benchmark, strip_edges: tuple[np.ndarray, np.ndarray]) -> None:
     left, right = strip_edges
-    coverage = benchmark(px.cover_strip, left, right, 7, threads=1)
+    coverage = benchmark(px.cover_sweep, left, right, 7, threads=1)
 
     assert coverage.offsets.shape == (left.shape[0],)
     assert coverage.cells.dtype == np.uint64
 
 
 @pytest.mark.parallel
-def test_cover_strip_automatic_parallel(
+def test_cover_sweep_automatic_parallel(
     benchmark,
     large_strip_edges: tuple[np.ndarray, np.ndarray],
 ) -> None:
     left, right = large_strip_edges
-    coverage = benchmark(px.cover_strip, left, right, 9)
+    coverage = benchmark(px.cover_sweep, left, right, 9)
 
     assert coverage.offsets.shape == (left.shape[0],)
 
 
-def test_cover_strip_with_sparse_high_resolution_candidates(
+def test_cover_sweep_with_sparse_high_resolution_candidates(
     benchmark,
     strip_edges: tuple[np.ndarray, np.ndarray],
     sparse_resolution_12_cells: np.ndarray,
 ) -> None:
     left, right = strip_edges
     coverage = benchmark(
-        px.cover_strip,
+        px.cover_sweep,
         left,
         right,
         12,
@@ -393,6 +434,84 @@ def test_cover_strip_with_sparse_high_resolution_candidates(
     assert coverage.cells.dtype == np.uint64
 
 
+@pytest.mark.parametrize(
+    "threads",
+    [1, pytest.param(None, marks=pytest.mark.parallel)],
+    ids=["serial", "automatic"],
+)
+def test_cover_cap_constellation_batch(
+    benchmark,
+    constellation_caps: tuple[np.ndarray, np.ndarray],
+    threads: int | None,
+) -> None:
+    centers, radii = constellation_caps
+    coverage = benchmark(px.cover_cap, centers, radii, 6, threads=threads)
+
+    assert coverage.offsets.shape == (centers.shape[0] + 1,)
+    assert coverage.cells.dtype == np.uint64
+    assert coverage.cells.size == 1_629_277
+
+
+@pytest.mark.parametrize(
+    "threads",
+    [1, pytest.param(None, marks=pytest.mark.parallel)],
+    ids=["serial", "automatic"],
+)
+def test_count_caps_per_cell_constellation_batch(
+    benchmark,
+    constellation_caps: tuple[np.ndarray, np.ndarray],
+    threads: int | None,
+) -> None:
+    centers, radii = constellation_caps
+    counts = benchmark(px.count_caps_per_cell, centers, radii, 6, threads=threads)
+
+    assert counts.shape == (12 * 4**6,)
+    assert counts.dtype == np.int64
+    assert int(counts.sum()) == 1_629_277
+
+
+def test_coverage_from_arrays_eo_shape(
+    benchmark,
+    eo_shaped_coverage: px.Coverage,
+) -> None:
+    imported = benchmark(
+        px.Coverage.from_arrays,
+        eo_shaped_coverage.cells,
+        eo_shaped_coverage.offsets,
+        eo_shaped_coverage.resolution,
+    )
+
+    assert imported.cells.size == 921_600
+    assert imported.segment_count == 14_400
+    assert not np.shares_memory(imported.cells, eo_shaped_coverage.cells)
+    assert not imported.cells.flags.writeable
+
+
+def test_summarize_occupancy_eo_shape(
+    benchmark,
+    eo_shaped_coverage: px.Coverage,
+) -> None:
+    summary = benchmark(px.summarize_occupancy, [eo_shaped_coverage] * 10)
+
+    assert summary.segment_count == 14_400
+    assert summary.cells.dtype == np.uint64
+    assert summary.run_counts.dtype == np.uint64
+    assert summary.cells.size == 49_152
+    assert int(summary.run_counts.sum()) == 9_216_000
+    assert int(summary.merged_gap_steps_sum.sum()) == 641_429_424
+    assert int(summary.merged_gap_counts.sum()) == 872_448
+
+
+def test_summarize_occupancy_many_sparse_sources(
+    benchmark,
+    many_sparse_sources: list[px.Coverage],
+) -> None:
+    summary = benchmark(px.summarize_occupancy, many_sparse_sources)
+
+    np.testing.assert_array_equal(summary.cells, [123])
+    np.testing.assert_array_equal(summary.run_counts, [1])
+
+
 def test_centers(benchmark, cells: np.ndarray) -> None:
     centers = benchmark(px.centers, cells, 7)
 
@@ -400,11 +519,11 @@ def test_centers(benchmark, cells: np.ndarray) -> None:
     assert centers.dtype == np.float64
 
 
-def test_boundaries(benchmark, cells: np.ndarray) -> None:
-    boundaries = benchmark(px.boundaries, cells[:256], 7)
+def test_corners(benchmark, cells: np.ndarray) -> None:
+    corners = benchmark(px.corners, cells[:256], 7)
 
-    assert boundaries.shape == (min(cells.size, 256), 4, 3)
-    assert boundaries.dtype == np.float64
+    assert corners.shape == (min(cells.size, 256), 4, 3)
+    assert corners.dtype == np.float64
 
 
 @pytest.mark.parametrize(
@@ -424,8 +543,21 @@ def test_centers_transform_scaling(benchmark, count: int) -> None:
     [1_000, pytest.param(1_000_000, marks=pytest.mark.parallel)],
     ids=["small", "large"],
 )
-def test_boundaries_transform_scaling(benchmark, count: int) -> None:
+def test_cell_at_transform_scaling(benchmark, count: int) -> None:
     cells = np.arange(count, dtype=np.uint64)
-    boundaries = benchmark(px.boundaries, cells, 12)
+    vectors = px.centers(cells, 12)
+    actual = benchmark(px.cell_at, vectors, 12)
 
-    assert boundaries.shape == (count, 4, 3)
+    np.testing.assert_array_equal(actual, cells)
+
+
+@pytest.mark.parametrize(
+    "count",
+    [1_000, pytest.param(1_000_000, marks=pytest.mark.parallel)],
+    ids=["small", "large"],
+)
+def test_corners_transform_scaling(benchmark, count: int) -> None:
+    cells = np.arange(count, dtype=np.uint64)
+    corners = benchmark(px.corners, cells, 12)
+
+    assert corners.shape == (count, 4, 3)

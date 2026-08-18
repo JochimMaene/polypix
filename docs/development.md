@@ -1,6 +1,6 @@
 # Development
 
-## Repository Layout
+## Repository layout
 
 ```text
 polypix/
@@ -16,6 +16,11 @@ tests/
   test_ring_geometry.py  independent HEALPix geometry fixtures
 benchmarks/
   test_polypix_benchmarks.py  CodSpeed public-call regression benchmarks
+examples/
+  constellation.py                    shared orbit and plotting helpers
+  communication_constellation.py      one-hour communications availability
+  earth_observation_constellation.py  ten-day observation and revisit analysis
+  documentation_assets.py             pre-build figure and measurement step
 tools/
   generate_ring_geometry_fixtures.py  external-oracle fixture generator
 decisions/
@@ -24,7 +29,7 @@ docs/
   *.md                Zensical documentation pages
 ```
 
-## Build Model
+## Build model
 
 Polypix is a mixed Python/Rust project built by Maturin. PyO3 exposes the Rust
 kernel as `polypix._core`; the Python package provides the public NumPy-first
@@ -35,7 +40,7 @@ PyPI wheels contain the compiled kernel. NumPy is the only runtime dependency:
 HEALPix C++, CFITSIO, CMake, and a C++ compiler are not part of the build or
 runtime dependency chain.
 
-## Common Commands
+## Common commands
 
 Run tests:
 
@@ -61,6 +66,22 @@ Build documentation:
 pixi run --environment docs docs-build
 ```
 
+Run either standalone constellation example, writing its maps to the working
+directory:
+
+```bash
+pixi run --environment docs docs-communications
+pixi run --environment docs docs-earth-observation
+```
+
+`docs-build` and `docs-serve` first run `docs-figures`, which executes both
+examples and writes their maps and measurements to `docs/assets/generated/`.
+The example pages then embed that output. Zensical collects the files under
+`docs/` before rendering pages, so a figure written while a page renders is
+never copied into the built site; the examples have to run first. Regenerate the
+figures with `pixi run --environment docs docs-figures` after changing an
+example, because `docs-serve` does not re-run them on reload.
+
 Preview documentation:
 
 ```bash
@@ -79,8 +100,8 @@ Run the CodSpeed benchmark suite locally:
 pixi run --environment bench bench
 ```
 
-Cross-library benchmarks and their optional dependencies intentionally live in
-a separate comparison repository. That repository is not public yet. Until it
+Cross-library benchmarks and their optional dependencies live in a separate
+comparison repository. That repository is not public yet. Until it
 is linked here, this repository makes no public cross-library performance
 claim; it keeps only focused CodSpeed regression benchmarks and product
 correctness tests.
@@ -105,7 +126,7 @@ Internal architecture and licensing rationale is retained in the repository's
 `decisions/` directory rather than published as user-facing performance
 documentation.
 
-## Release Builds
+## Release builds
 
 `.github/workflows/release.yml` uses Maturin to build a source distribution and
 CPython 3.12 stable-ABI wheels for:
@@ -121,7 +142,7 @@ releases and manual workflow runs build the complete platform matrix.
 Publishing is release-driven. Publishing a GitHub release builds the artifacts
 and uploads them to PyPI through trusted publishing.
 
-## Release Procedure
+## Release procedure
 
 The package version comes from `Cargo.toml`; keep its Polypix entry in
 `Cargo.lock` synchronized.
@@ -145,7 +166,7 @@ The package version comes from `Cargo.toml`; keep its Polypix entry in
 Check the PyPI metadata and wheel set. Published files are immutable; corrections
 require a new patch release.
 
-## Documentation Publishing
+## Documentation publishing
 
 The documentation source lives in `docs/` and is configured by
 `zensical.toml`. Build it locally with:
@@ -157,7 +178,7 @@ pixi run --environment docs docs-build
 The `.github/workflows/docs.yml` workflow builds the same site on pull requests
 and publishes `site/` to GitHub Pages on pushes to `main`.
 
-## License And Notices
+## License and notices
 
 Polypix is distributed under Apache-2.0. The boundary transform includes a
 small BSD-3-Clause adaptation from Astrometry.net. Keep these files current
@@ -170,7 +191,7 @@ whenever native dependencies or adapted code change:
 Release maintainers should check the locked Rust dependency graph before
 publishing and preserve every required third-party attribution.
 
-## Design Constraints
+## Design constraints
 
 Keep the Python layer thin:
 

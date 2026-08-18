@@ -16,15 +16,13 @@ Fast HEALPix coverage for convex footprints on the sphere.
 [Issues](https://github.com/JochimMaene/polypix/issues)
 
 Polypix returns the HEALPix cells whose centers fall inside convex footprints on
-the unit sphere. It is built for coverage simulations and indexing pipelines
-where footprints are already valid spherical geometry and throughput matters.
+the unit sphere, for coverage simulations and indexing pipelines where the
+footprints are already valid spherical geometry and throughput matters. Typical
+inputs are sensor footprints, beam contours, access regions, and swath edges.
 
-Typical inputs are sensor footprints, beam contours, access regions, and swath
-edges from satellite, aerial, astronomy, or other spherical-domain simulations.
-Use Polypix when you want deterministic center-sampled coverage for convex
-regions. It is not a fit for holes, non-convex footprints, planar geometry
-semantics, conservative overlap coverage, or generating footprints from orbit,
-attitude, sensor, or beam models.
+It is not a fit for holes, non-convex footprints, planar geometry semantics,
+conservative overlap coverage, or generating footprints from orbit, attitude,
+sensor, or beam models.
 
 ## Install
 
@@ -32,81 +30,67 @@ attitude, sensor, or beam models.
 python -m pip install polypix
 ```
 
-Published wheels support CPython 3.12 and newer on Linux x86-64 and ARM64,
-macOS 11 or newer on Intel and Apple Silicon, and Windows x86-64. NumPy is the
-only runtime dependency.
+Wheels cover CPython 3.12+ on Linux x86-64 and ARM64, macOS 11+ on Intel and
+Apple Silicon, and Windows x86-64. NumPy is the only runtime dependency.
 
-## Quick Start
+## Quick start
 
 ```python
-import math
-
 import numpy as np
 import polypix as px
 
-
-def lonlat_to_xyz(lon_deg, lat_deg):
-    lon = math.radians(lon_deg)
-    lat = math.radians(lat_deg)
-    cos_lat = math.cos(lat)
-    return cos_lat * math.cos(lon), cos_lat * math.sin(lon), math.sin(lat)
-
-
-footprint = np.asarray(
-    [
-        lonlat_to_xyz(-5.0, -5.0),
-        lonlat_to_xyz(12.0, -4.0),
-        lonlat_to_xyz(10.0, 9.0),
-        lonlat_to_xyz(-6.0, 7.0),
-    ],
-    dtype=np.float64,
+lon, lat = np.radians([[-5.0, 12.0, 10.0, -6.0], [-5.0, -4.0, 9.0, 7.0]])
+footprint = np.stack(
+    [np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)],
+    axis=-1,
 )
 
 coverage = px.cover_footprint(footprint, resolution=8)
-center_vectors = px.centers(coverage.cells, coverage.resolution)
-corner_vectors = px.boundaries(coverage.cells[:3], coverage.resolution)
+centers = px.centers(coverage.cells, coverage.resolution)
 ```
 
-`coverage.cells` contains standard fixed-resolution HEALPix RING indices as
-`uint64`; `coverage.offsets` divides the flat array into one segment per input
-footprint. Geometry helpers return body-centered unit vectors, never
-longitude/latitude or datum-specific coordinates.
+`coverage.cells` holds standard HEALPix RING indices as `uint64`;
+`coverage.offsets` splits that flat array into one segment per input footprint.
+Geometry helpers return body-centered unit vectors, never longitude/latitude or
+datum-specific coordinates.
 
-## Supported Inputs
+## Inputs
 
-Polypix supports:
-
-- convex spherical footprints with great-circle edges,
-- finite body-centered vectors as `(x, y, z)`, normalized by Polypix,
-- dense footprint batches as arrays with shape `(footprints, vertices, 3)`,
-- ragged batches as sequences of `(vertices, 3)` arrays,
+- convex spherical footprints with great-circle edges;
+- finite body-centered `(x, y, z)` vectors, normalized by Polypix;
+- dense batches of shape `(footprints, vertices, 3)`;
+- ragged batches as sequences of `(vertices, 3)` arrays;
 - strips from sampled left and right edge vectors.
 
-Vertex orientation does not matter; Polypix normalizes it internally. A
-repeated final vertex is accepted as a closed-ring marker.
+Vertex orientation does not matter. A repeated final vertex is accepted as a
+closed-ring marker.
 
-## Coverage Rule
+## Coverage rule
 
-Polypix uses center-in-footprint coverage: a HEALPix cell is included when its
-center lies inside the footprint or on its boundary. Boundary-touching cells
-whose centers fall outside the footprint are excluded.
+A cell is included when its center lies inside the footprint or on its boundary.
+Boundary-touching cells whose centers fall outside are excluded.
+
+## Examples
+
+Two constellation studies run during every documentation build, so their maps
+and timings match the code that produced them:
+
+- [Communications availability](https://jochimmaene.github.io/polypix/examples/communication-constellation/)
+  — 30,500 service footprints from 500 satellites.
+- [Earth-observation revisit](https://jochimmaene.github.io/polypix/examples/earth-observation-constellation/)
+  — 144,000 swept swath intervals from 10 satellites.
 
 ## Documentation
 
-The public documentation is published at
-<https://jochimmaene.github.io/polypix/>:
+Published at <https://jochimmaene.github.io/polypix/>:
 
-- [Install guide](https://jochimmaene.github.io/polypix/install/)
-- [Project goal](https://jochimmaene.github.io/polypix/project-goal/)
+- [Install](https://jochimmaene.github.io/polypix/install/)
 - [Concepts](https://jochimmaene.github.io/polypix/concepts/)
 - [API reference](https://jochimmaene.github.io/polypix/api/)
-- [Development guide](https://jochimmaene.github.io/polypix/development/)
-
-Contributor workflows, release notes, and local docs authoring live in the
-development guide instead of this user-facing overview.
+- [Development](https://jochimmaene.github.io/polypix/development/)
+- [Project goal](https://jochimmaene.github.io/polypix/project-goal/)
 
 ## License
 
-Polypix is distributed under the
-[Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0). See
-`THIRD_PARTY_NOTICES.md` for dependency and embedded-code notices.
+Apache License 2.0. See `THIRD_PARTY_NOTICES.md` for dependency and
+embedded-code notices.

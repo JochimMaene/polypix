@@ -1,64 +1,46 @@
 # Install
 
-Install Polypix from PyPI:
-
 ```bash
 python -m pip install polypix
 ```
 
-Verify the installation:
+NumPy is the only runtime dependency.
+
+## Wheels
+
+| Platform | Architectures | Python |
+| --- | --- | --- |
+| Linux | x86-64, ARM64 | CPython 3.12+ |
+| macOS 11+ | x86-64, ARM64 | CPython 3.12+ |
+| Windows | x86-64 | CPython 3.12+ |
+
+Wheels bundle the native coverage kernel. Installing one requires no Rust
+toolchain, C++ compiler, system HEALPix library, or CFITSIO.
+
+## Building from source
+
+A source build requires a stable Rust toolchain and CPython 3.12 or newer. The
+Maturin backend fetches and compiles the Rust dependencies:
 
 ```bash
-python -c "import polypix as px; print(px.__version__)"
+python -m pip install -e .
 ```
 
-## Supported Wheels
-
-Published wheels support:
-
-| Platform | Architecture | Python |
-| --- | --- | --- |
-| Linux | x86-64 | CPython 3.12 and newer |
-| Linux | ARM64 | CPython 3.12 and newer |
-| macOS 11+ | x86-64 | CPython 3.12 and newer |
-| macOS 11+ | ARM64 | CPython 3.12 and newer |
-| Windows | x86-64 | CPython 3.12 and newer |
-
-The wheel contains the native coverage kernel. NumPy is the only runtime
-dependency: installing a wheel does not require Rust, a C++ compiler, a system
-HEALPix library, or CFITSIO.
-
-## Source Builds
-
-Most users should install a wheel from PyPI. A source build requires a stable
-Rust toolchain and a supported CPython installation. The Maturin build backend
-fetches and compiles the Rust crate dependencies; no system HEALPix library is
-required.
-
-The repository's supported source-build environment is Pixi:
+The supported development environment is Pixi, which provisions Python, NumPy,
+Rust, Maturin, and pytest, then installs Polypix in editable mode:
 
 ```bash
 pixi run test
 ```
 
-This creates an environment with Python, NumPy, Rust, Maturin, and pytest, then
-installs Polypix in editable mode.
+Checked-in Pixi platforms are Linux x86-64 and macOS. Windows and Linux ARM64
+contributors use the `pip install -e .` path, which CI also exercises.
 
-The checked-in Pixi platforms are Linux x86-64 and macOS. Windows and Linux
-ARM64 contributors can use `python -m pip install -e .` with a stable Rust
-toolchain and a supported CPython, matching the source-build path exercised by
-CI.
-
-## Local Wheels
-
-To build a local wheel from the active Pixi environment:
+For a local wheel:
 
 ```bash
 pixi run wheel
 ```
 
-That wheel is intended for local smoke testing. Release wheels are built by the
-GitHub Actions release workflow with Maturin for every supported platform.
-
-For contributor workflows such as documentation authoring, packaging, and
-release steps, see [Development](development.md).
+Release wheels for every supported platform come from the GitHub Actions release
+workflow. See [Development](development.md) for contributor workflows.

@@ -6,13 +6,16 @@ Status: **accepted; owned RING-first production kernel**
 
 Polypix adopted an owned, center-only HEALPix RING kernel after a direct scan
 prototype met the project's internal admission gates for the primary dense
-quadrilateral, ragged, and strip workloads. The production kernel implements
-only:
+quadrilateral, ragged, and paired-edge sweep workloads. Its initial production surface
+implemented:
 
 - fixed-resolution RING center coordinates;
-- four boundary vertices;
+- four cell-corner vertices;
 - center-sampled coverage of validated convex spherical polygons;
 - direct filtering of explicit candidate cells.
+
+Exact cap spans, fused cap counts, and segmented occupancy reduction were admitted
+later by [Exact Caps and Segmented Occupancy Reduction](cap-and-occupancy-primitives.md).
 
 NESTED support, MOCs, neighbour operations, projections, a general polygon
 library, backend selection, and public algorithm controls remain outside the
@@ -98,10 +101,10 @@ The owned kernel was admitted after the evidence showed:
 1. zero membership differences against brute-force cell-center enumeration
    across all cells at tractable resolutions, the adversarial corpus, and a
    much larger fixed-seed randomized corpus;
-2. agreement with independent HEALPix center and boundary fixtures through
+2. agreement with independent HEALPix center and corner fixtures through
    resolution 29, including faces, seams, and poles;
 3. internal measurements meeting the predeclared gates for the primary
-   fixed-quad, strip, and documented ragged public-call workloads;
+   fixed-quad, paired-edge sweep, and documented ragged public-call workloads;
 4. retained improvements with automatic threading and improved, rather than
    further regressed, single-footprint latency;
 5. an x86-64 and ARM64 wheel smoke matrix as a release gate;
@@ -114,13 +117,13 @@ justify owning delicate HEALPix geometry.
 
 ## Result
 
-The private production kernel owns ring geometry, the fixed-quadrilateral
-predicate, paired-edge strip and ragged polygon paths, z-indexed sparse
-candidate filtering, centers, and boundaries. Coverage uses one
-center-scan traversal; the four-edge predicate remains unrolled because its
-measured gain is material. Independent fixtures cover polar, equatorial, seam,
-and resolution-29 geometry. CDS was removed from the locked graph. There is no
-algorithm selector or NESTED compatibility layer.
+The private production kernel owns ring geometry, exact cap spans and counts,
+the fixed-quadrilateral predicate, paired-edge sweep and ragged polygon paths,
+z-indexed sparse candidate filtering, direction indexing, centers, and corners. Polygon coverage
+uses a center-scan traversal; the four-edge predicate remains unrolled because
+its measured gain is material. Independent fixtures cover polar, equatorial,
+seam, and resolution-29 geometry. CDS was removed from the locked graph. There
+is no algorithm selector or NESTED compatibility layer.
 
 Ownership alone is not the optimization: the improvement comes from deleting
 the overlap/BMOC pipeline in favor of direct center work.
