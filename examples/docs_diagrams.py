@@ -7,6 +7,12 @@ swaths and footprints every day but have never seen a HEALPix cell.
 Every diagram is drawn with Polypix itself, so a picture cannot disagree with
 the library. Output is SVG on a transparent background, which keeps the figures
 readable under both the light and dark documentation themes.
+
+The tutorial geometry is not defined here. Every figure on the getting-started
+page is drawn from the namespace of that page's own doctest blocks, so a figure
+cannot disagree with the code printed above it. Edit `docs/guide.md` to change
+what these pictures show. Coordinates there are chosen to frame well inside the
+drawing window below.
 """
 
 from __future__ import annotations
@@ -20,6 +26,7 @@ import numpy.typing as npt
 
 import polypix as px
 from examples.constellation import DOC_FIGURE_DIR
+from examples.doc_snippets import guide
 from examples.palette import (
     COVERED_CENTER,
     COVERED_FILL,
@@ -40,31 +47,18 @@ WINDOW_LAT = (-13.0, 13.0)
 
 
 def to_lonlat(vectors: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
-    """Return degrees longitude and latitude for unit vectors."""
-    longitude = np.degrees(np.arctan2(vectors[..., 1], vectors[..., 0]))
-    latitude = np.degrees(np.arcsin(np.clip(vectors[..., 2], -1.0, 1.0)))
-    return np.stack((longitude, latitude), axis=-1)
+    """Degrees longitude and latitude, using the helper the guide publishes."""
+    return np.asarray(guide()["to_lonlat"](vectors), dtype=np.float64)
 
 
 def from_lonlat(
     longitude_deg: npt.ArrayLike,
     latitude_deg: npt.ArrayLike,
 ) -> npt.NDArray[np.float64]:
-    """Return unit vectors for longitudes and latitudes in degrees."""
-    return np.asarray(unit_vector(longitude_deg, latitude_deg), dtype=np.float64)
-
-
-# --8<-- [start:unit-vector]
-def unit_vector(lon_deg, lat_deg):
-    """Cartesian directions for longitudes and latitudes in degrees."""
-    lon, lat = np.radians(lon_deg), np.radians(lat_deg)
-    return np.stack(
-        [np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)],
-        axis=-1,
+    """Unit vectors, using the helper the guide publishes."""
+    return np.asarray(
+        guide()["unit_vector"](longitude_deg, latitude_deg), dtype=np.float64
     )
-
-
-# --8<-- [end:unit-vector]
 
 
 def window_cells(resolution: int) -> npt.NDArray[np.uint64]:
@@ -243,12 +237,10 @@ def center_sampling(path: Path) -> None:
 
 def cover_cap(path: Path) -> None:
     """Two caps of different radii and the cells each selects."""
-    # --8<-- [start:cover-cap]
-    lon, lat, radius_deg = [-7.5, 8.0], [3.0, -4.0], [6.0, 4.0]
-
-    coverage = px.cover_cap(unit_vector(lon, lat), np.radians(radius_deg), resolution=4)
-    assert coverage.counts.tolist() == [9, 4]
-    # --8<-- [end:cover-cap]
+    page = guide()
+    lon, lat = page["cap_lon"], page["cap_lat"]
+    radius_deg = page["cap_radius_deg"]
+    coverage = page["cap_coverage"]
 
     figure, axes = new_axes()
     draw_grid(
@@ -264,13 +256,9 @@ def cover_cap(path: Path) -> None:
 
 def cover_footprint(path: Path) -> None:
     """A convex polygon and the cells it selects."""
-    # --8<-- [start:cover-footprint]
-    lon = [-9.0, 7.0, 11.0, -2.0]
-    lat = [-6.0, -8.0, 4.0, 8.0]
-
-    coverage = px.cover_footprint(unit_vector(lon, lat), resolution=4)
-    assert len(coverage) == 1
-    # --8<-- [end:cover-footprint]
+    page = guide()
+    lon, lat = page["scene_lon"], page["scene_lat"]
+    coverage = page["scene_coverage"]
 
     figure, axes = new_axes()
     draw_grid(
@@ -285,15 +273,10 @@ def cover_footprint(path: Path) -> None:
 
 def cover_sweep(path: Path) -> None:
     """A sampled sweep, its quadrilaterals, and the cells they select."""
-    # --8<-- [start:cover-sweep]
-    track_lon = np.linspace(-13.0, 13.0, 7)
-    track_lat = 5.0 * np.sin(np.radians(track_lon * 7.0))
-
-    left = unit_vector(track_lon, track_lat + 3.2)
-    right = unit_vector(track_lon, track_lat - 3.2)
-    coverage = px.cover_sweep(left, right, resolution=4)
-    assert len(coverage) == len(track_lon) - 1
-    # --8<-- [end:cover-sweep]
+    page = guide()
+    track_lon = page["track_lon"]
+    left, right = page["left_edge"], page["right_edge"]
+    coverage = page["swath_coverage"]
 
     figure, axes = new_axes()
     draw_grid(
@@ -320,14 +303,10 @@ def cover_sweep(path: Path) -> None:
 
 def cell_at(path: Path) -> None:
     """Scattered directions, the cell each lands in, and that cell's center."""
-    # --8<-- [start:cell-at]
-    lon = [-11.0, -3.0, 5.0, 12.0]
-    lat = [6.0, -7.0, 2.0, -9.0]
-
-    cells = px.cell_at(unit_vector(lon, lat), resolution=4)
-    cell_centers = px.centers(cells, resolution=4)
-    assert cells.shape == (4,) and cell_centers.shape == (4, 3)
-    # --8<-- [end:cell-at]
+    page = guide()
+    lon, lat = page["point_lon"], page["point_lat"]
+    cells = page["point_cells"]
+    cell_centers = page["point_centers"]
 
     points = np.stack([lon, lat], axis=-1)
     centers = to_lonlat(cell_centers)

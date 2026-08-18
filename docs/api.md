@@ -6,7 +6,8 @@ import polypix as px
 
 For task-oriented examples see [Getting started](guide.md); for allocation
 and threading trade-offs see [Performance and memory](performance.md); for
-HEALPix and NumPy handoff conventions see [Interoperability](interoperability.md).
+HEALPix and NumPy handoff conventions see
+[Handing cells to other libraries](concepts.md#handing-cells-to-other-libraries).
 
 | Object | Purpose |
 | --- | --- |

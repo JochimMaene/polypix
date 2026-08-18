@@ -1,4 +1,4 @@
-# User guide
+# How it works
 
 ## Resolution and cell IDs
 
@@ -51,7 +51,13 @@ survey. Polypix neither labels it nor transforms between frames. Just make sure
 every vector in one call lives in the same one.
 
 Working in three dimensions is why the poles and the longitude seam need no
-special handling.
+special handling. If another library hands you component-major `(3, N)`, move
+the axis yourself:
+
+```python
+vectors_n3 = np.moveaxis(vectors_3n, 0, -1)
+cells = px.cell_at(vectors_n3, resolution=8)
+```
 
 Use `cell_at()` when your input is points rather than regions, and `centers()`
 to go back the other way. Be careful about what "back" means: `centers()` gives
@@ -60,8 +66,15 @@ round-trip exactly; arbitrary directions do not. A direction sitting numerically
 on a cell edge is a floating-point tie. It is repeatable for one build and
 platform, but the API does not promise it across platforms.
 
-Orbit propagation, attitude, sensor projection, ellipsoid intersection: all of
-that happens before Polypix sees anything.
+Polypix attaches no unit, frame, body, datum, CRS, or epoch to these arrays,
+and that is the reason it takes directions rather than longitudes: the moment a
+library accepts a longitude it has to take a position on datums and reference
+frames, which is a far larger commitment than this one wants to make. Astropy,
+Skyfield, Orekit, SPICE wrappers, and your own sensor models already do that
+work. Orbit propagation, attitude, sensor projection, minimum elevation,
+off-nadir limits, ellipsoid intersection, refraction, terrain: all of it happens
+before Polypix sees anything, and you hand it the caps or footprints that fall
+out.
 
 ## Center-sampled coverage
 
@@ -127,6 +140,30 @@ counts out into real time.
 The result is sparse and sorted by cell ID, so a high resolution does not force
 a dense global allocation.
 
+## Handing cells to other libraries
+
+Polypix exchanges exactly two things with the rest of the ecosystem: `(N, 3)`
+direction arrays and fixed-resolution RING IDs. There is no frame object model
+to adopt and no Astropy or geospatial runtime to install.
+
+Standard RING IDs go straight to healpy, astropy-healpix, or cdshealpix for
+everything Polypix leaves out: ordering conversion, neighbors, interpolation,
+resampling, harmonics, file formats. Every valid cell ID fits in signed
+`int64`, so when an API insists on signed:
+
+```python
+signed_cells = coverage.cells.astype(np.int64, copy=False)
+```
+
+Two things to watch when you hand data over:
+
+- `corners()` returns four corner vectors, and HEALPix cell edges are curved.
+  Those four points are not a sampled boundary, so do not round-trip them as an
+  exact great-circle polygon.
+- A MOC represents whole cells by area. Converting center-selected cells into a
+  MOC changes what the result means. It does not retroactively turn your query
+  into an intersection query.
+
 ## Restricting coverage to known cells
 
 Pass `candidate_cells` when only a sparse set of cells matters to you:
@@ -146,12 +183,3 @@ candidate set can end up slower than just scanning the rings.
 
 See [Performance and memory](performance.md) for candidate planning, geometry
 shape, chunking, output sizing, and threads.
-
-```{toctree}
-:hidden:
-:maxdepth: 1
-
-resolutions
-performance
-interoperability
-```
