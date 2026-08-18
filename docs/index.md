@@ -68,9 +68,6 @@ stays in your code, or in the libraries you already use.
 
 ## Examples
 
-Both run from pinned inputs every time these docs are built, so the maps and
-timings cannot drift from the code.
-
 <div class="example-gallery">
   <a class="example-card" href="examples/communication-constellation.html">
     <img src="generated/communications-availability.png" alt="Global Starlink visibility map">
