@@ -42,45 +42,6 @@ Center sampling is not a conservative spatial index. A small region can contain
 no cell center at all, and a region can overlap a cell whose center sits outside
 it. If you need no-false-negative indexing, Polypix does not promise it today.
 
-## What you would otherwise write
-
-For this workflow, the usual approach today is a loop:
-
-```python
-import healpy as hp
-import numpy as np
-
-counts = np.zeros(hp.nside2npix(nside), dtype=int)
-for center, radius in zip(centers, radii):
-    counts[hp.query_disc(nside, center, radius, inclusive=False)] += 1
-```
-
-That is the same coverage rule Polypix uses. healpy's `inclusive=False` returns
-"the exact set of pixels whose pixel centers lie within the disk", so the answer
-matches; what differs is the loop. Both healpy's `query_disc` and cdshealpix's
-`cone_search` take one region per call, so Python overhead grows with the number
-of regions, and the cell IDs get built even when all you wanted was counts.
-Polypix takes the batch in one call, and `count_caps_per_cell()` skips the IDs
-entirely.
-
-The neighbours worth knowing, if the batch is not your problem:
-
-- **[healpy](https://healpy.readthedocs.io/)** is the reference implementation
-  and does far more: maps, spherical harmonics, FITS, plotting. If you already
-  depend on it and are not covering regions in bulk, you may not need anything
-  else. It is GPL-2.0-only, which matters if you ship closed source.
-- **[cdshealpix](https://cds-astro.github.io/cds-healpix-python/)** is the same
-  shape as Polypix, a Rust core wrapped for Python, with cone, polygon and
-  elliptical-cone search. It is NESTED-oriented and can report partial overlap,
-  which Polypix deliberately will not.
-- **[astropy-healpix](https://astropy-healpix.readthedocs.io/)** is BSD-licensed
-  and much lighter than healpy, and it fits if you already live in Astropy.
-- **[H3](https://h3geo.org/)** and **[S2](https://s2geometry.io/)** do a similar
-  job on different tessellations. Worth a look if nothing ties you to HEALPix,
-  though their cell IDs are not interchangeable with it.
-
-Polypix makes no published speed claims against any of these yet.
-
 ## Adding things
 
 A new feature has to serve a real workload inside the boundary above, consume
