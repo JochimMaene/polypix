@@ -8,6 +8,8 @@ import numpy as np
 import polypix as px
 
 # Independent fixtures generated with astropy-healpix 2.0.1 in RING order.
+# Regenerate with tools/generate_ring_geometry_fixtures.py, which must keep the
+# same signature frequencies as _geometry_signature below.
 RESOLUTION_0_CENTERS = np.asarray(
     [
         [0.5270462766947299, 0.5270462766947298, 2.0 / 3.0],

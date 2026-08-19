@@ -40,7 +40,7 @@ def _count_caps_per_cell(
     resolution: int,
     cells: npt.NDArray[np.uint64] | None = None,
     threads: int | None = None,
-) -> npt.NDArray[np.int64]: ...
+) -> npt.NDArray[np.int64] | None: ...
 def _count_coverage_per_cell(
     cells: npt.NDArray[np.uint64],
     resolution: int,
@@ -65,7 +65,6 @@ def _occupancy_runs(
     offset_arrays: list[npt.NDArray[np.uint64]],
     resolution: int,
     minimum_sources: int,
-    trusted: bool = False,
 ) -> tuple[
     npt.NDArray[np.uint64],
     npt.NDArray[np.uint64],
@@ -77,7 +76,6 @@ def _occupancy_stats(
     offset_arrays: list[npt.NDArray[np.uint64]],
     resolution: int,
     minimum_sources: int,
-    trusted: bool = False,
 ) -> tuple[
     npt.NDArray[np.uint64],
     npt.NDArray[np.uint64],

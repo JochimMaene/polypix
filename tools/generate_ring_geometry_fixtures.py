@@ -1,7 +1,14 @@
-"""Regenerate the broad and exact HEALPix C++ fixtures used by the test suite.
+"""Regenerate the HEALPix fixtures used by ``tests/test_ring_geometry.py``.
 
 Run this in an environment that provides ``healpy``; it is deliberately not a
-Polypix development or runtime dependency.
+Polypix development or runtime dependency, so no pixi environment installs it.
+
+The fixtures currently checked in were produced with astropy-healpix 2.0.1,
+which agrees with healpy on RING order, so either oracle can regenerate them.
+
+``FREQUENCIES`` below must stay equal to the tuple in ``_geometry_signature``
+in ``tests/test_ring_geometry.py``; the signatures are compared against each
+other, so the two drifting apart would make those assertions meaningless.
 """
 
 from __future__ import annotations

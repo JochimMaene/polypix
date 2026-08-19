@@ -75,7 +75,7 @@ Internal prototype comparisons were used to decide whether owning the kernel
 earned its maintenance cost. They are deliberately not published as product
 speed claims because the removed internal CDS adapter is not a reproducible
 public alternative. Public comparative claims require the separate benchmark
-repository described in the [project goal](../docs/project-goal.md).
+repository described in the [project goal](project-goal.md).
 
 The following component comparisons are retained as maintenance evidence, not
 as cross-library claims. They use release builds and include public-call input

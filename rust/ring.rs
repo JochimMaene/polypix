@@ -39,6 +39,14 @@ const CANDIDATE_RANGE_PROBE_WORK: usize = 1 << 5;
 const CANDIDATE_CENTER_CACHE_REUSE: usize = 3;
 const CANDIDATE_CENTER_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
 const CAP_COUNT_PARALLEL_MAX_BYTES: usize = 256 * 1024 * 1024;
+// The two ways to answer a selected cap count, priced in units of one
+// cap-containment test. Testing every cap against every requested cell also
+// decodes each cell centre from its RING index, which costs about 90 tests.
+// Building coverage once and counting it instead costs about 21 tests per hit
+// emitted and per cell gathered. Caps too wide to build coverage for keep the
+// testing path, because their hit estimate dwarfs the test count.
+const CELL_DECODE_TESTS: f64 = 90.0;
+const COVERAGE_HIT_TESTS: f64 = 21.0;
 // Public transform measurements include allocation and pool startup. Boundaries
 // cross over earlier because each cell computes four face-coordinate corners.
 const CENTER_PARALLEL_MIN_CELLS: usize = 1 << 16;
@@ -47,6 +55,7 @@ const CELL_AT_PARALLEL_MIN_VECTORS: usize = 1 << 15;
 const SCAN_WORK_SAMPLE_SIZE: usize = 64;
 const ROTATION_RESYNC_STEPS: u64 = 64;
 const MAX_CACHED_SCAN_RING_RESOLUTION: u8 = 12;
+const COVERAGE_TOO_LARGE: &str = "Coverage result is too large to fit in memory.";
 const INDEX_UNCERTAINTY_ULPS: f64 = 128.0;
 const LONGITUDE_BOUNDS_EPSILON: f64 = 1.0e-14;
 type CachedPool = Mutex<Option<(usize, Arc<rayon::ThreadPool>)>>;
@@ -207,6 +216,23 @@ fn ring_z(nside: u64, ring: u64) -> f64 {
     }
 }
 
+/// Integer square root, seeded from a hardware `sqrt` and then corrected.
+///
+/// Measurably cheaper than `u64::isqrt` on this hot path: decoding cell centres
+/// spends about 11% fewer instructions here, because the seed is almost always
+/// already exact and the correction loops do not run. Do not replace it with
+/// the standard-library version without re-measuring `cell_centers`.
+fn integer_sqrt(value: u64) -> u64 {
+    let mut root = (value as f64).sqrt() as u64;
+    while (root as u128 + 1) * (root as u128 + 1) <= value as u128 {
+        root += 1;
+    }
+    while root as u128 * root as u128 > value as u128 {
+        root -= 1;
+    }
+    root
+}
+
 fn ring_info(nside: u64, ring: u64) -> Ring {
     let z = ring_z(nside, ring);
     let radial = if ring < nside {
@@ -274,17 +300,6 @@ fn cached_scan_rings(resolution: u8) -> Option<&'static [ScanRing]> {
             })
             .collect()
     }))
-}
-
-fn integer_sqrt(value: u64) -> u64 {
-    let mut root = (value as f64).sqrt() as u64;
-    while (root as u128 + 1) * (root as u128 + 1) <= value as u128 {
-        root += 1;
-    }
-    while root as u128 * root as u128 > value as u128 {
-        root -= 1;
-    }
-    root
 }
 
 fn ring_start(nside: u64, ring: u64) -> u64 {
@@ -385,7 +400,7 @@ pub(crate) fn cells_at(vectors: &[f64], resolution: u8) -> NativeResult<Vec<u64>
     let vector_count = vectors.len() / 3;
     let mut cells = Vec::new();
     cells.try_reserve_exact(vector_count).map_err(|_| {
-        NativeError::materialization("Cell lookup result is too large to materialize.")
+        NativeError::out_of_memory("Cell lookup result is too large to fit in memory.")
     })?;
     cells.resize(vector_count, 0_u64);
     if vector_count < CELL_AT_PARALLEL_MIN_VECTORS {
@@ -877,8 +892,8 @@ fn cover_centers(
                 if contains(x, y, ring.z) {
                     if cells.len() == cells.capacity() {
                         cells.try_reserve(1024).map_err(|_| {
-                            NativeError::materialization(
-                                "Coverage result is too large to materialize.",
+                            NativeError::out_of_memory(
+                                "Coverage result is too large to fit in memory.",
                             )
                         })?;
                     }
@@ -1065,12 +1080,12 @@ pub(crate) fn validate_coverage_arrays(
 
 pub(crate) fn centers(cells: &[u64], resolution: u8) -> NativeResult<Vec<f64>> {
     let output_count = cells.len().checked_mul(3).ok_or_else(|| {
-        NativeError::materialization("Center result is too large to materialize.")
+        NativeError::out_of_memory("Center result is too large to fit in memory.")
     })?;
     let mut values = Vec::new();
     values
         .try_reserve_exact(output_count)
-        .map_err(|_| NativeError::materialization("Center result is too large to materialize."))?;
+        .map_err(|_| NativeError::out_of_memory("Center result is too large to fit in memory."))?;
     if cells.len() < CENTER_PARALLEL_MIN_CELLS {
         for &cell in cells {
             values.extend(center(cell, resolution));
@@ -1087,12 +1102,12 @@ pub(crate) fn centers(cells: &[u64], resolution: u8) -> NativeResult<Vec<f64>> {
 
 pub(crate) fn corners(cells: &[u64], resolution: u8) -> NativeResult<Vec<f64>> {
     let output_count = cells.len().checked_mul(12).ok_or_else(|| {
-        NativeError::materialization("Corner result is too large to materialize.")
+        NativeError::out_of_memory("Corner result is too large to fit in memory.")
     })?;
     let mut values = Vec::new();
     values
         .try_reserve_exact(output_count)
-        .map_err(|_| NativeError::materialization("Corner result is too large to materialize."))?;
+        .map_err(|_| NativeError::out_of_memory("Corner result is too large to fit in memory."))?;
     if cells.len() < BOUNDARY_PARALLEL_MIN_CELLS {
         for &cell in cells {
             for corner in boundary(cell, resolution) {
@@ -1156,27 +1171,8 @@ struct CandidatePlan {
     total_visits: usize,
 }
 
-fn plan_candidates(
-    footprints: &[PreparedFootprint],
-    candidates: &[u64],
-    resolution: u8,
-    parallel: bool,
-) -> CandidatePlan {
-    let candidate_range_for = |footprint: &PreparedFootprint| {
-        let (minimum_z, maximum_z) = footprint.z_bounds();
-        candidate_range(candidates, resolution, minimum_z, maximum_z)
-    };
-    let ranges = if parallel {
-        footprints
-            .par_iter()
-            .map(candidate_range_for)
-            .collect::<Vec<_>>()
-    } else {
-        footprints
-            .iter()
-            .map(candidate_range_for)
-            .collect::<Vec<_>>()
-    };
+/// Summarize per-item candidate ranges into one plan.
+fn plan_from_ranges(ranges: Vec<Range<usize>>) -> CandidatePlan {
     let total_visits = ranges
         .iter()
         .fold(0_usize, |total, range| total.saturating_add(range.len()));
@@ -1188,6 +1184,29 @@ fn plan_candidates(
         center_end,
         total_visits,
     }
+}
+
+fn plan_candidates(
+    footprints: &[PreparedFootprint],
+    candidates: &[u64],
+    resolution: u8,
+    parallel: bool,
+) -> CandidatePlan {
+    let candidate_range_for = |footprint: &PreparedFootprint| {
+        let (minimum_z, maximum_z) = footprint.z_bounds();
+        candidate_range(candidates, resolution, minimum_z, maximum_z)
+    };
+    plan_from_ranges(if parallel {
+        footprints
+            .par_iter()
+            .map(candidate_range_for)
+            .collect::<Vec<_>>()
+    } else {
+        footprints
+            .iter()
+            .map(candidate_range_for)
+            .collect::<Vec<_>>()
+    })
 }
 
 fn candidate_cache_range(plan: &CandidatePlan) -> Option<Range<usize>> {
@@ -1211,7 +1230,7 @@ fn candidate_centers(
     let cells = &candidates[range];
     let mut centers = Vec::new();
     centers.try_reserve_exact(cells.len()).map_err(|_| {
-        NativeError::materialization("Coverage result is too large to materialize.")
+        NativeError::out_of_memory("Coverage result is too large to fit in memory.")
     })?;
     if parallel {
         centers.resize(cells.len(), [0.0; 3]);
@@ -1225,25 +1244,30 @@ fn candidate_centers(
     Ok(Some(centers))
 }
 
-fn compute_candidate_chunk(
-    footprints: &[PreparedFootprint],
+/// Cover one chunk of items against a shared candidate cell set.
+///
+/// `contains` is monomorphized per caller, so the inner loops stay identical to
+/// a hand-written version for each item type.
+fn compute_candidate_chunk_with(
     plan: &CandidatePlan,
     centers: Option<&[Vec3]>,
     candidates: &[u64],
     range: Range<usize>,
     resolution: u8,
+    contains: impl Fn(usize, Vec3) -> bool,
 ) -> NativeResult<Coverage> {
     // Candidate hit rates vary from empty to dense; reserving from the full
     // candidate-set size overallocates badly for sparse queries. Grow
     // fallibly as hits arrive instead.
     let cells = Vec::new();
     let mut offsets = Vec::new();
-    let offset_count = range.len().checked_add(1).ok_or_else(|| {
-        NativeError::materialization("Coverage result is too large to materialize.")
-    })?;
-    offsets.try_reserve_exact(offset_count).map_err(|_| {
-        NativeError::materialization("Coverage result is too large to materialize.")
-    })?;
+    let offset_count = range
+        .len()
+        .checked_add(1)
+        .ok_or_else(|| NativeError::out_of_memory(COVERAGE_TOO_LARGE))?;
+    offsets
+        .try_reserve_exact(offset_count)
+        .map_err(|_| NativeError::out_of_memory(COVERAGE_TOO_LARGE))?;
     let mut coverage = Coverage { cells, offsets };
     coverage.offsets.push(0);
     for index in range {
@@ -1251,14 +1275,14 @@ fn compute_candidate_chunk(
         if let Some(centers) = centers {
             for candidate_index in candidate_range {
                 let point = centers[candidate_index - plan.center_start];
-                if footprints[index].contains(point) {
+                if contains(index, point) {
                     push_coverage_cell(&mut coverage.cells, candidates[candidate_index])?;
                 }
             }
         } else {
             for candidate_index in candidate_range {
                 let point = center(candidates[candidate_index], resolution);
-                if footprints[index].contains(point) {
+                if contains(index, point) {
                     push_coverage_cell(&mut coverage.cells, candidates[candidate_index])?;
                 }
             }
@@ -1268,11 +1292,29 @@ fn compute_candidate_chunk(
     Ok(coverage)
 }
 
+fn compute_candidate_chunk(
+    footprints: &[PreparedFootprint],
+    plan: &CandidatePlan,
+    centers: Option<&[Vec3]>,
+    candidates: &[u64],
+    range: Range<usize>,
+    resolution: u8,
+) -> NativeResult<Coverage> {
+    compute_candidate_chunk_with(
+        plan,
+        centers,
+        candidates,
+        range,
+        resolution,
+        |index, point| footprints[index].contains(point),
+    )
+}
+
 #[inline]
 fn push_coverage_cell(cells: &mut Vec<u64>, cell: u64) -> NativeResult<()> {
     if cells.len() == cells.capacity() {
         cells.try_reserve(1).map_err(|_| {
-            NativeError::materialization("Coverage result is too large to materialize.")
+            NativeError::out_of_memory("Coverage result is too large to fit in memory.")
         })?;
     }
     cells.push(cell);
@@ -1287,20 +1329,20 @@ fn merge_coverages(chunks: Vec<Coverage>) -> NativeResult<Coverage> {
         .iter()
         .try_fold(0_usize, |total, chunk| total.checked_add(chunk.cells.len()));
     let (Some(polygon_count), Some(cell_count)) = (polygon_count, cell_count) else {
-        return Err(NativeError::materialization(
-            "Coverage result is too large to materialize.",
+        return Err(NativeError::out_of_memory(
+            "Coverage result is too large to fit in memory.",
         ));
     };
     let mut cells = Vec::new();
     cells.try_reserve_exact(cell_count).map_err(|_| {
-        NativeError::materialization("Coverage result is too large to materialize.")
+        NativeError::out_of_memory("Coverage result is too large to fit in memory.")
     })?;
     let mut offsets = Vec::new();
     let offset_count = polygon_count.checked_add(1).ok_or_else(|| {
-        NativeError::materialization("Coverage result is too large to materialize.")
+        NativeError::out_of_memory("Coverage result is too large to fit in memory.")
     })?;
     offsets.try_reserve_exact(offset_count).map_err(|_| {
-        NativeError::materialization("Coverage result is too large to materialize.")
+        NativeError::out_of_memory("Coverage result is too large to fit in memory.")
     })?;
     let mut coverage = Coverage { cells, offsets };
     coverage.offsets.push(0);
@@ -1375,18 +1417,6 @@ fn accumulated_scan_work(
     work
 }
 
-fn strip_parallel_work(
-    left: &[f64],
-    right: &[f64],
-    segment_count: usize,
-    resolution: u8,
-    threads: Option<usize>,
-) -> usize {
-    accumulated_scan_work(segment_count, threads, |index| {
-        estimated_cap_cells(&sweep_quad(left, right, index), resolution)
-    })
-}
-
 fn explicit_pool(worker_count: usize) -> Result<Arc<rayon::ThreadPool>, String> {
     // Explicit thread counts normally stay stable across repeated calls. Keep
     // one pool to cover that primary workload without growing an unbounded
@@ -1409,13 +1439,6 @@ fn explicit_pool(worker_count: usize) -> Result<Arc<rayon::ThreadPool>, String> 
     );
     *cached = Some((worker_count, Arc::clone(&pool)));
     Ok(pool)
-}
-
-fn install_in_pool<T: Send>(
-    worker_count: usize,
-    operation: impl FnOnce() -> T + Send,
-) -> Result<T, String> {
-    Ok(explicit_pool(worker_count)?.install(operation))
 }
 
 fn run_with_parallelism<T: Send>(
@@ -1444,7 +1467,7 @@ fn run_with_parallelism<T: Send>(
     if use_global_pool {
         Ok(operation(true))
     } else {
-        install_in_pool(worker_count, || operation(true))
+        Ok(explicit_pool(worker_count)?.install(|| operation(true)))
     }
 }
 
@@ -1572,20 +1595,20 @@ fn compute_mixed_chunk(
         .len()
         .checked_mul(expected_cells_per_footprint(resolution))
         .ok_or_else(|| {
-            NativeError::materialization("Coverage result is too large to materialize.")
+            NativeError::out_of_memory("Coverage result is too large to fit in memory.")
         })?;
     let mut cells = Vec::new();
     cells.try_reserve_exact(expected_cells).map_err(|_| {
-        NativeError::materialization("Coverage result is too large to materialize.")
+        NativeError::out_of_memory("Coverage result is too large to fit in memory.")
     })?;
     let mut offsets_output = Vec::new();
     let offset_count = range.len().checked_add(1).ok_or_else(|| {
-        NativeError::materialization("Coverage result is too large to materialize.")
+        NativeError::out_of_memory("Coverage result is too large to fit in memory.")
     })?;
     offsets_output
         .try_reserve_exact(offset_count)
         .map_err(|_| {
-            NativeError::materialization("Coverage result is too large to materialize.")
+            NativeError::out_of_memory("Coverage result is too large to fit in memory.")
         })?;
     let mut coverage = Coverage {
         cells,
@@ -1664,6 +1687,32 @@ pub(crate) fn cover(
     )
 }
 
+/// Expected coverage hits for a whole batch, summed before rounding.
+///
+/// Rounding each cap up on its own would add up to one cell per cap, which for
+/// many tiny caps overstates the total by orders of magnitude.
+fn expected_total_hits(radii: &[f64], resolution: u8) -> f64 {
+    let fraction: f64 = radii
+        .iter()
+        .map(|radius| 0.5 * (1.0 - radius.cos()).clamp(0.0, 2.0))
+        .sum();
+    raw_cell_count(resolution) as f64 * fraction
+}
+
+/// Whether covering once and counting beats testing every cap against every
+/// requested cell.
+///
+/// Reads the raw radii so the caller can decide before preparing anything:
+/// declining has to stay cheap, because the work is then done another way.
+/// Radii that are not finite make this false, so the shared checks in
+/// `prepare_caps` still report them.
+fn covering_beats_testing(radii: &[f64], resolution: u8, requested: usize) -> bool {
+    let requested = requested as f64;
+    let testing = requested * (CELL_DECODE_TESTS + radii.len() as f64);
+    let covering = COVERAGE_HIT_TESTS * (expected_total_hits(radii, resolution) + requested);
+    testing > covering
+}
+
 fn expected_cells_for_cap(cap: &Cap, resolution: u8) -> usize {
     let sphere_fraction = 0.5 * (1.0 - cap.cosine_radius).clamp(0.0, 2.0);
     let cell_count = raw_cell_count(resolution) as f64;
@@ -1676,14 +1725,14 @@ fn compute_cap_chunk(caps: &[Cap], range: Range<usize>, resolution: u8) -> Nativ
     });
     let mut cells = Vec::new();
     cells.try_reserve_exact(expected_cells).map_err(|_| {
-        NativeError::materialization("Coverage result is too large to materialize.")
+        NativeError::out_of_memory("Coverage result is too large to fit in memory.")
     })?;
     let mut offsets = Vec::new();
     let offset_count = range.len().checked_add(1).ok_or_else(|| {
-        NativeError::materialization("Coverage result is too large to materialize.")
+        NativeError::out_of_memory("Coverage result is too large to fit in memory.")
     })?;
     offsets.try_reserve_exact(offset_count).map_err(|_| {
-        NativeError::materialization("Coverage result is too large to materialize.")
+        NativeError::out_of_memory("Coverage result is too large to fit in memory.")
     })?;
     let mut coverage = Coverage { cells, offsets };
     coverage.offsets.push(0);
@@ -1704,8 +1753,8 @@ fn compute_cap_chunk(caps: &[Cap], range: Range<usize>, resolution: u8) -> Nativ
             coverage.cells.extend(cells);
         });
         if allocation_error {
-            return Err(NativeError::materialization(
-                "Coverage result is too large to materialize.",
+            return Err(NativeError::out_of_memory(
+                "Coverage result is too large to fit in memory.",
             ));
         }
         coverage.offsets.push(coverage.cells.len() as u64);
@@ -1714,21 +1763,11 @@ fn compute_cap_chunk(caps: &[Cap], range: Range<usize>, resolution: u8) -> Nativ
 }
 
 fn plan_cap_candidates(caps: &[Cap], candidates: &[u64], resolution: u8) -> CandidatePlan {
-    let ranges = caps
-        .iter()
-        .map(|cap| candidate_range(candidates, resolution, cap.minimum_z, cap.maximum_z))
-        .collect::<Vec<_>>();
-    let total_visits = ranges
-        .iter()
-        .fold(0_usize, |total, range| total.saturating_add(range.len()));
-    let center_start = ranges.iter().map(|range| range.start).min().unwrap_or(0);
-    let center_end = ranges.iter().map(|range| range.end).max().unwrap_or(0);
-    CandidatePlan {
-        ranges,
-        center_start,
-        center_end,
-        total_visits,
-    }
+    plan_from_ranges(
+        caps.iter()
+            .map(|cap| candidate_range(candidates, resolution, cap.minimum_z, cap.maximum_z))
+            .collect(),
+    )
 }
 
 fn compute_cap_candidate_chunk(
@@ -1739,36 +1778,14 @@ fn compute_cap_candidate_chunk(
     range: Range<usize>,
     resolution: u8,
 ) -> NativeResult<Coverage> {
-    let cells = Vec::new();
-    let mut offsets = Vec::new();
-    let offset_count = range.len().checked_add(1).ok_or_else(|| {
-        NativeError::materialization("Coverage result is too large to materialize.")
-    })?;
-    offsets.try_reserve_exact(offset_count).map_err(|_| {
-        NativeError::materialization("Coverage result is too large to materialize.")
-    })?;
-    let mut coverage = Coverage { cells, offsets };
-    coverage.offsets.push(0);
-    for index in range {
-        let candidate_range = plan.ranges[index].clone();
-        if let Some(centers) = centers {
-            for candidate_index in candidate_range {
-                let point = centers[candidate_index - plan.center_start];
-                if caps[index].contains(point) {
-                    push_coverage_cell(&mut coverage.cells, candidates[candidate_index])?;
-                }
-            }
-        } else {
-            for candidate_index in candidate_range {
-                let point = center(candidates[candidate_index], resolution);
-                if caps[index].contains(point) {
-                    push_coverage_cell(&mut coverage.cells, candidates[candidate_index])?;
-                }
-            }
-        }
-        coverage.offsets.push(coverage.cells.len() as u64);
-    }
-    Ok(coverage)
+    compute_candidate_chunk_with(
+        plan,
+        centers,
+        candidates,
+        range,
+        resolution,
+        |index, point| caps[index].contains(point),
+    )
 }
 
 pub(crate) fn cover_caps(
@@ -1815,11 +1832,11 @@ pub(crate) fn cover_caps(
 
 fn zeroed_cap_deltas(cell_count: usize) -> NativeResult<Vec<i64>> {
     let length = cell_count.checked_add(1).ok_or_else(|| {
-        NativeError::materialization("Dense cap-overlap result is too large to materialize.")
+        NativeError::out_of_memory("Dense cap-overlap result is too large to fit in memory.")
     })?;
     let mut deltas = Vec::new();
     deltas.try_reserve_exact(length).map_err(|_| {
-        NativeError::materialization("Dense cap-overlap result is too large to materialize.")
+        NativeError::out_of_memory("Dense cap-overlap result is too large to fit in memory.")
     })?;
     deltas.resize(length, 0_i64);
     Ok(deltas)
@@ -1841,18 +1858,29 @@ fn count_cap_chunk(
     Ok(deltas)
 }
 
+/// Count how many caps contain each cell.
+///
+/// Returns `None` for a selected query when building coverage once and counting
+/// it is the cheaper way to get the same answer; the caller does that instead.
 pub(crate) fn count_caps_per_cell(
     centers: &[f64],
     radii: &[f64],
     resolution: u8,
     raw_cells: Option<&[u64]>,
     threads: Option<usize>,
-) -> NativeResult<Vec<i64>> {
+) -> NativeResult<Option<Vec<i64>>> {
     debug_assert!(resolution <= MAX_RESOLUTION);
+    // Decide before preparing or validating anything, so that declining costs
+    // almost nothing: the caller then covers once and counts instead.
+    if let Some(cells) = raw_cells {
+        if covering_beats_testing(radii, resolution, cells.len()) {
+            return Ok(None);
+        }
+    }
     let caps = prepare_caps(centers, radii)?;
     let raw_cells_total = raw_cell_count(resolution);
     let cell_count = usize::try_from(raw_cells_total).map_err(|_| {
-        NativeError::materialization("Dense cap-overlap result is too large to materialize.")
+        NativeError::out_of_memory("Dense cap-overlap result is too large to fit in memory.")
     })?;
     if caps.len() > i64::MAX as usize {
         return Err("Too many caps to represent overlap counts as int64."
@@ -1864,7 +1892,7 @@ pub(crate) fn count_caps_per_cell(
         let work = cells.len().saturating_mul(caps.len());
         let mut counts = Vec::new();
         counts.try_reserve_exact(cells.len()).map_err(|_| {
-            NativeError::materialization("Selected cap-overlap result is too large to materialize.")
+            NativeError::out_of_memory("Selected cap-overlap result is too large to fit in memory.")
         })?;
         counts.resize(cells.len(), 0_i64);
         return run_with_parallelism(
@@ -1889,12 +1917,13 @@ pub(crate) fn count_caps_per_cell(
                 counts
             },
         )
+        .map(Some)
         .map_err(NativeError::from);
     }
     if caps.is_empty() {
         let mut counts = zeroed_cap_deltas(cell_count)?;
         counts.pop();
-        return Ok(counts);
+        return Ok(Some(counts));
     }
 
     let parallel_work = caps.iter().fold(
@@ -1957,7 +1986,7 @@ pub(crate) fn count_caps_per_cell(
             }
             debug_assert_eq!(running + deltas[cell_count], 0);
             deltas.pop();
-            Ok(deltas)
+            Ok(Some(deltas))
         },
     )?
 }
@@ -2004,18 +2033,18 @@ fn compute_sweep_chunk(
     let expected_cells = count
         .checked_mul(expected_cells_per_strip_segment(resolution))
         .ok_or_else(|| {
-            NativeError::materialization("Coverage result is too large to materialize.")
+            NativeError::out_of_memory("Coverage result is too large to fit in memory.")
         })?;
     let mut cells = Vec::new();
     cells.try_reserve_exact(expected_cells).map_err(|_| {
-        NativeError::materialization("Coverage result is too large to materialize.")
+        NativeError::out_of_memory("Coverage result is too large to fit in memory.")
     })?;
     let mut offsets = Vec::new();
     let offset_count = count.checked_add(1).ok_or_else(|| {
-        NativeError::materialization("Coverage result is too large to materialize.")
+        NativeError::out_of_memory("Coverage result is too large to fit in memory.")
     })?;
     offsets.try_reserve_exact(offset_count).map_err(|_| {
-        NativeError::materialization("Coverage result is too large to materialize.")
+        NativeError::out_of_memory("Coverage result is too large to fit in memory.")
     })?;
     let mut coverage = Coverage { cells, offsets };
     coverage.offsets.push(0);
@@ -2068,7 +2097,9 @@ pub(crate) fn cover_sweep(
             |index| prepare_sweep_footprint(&normalized_left, &normalized_right, index),
         );
     }
-    let parallel_work = strip_parallel_work(left, right, segment_count, resolution, threads);
+    let parallel_work = accumulated_scan_work(segment_count, threads, |index| {
+        estimated_cap_cells(&sweep_quad(left, right, index), resolution)
+    });
     dispatch_coverage(
         segment_count,
         parallel_work >= SCAN_PARALLEL_MIN_WORK,
@@ -2080,9 +2111,9 @@ pub(crate) fn cover_sweep(
 #[cfg(test)]
 mod tests {
     use super::{
-        accumulated_scan_work, candidate_cache_range, cells_at, center, integer_sqrt,
-        raw_cell_count, ring_info,
-        ring_of_cell, ring_start, ring_to_face_xy, CandidatePlan, CANDIDATE_CENTER_CACHE_MAX_BYTES,
+        accumulated_scan_work, candidate_cache_range, cells_at, center, count_caps_per_cell,
+        expected_total_hits, integer_sqrt, raw_cell_count, ring_info, ring_of_cell, ring_start,
+        ring_to_face_xy, CandidatePlan, CANDIDATE_CENTER_CACHE_MAX_BYTES,
         CANDIDATE_CENTER_CACHE_REUSE, CELL_AT_PARALLEL_MIN_VECTORS, MAX_RESOLUTION,
         ROTATION_RESYNC_STEPS, SCAN_PREPARATION_WORK, SCAN_WORK_SAMPLE_SIZE, TAU,
     };
@@ -2094,10 +2125,52 @@ mod tests {
             let square = root * root;
             assert_eq!(integer_sqrt(square - 1), root - 1);
             assert_eq!(integer_sqrt(square), root);
-            if square < u64::MAX {
+            if root < u32::MAX as u64 {
                 assert_eq!(integer_sqrt(square + 1), root);
             }
         }
+    }
+
+    fn caps_along_equator(count: usize, radius_rad: f64) -> (Vec<f64>, Vec<f64>) {
+        let mut centers = Vec::with_capacity(count * 3);
+        for index in 0..count {
+            let angle = TAU * index as f64 / count as f64;
+            centers.extend_from_slice(&[angle.cos(), angle.sin(), 0.0]);
+        }
+        (centers, vec![radius_rad; count])
+    }
+
+    #[test]
+    fn total_hit_estimate_sums_before_rounding() {
+        // Rounding each cap up on its own would report at least one cell per
+        // cap; a thousand caps far smaller than a cell must stay well below it.
+        let (_, radii) = caps_along_equator(1000, 1.0e-6);
+        assert!(expected_total_hits(&radii, 4) < 1.0);
+    }
+
+    #[test]
+    fn selected_cap_counts_decline_when_covering_is_cheaper() {
+        // Many small caps against a large request: covering once and counting
+        // wins, so the kernel declines and lets the caller reduce coverage.
+        let (centers, radii) = caps_along_equator(400, 0.035);
+        let cells = (0..300_000_u64).collect::<Vec<_>>();
+        let declined = count_caps_per_cell(&centers, &radii, 8, Some(&cells), Some(1)).unwrap();
+        assert!(declined.is_none());
+
+        // The same caps against a small request keep the direct count.
+        let few = (0..1000_u64).collect::<Vec<_>>();
+        let direct = count_caps_per_cell(&centers, &radii, 8, Some(&few), Some(1)).unwrap();
+        assert_eq!(direct.map(|counts| counts.len()), Some(few.len()));
+    }
+
+    #[test]
+    fn dense_cap_counts_are_always_answered_directly() {
+        let (centers, radii) = caps_along_equator(4, 0.2);
+        let counts = count_caps_per_cell(&centers, &radii, 4, None, Some(1))
+            .unwrap()
+            .expect("a dense cap count never declines");
+        assert_eq!(counts.len(), raw_cell_count(4) as usize);
+        assert!(counts.iter().any(|&value| value > 0));
     }
 
     #[test]

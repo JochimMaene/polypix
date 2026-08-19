@@ -649,7 +649,7 @@ def test_occupancy_stats_many_sources_eo_shape(
     benchmark,
     eo_shaped_coverage: px.Coverage,
 ) -> None:
-    """The fused statistics pass must not materialize the runs it summarizes."""
+    """The fused statistics pass must not build the runs it summarizes."""
     stats = benchmark(px.occupancy, [eo_shaped_coverage] * 10, into=px.Stats())
 
     assert stats.cells.size == 49_152

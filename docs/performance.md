@@ -46,7 +46,7 @@ Concatenating all chunks recreates the original memory requirement.
 | Counts or weighted values per cell | `into=Count()`, `into=Sum(values)` | sorting, Python accumulation, one repeated value per hit |
 | Caps per cell | `cover_cap(..., into=Count())` | one cell ID per cap-cell hit, plus a `bincount()` |
 | Complete occupied-bin runs | `occupancy()` | expanding and sorting every hit as an event |
-| Per-cell counts and internal gaps | `occupancy(..., into=Stats())` | materializing every run to reduce it away |
+| Per-cell counts and internal gaps | `occupancy(..., into=Stats())` | building every run just to reduce it away |
 
 ## Choosing a dense or selected reduction
 
@@ -64,16 +64,11 @@ touch a reasonable share of that grid. A small query against a large grid, and
 every query above resolution 8, accumulates through a hash table instead and
 keeps memory flat.
 
-A reducer names the result, not the algorithm. Polypix fuses the accumulation
-into the geometry kernel where that is faster and materializes membership
-otherwise, returning the same array either way. Today
-`cover_cap(..., into=Count())` is the case that fuses, because the cap kernel
-accumulates private RING spans and never allocates cap-cell membership; polygon
-and sweep reducers materialize first. With `cells` supplied, `cover_cap()`
-compares the two before choosing: a fused selected count tests every cap
-against every requested cell, so it is kept for small requests and for caps too
-large to materialize, and covering once then reducing is used otherwise. The
-[architecture decisions](decisions.md) carry the benchmark evidence.
+Which reducers fuse into the geometry kernel, and how `cover_cap()` chooses
+between a fused selected count and covering once then reducing, is described
+under [choosing a reducer](api.md#choosing-a-reducer). The
+[architecture decisions](development.md#architecture-decisions) carry the
+benchmark evidence.
 
 `OccupancyRuns` is lossless, so it is not guaranteed to be smaller than its
 input. A cell hit in alternating bins creates one run per hit. Moderate grids
@@ -86,7 +81,7 @@ briefly and revisited hours later, so the run count approaches the hit count and
 runs compress nothing. When the runs only feed per-cell counts and complete
 internal gaps, `occupancy(..., into=Stats())` accumulates them in one pass and
 allocates by represented cell instead, which is smaller by orders of magnitude
-on that shape of workload. Reach for the default `Runs()` when the boundaries
+on that shape of workload. Keep the default result when the boundaries
 themselves are the answer.
 
 ## Dense counts versus selected cells

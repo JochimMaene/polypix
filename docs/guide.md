@@ -275,7 +275,7 @@ occupied-bin approximation whose physical boundary precision is limited by the
 sampling cadence.
 
 When runs are only a step on the way to per-cell revisit numbers, skip
-materializing them:
+building them:
 
 ```{doctest}
 >>> stats = px.occupancy(swath_coverage, into=px.Stats())

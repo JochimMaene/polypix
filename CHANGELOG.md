@@ -7,14 +7,15 @@
 - Added scale-invariant batch direction-to-RING indexing through `cell_at()`,
   including automatic parallelism for large inputs.
 - Added exact spherical-cap coverage through `cover_cap()`.
-- Added `Count`, `Sum`, `Runs`, and `Stats` reducers, accepted as `into=` by
-  every covering call and by `occupancy()`, and by `Coverage.reduce()` for
-  already-materialized membership. A reducer names the result; Polypix fuses
-  the accumulation into the geometry kernel where that is faster.
+- Added `Count`, `Sum`, and `Stats` reducers, accepted as `into=` by every
+  covering call and by `occupancy()`, and by `Coverage.reduce()` for cell lists
+  that are already built. A reducer names the result; Polypix fuses the
+  accumulation into the geometry kernel where that is faster. Omitting `into=`
+  keeps the full result: a `Coverage`, or every occupancy run.
 - Added `occupancy(sources, *, minimum_sources=1, into=None)`, returning
   lossless half-open runs by default or, with `into=Stats()`, per-cell run
   counts, complete internal gap sums and maxima, and observed window bounds
-  computed in a single pass without materializing runs.
+  computed in a single pass without building the runs.
 - Added packed ragged convex polygons through `vertex_offsets=`,
   `Coverage.segment_indices()`, `Coverage.filter_hits()`, and
   `cell_count()`.
@@ -29,8 +30,10 @@
 - Chose between the fused cap kernel and covering-then-reducing for
   `cover_cap(..., into=Count(cells=...))` by comparing their estimated costs.
   A fused selected count tests every cap against every requested cell, so it is
-  kept for small requests and for caps too large to materialize; large requests
+  kept for small requests and for caps too large to store; large requests
   now cover once and reduce. Always fusing was measured at up to 47x the cost.
+  The comparison lives in the kernel, next to the code whose cost it weighs,
+  and declines before preparing anything so that falling back stays cheap.
 - Added typed `@overload` signatures to `cover_convex_polygon()`,
   `cover_cap()`, `cover_sweep()`, and `occupancy()`, so an `into=` call site
   resolves to `Coverage`, `OccupancyRuns`, `OccupancyStats`, or the accumulated

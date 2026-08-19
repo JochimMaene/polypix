@@ -1,7 +1,7 @@
-use numpy::ndarray::{Array2, Array3};
+use numpy::ndarray::{Array2, Array3, Dimension};
 use numpy::{
     npyffi::NPY_ARRAY_WRITEABLE, Element, IntoPyArray, PyArray1, PyArray2, PyArray3,
-    PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods,
+    PyReadonlyArray, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods,
 };
 use pyo3::exceptions::{PyMemoryError, PyValueError};
 use pyo3::prelude::*;
@@ -46,7 +46,7 @@ fn validate_resolution(resolution: u8) -> PyResult<()> {
 }
 
 fn native_error(error: NativeError) -> PyErr {
-    if error.is_materialization() {
+    if error.is_out_of_memory() {
         PyMemoryError::new_err(error.to_string())
     } else {
         PyValueError::new_err(error.to_string())
@@ -63,6 +63,32 @@ fn readonly_vec<'py, T: Element>(values: Vec<T>, py: Python<'py>) -> Bound<'py, 
     array
 }
 
+/// Borrow a contiguous array as a slice, naming the argument in the error.
+fn slice<'a, T: Element, D: Dimension>(
+    array: &'a PyReadonlyArray<'_, T, D>,
+    name: &str,
+) -> PyResult<&'a [T]> {
+    array
+        .as_slice()
+        .map_err(|_| PyValueError::new_err(format!("{name} must be C-contiguous.")))
+}
+
+/// Borrow an optional array as a slice.
+fn optional_slice<'a, T: Element>(
+    array: Option<&'a PyReadonlyArray1<'_, T>>,
+    name: &str,
+) -> PyResult<Option<&'a [T]>> {
+    array.map(|values| slice(values, name)).transpose()
+}
+
+/// Borrow each array in a per-source list as a slice.
+fn slices<'a, T: Element>(
+    arrays: &'a [PyReadonlyArray1<'_, T>],
+    name: &str,
+) -> PyResult<Vec<&'a [T]>> {
+    arrays.iter().map(|array| slice(array, name)).collect()
+}
+
 #[pyfunction(signature = (vertices_xyz, offsets, resolution, candidate_cells=None, threads=None))]
 fn _cover<'py>(
     py: Python<'py>,
@@ -77,26 +103,15 @@ fn _cover<'py>(
         return Err(PyValueError::new_err("Invalid internal footprint buffers."));
     }
     let vertex_count = vertices_xyz.shape()[0] as u64;
-    let vertices = vertices_xyz
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("vertices_xyz must be C-contiguous."))?;
-    let raw_offsets = offsets
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("offsets must be C-contiguous."))?;
+    let vertices = slice(&vertices_xyz, "vertices_xyz")?;
+    let raw_offsets = slice(&offsets, "offsets")?;
     if raw_offsets.first() != Some(&0)
         || raw_offsets.last() != Some(&vertex_count)
         || raw_offsets.windows(2).any(|pair| pair[0] > pair[1])
     {
         return Err(PyValueError::new_err("Invalid internal footprint buffers."));
     }
-    let raw_candidates = candidate_cells
-        .as_ref()
-        .map(|cells| {
-            cells
-                .as_slice()
-                .map_err(|_| PyValueError::new_err("candidate_cells must be C-contiguous."))
-        })
-        .transpose()?;
+    let raw_candidates = optional_slice(candidate_cells.as_ref(), "candidate_cells")?;
 
     let coverage = py
         .detach(|| ring::cover(vertices, raw_offsets, resolution, raw_candidates, threads))
@@ -121,20 +136,9 @@ fn _cover_cap<'py>(
     if centers_xyz.shape().get(1) != Some(&3) || centers_xyz.shape()[0] != radii_rad.shape()[0] {
         return Err(PyValueError::new_err("Invalid internal cap buffers."));
     }
-    let centers = centers_xyz
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("centers_xyz must be C-contiguous."))?;
-    let radii = radii_rad
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("radii_rad must be C-contiguous."))?;
-    let raw_candidates = candidate_cells
-        .as_ref()
-        .map(|cells| {
-            cells
-                .as_slice()
-                .map_err(|_| PyValueError::new_err("candidate_cells must be C-contiguous."))
-        })
-        .transpose()?;
+    let centers = slice(&centers_xyz, "centers_xyz")?;
+    let radii = slice(&radii_rad, "radii_rad")?;
+    let raw_candidates = optional_slice(candidate_cells.as_ref(), "candidate_cells")?;
 
     let coverage = py
         .detach(|| ring::cover_caps(centers, radii, resolution, raw_candidates, threads))
@@ -153,29 +157,18 @@ fn _count_caps_per_cell<'py>(
     resolution: u8,
     cells: Option<PyReadonlyArray1<'py, u64>>,
     threads: Option<usize>,
-) -> PyResult<Bound<'py, numpy::PyArray1<i64>>> {
+) -> PyResult<Option<Bound<'py, numpy::PyArray1<i64>>>> {
     validate_resolution(resolution)?;
     if centers_xyz.shape().get(1) != Some(&3) || centers_xyz.shape()[0] != radii_rad.shape()[0] {
         return Err(PyValueError::new_err("Invalid internal cap buffers."));
     }
-    let centers = centers_xyz
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("centers_xyz must be C-contiguous."))?;
-    let radii = radii_rad
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("radii_rad must be C-contiguous."))?;
-    let raw_cells = cells
-        .as_ref()
-        .map(|values| {
-            values
-                .as_slice()
-                .map_err(|_| PyValueError::new_err("cells must be C-contiguous."))
-        })
-        .transpose()?;
+    let centers = slice(&centers_xyz, "centers_xyz")?;
+    let radii = slice(&radii_rad, "radii_rad")?;
+    let raw_cells = optional_slice(cells.as_ref(), "cells")?;
     let counts = py
         .detach(|| ring::count_caps_per_cell(centers, radii, resolution, raw_cells, threads))
         .map_err(native_error)?;
-    Ok(counts.into_pyarray(py))
+    Ok(counts.map(|values| values.into_pyarray(py)))
 }
 
 #[pyfunction(signature = (cells, resolution, requested_cells=None))]
@@ -186,17 +179,8 @@ fn _count_coverage_per_cell<'py>(
     requested_cells: Option<PyReadonlyArray1<'py, u64>>,
 ) -> PyResult<Bound<'py, numpy::PyArray1<i64>>> {
     validate_resolution(resolution)?;
-    let cells = cells
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("cells must be C-contiguous."))?;
-    let requested_cells = requested_cells
-        .as_ref()
-        .map(|values| {
-            values
-                .as_slice()
-                .map_err(|_| PyValueError::new_err("requested_cells must be C-contiguous."))
-        })
-        .transpose()?;
+    let cells = slice(&cells, "cells")?;
+    let requested_cells = optional_slice(requested_cells.as_ref(), "requested_cells")?;
     let counts = py
         .detach(|| reduce::count_coverage_per_cell(cells, resolution, requested_cells))
         .map_err(native_error)?;
@@ -213,23 +197,10 @@ fn _sum_coverage_per_cell<'py>(
     requested_cells: Option<PyReadonlyArray1<'py, u64>>,
 ) -> PyResult<Bound<'py, numpy::PyArray1<f64>>> {
     validate_resolution(resolution)?;
-    let cells = cells
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("cells must be C-contiguous."))?;
-    let offsets = offsets
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("offsets must be C-contiguous."))?;
-    let values = values
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("values must be C-contiguous."))?;
-    let requested_cells = requested_cells
-        .as_ref()
-        .map(|requested| {
-            requested
-                .as_slice()
-                .map_err(|_| PyValueError::new_err("requested_cells must be C-contiguous."))
-        })
-        .transpose()?;
+    let cells = slice(&cells, "cells")?;
+    let offsets = slice(&offsets, "offsets")?;
+    let values = slice(&values, "values")?;
+    let requested_cells = optional_slice(requested_cells.as_ref(), "requested_cells")?;
     let sums = py
         .detach(|| {
             reduce::sum_coverage_per_cell(cells, offsets, values, resolution, requested_cells)
@@ -238,34 +209,19 @@ fn _sum_coverage_per_cell<'py>(
     Ok(sums.into_pyarray(py))
 }
 
-#[pyfunction(signature = (cell_arrays, offset_arrays, resolution, minimum_sources, trusted=false))]
+#[pyfunction(signature = (cell_arrays, offset_arrays, resolution, minimum_sources))]
 fn _occupancy_runs<'py>(
     py: Python<'py>,
     cell_arrays: Vec<PyReadonlyArray1<'py, u64>>,
     offset_arrays: Vec<PyReadonlyArray1<'py, u64>>,
     resolution: u8,
     minimum_sources: usize,
-    trusted: bool,
 ) -> PyResult<PyOccupancyRuns<'py>> {
     validate_resolution(resolution)?;
-    let cells = cell_arrays
-        .iter()
-        .map(|array| {
-            array
-                .as_slice()
-                .map_err(|_| PyValueError::new_err("Coverage cells must be C-contiguous."))
-        })
-        .collect::<PyResult<Vec<_>>>()?;
-    let offsets = offset_arrays
-        .iter()
-        .map(|array| {
-            array
-                .as_slice()
-                .map_err(|_| PyValueError::new_err("Coverage offsets must be C-contiguous."))
-        })
-        .collect::<PyResult<Vec<_>>>()?;
+    let cells = slices(&cell_arrays, "Coverage cells")?;
+    let offsets = slices(&offset_arrays, "Coverage offsets")?;
     let runs = py
-        .detach(|| access::occupancy_runs(&cells, &offsets, resolution, minimum_sources, trusted))
+        .detach(|| access::occupancy_runs(&cells, &offsets, resolution, minimum_sources))
         .map_err(native_error)?;
     Ok((
         readonly_vec(runs.cells, py),
@@ -275,34 +231,19 @@ fn _occupancy_runs<'py>(
     ))
 }
 
-#[pyfunction(signature = (cell_arrays, offset_arrays, resolution, minimum_sources, trusted=false))]
+#[pyfunction(signature = (cell_arrays, offset_arrays, resolution, minimum_sources))]
 fn _occupancy_stats<'py>(
     py: Python<'py>,
     cell_arrays: Vec<PyReadonlyArray1<'py, u64>>,
     offset_arrays: Vec<PyReadonlyArray1<'py, u64>>,
     resolution: u8,
     minimum_sources: usize,
-    trusted: bool,
 ) -> PyResult<PyOccupancyStats<'py>> {
     validate_resolution(resolution)?;
-    let cells = cell_arrays
-        .iter()
-        .map(|array| {
-            array
-                .as_slice()
-                .map_err(|_| PyValueError::new_err("Coverage cells must be C-contiguous."))
-        })
-        .collect::<PyResult<Vec<_>>>()?;
-    let offsets = offset_arrays
-        .iter()
-        .map(|array| {
-            array
-                .as_slice()
-                .map_err(|_| PyValueError::new_err("Coverage offsets must be C-contiguous."))
-        })
-        .collect::<PyResult<Vec<_>>>()?;
+    let cells = slices(&cell_arrays, "Coverage cells")?;
+    let offsets = slices(&offset_arrays, "Coverage offsets")?;
     let stats = py
-        .detach(|| access::occupancy_stats(&cells, &offsets, resolution, minimum_sources, trusted))
+        .detach(|| access::occupancy_stats(&cells, &offsets, resolution, minimum_sources))
         .map_err(native_error)?;
     Ok((
         readonly_vec(stats.cells, py),
@@ -330,20 +271,9 @@ fn _cover_sweep<'py>(
     {
         return Err(PyValueError::new_err("Invalid internal sweep buffers."));
     }
-    let left = left_edge_xyz
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("left_edge_xyz must be C-contiguous."))?;
-    let right = right_edge_xyz
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("right_edge_xyz must be C-contiguous."))?;
-    let raw_candidates = candidate_cells
-        .as_ref()
-        .map(|cells| {
-            cells
-                .as_slice()
-                .map_err(|_| PyValueError::new_err("candidate_cells must be C-contiguous."))
-        })
-        .transpose()?;
+    let left = slice(&left_edge_xyz, "left_edge_xyz")?;
+    let right = slice(&right_edge_xyz, "right_edge_xyz")?;
+    let raw_candidates = optional_slice(candidate_cells.as_ref(), "candidate_cells")?;
     let coverage = py
         .detach(|| ring::cover_sweep(left, right, resolution, raw_candidates, threads))
         .map_err(native_error)?;
@@ -361,9 +291,7 @@ fn _center<'py>(
     resolution: u8,
 ) -> PyResult<Bound<'py, PyArray2<f64>>> {
     validate_resolution(resolution)?;
-    let cells = cells
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("cells must be C-contiguous."))?;
+    let cells = slice(&cells, "cells")?;
     let values = py
         .detach(|| {
             ring::validate_cell_range(cells, resolution, "cells")?;
@@ -383,12 +311,8 @@ fn _validate_coverage(
     resolution: u8,
 ) -> PyResult<()> {
     validate_resolution(resolution)?;
-    let cells = cells
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("cells must be C-contiguous."))?;
-    let offsets = offsets
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("offsets must be C-contiguous."))?;
+    let cells = slice(&cells, "cells")?;
+    let offsets = slice(&offsets, "offsets")?;
     py.detach(|| ring::validate_coverage_arrays(cells, offsets, resolution))
         .map_err(PyValueError::new_err)
 }
@@ -405,9 +329,7 @@ fn _cell_at<'py>(
             "vectors_xyz must have shape (vectors, 3).",
         ));
     }
-    let vectors = vectors_xyz
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("vectors_xyz must be C-contiguous."))?;
+    let vectors = slice(&vectors_xyz, "vectors_xyz")?;
     let cells = py
         .detach(|| ring::cells_at(vectors, resolution))
         .map_err(native_error)?;
@@ -421,9 +343,7 @@ fn _corner_many<'py>(
     resolution: u8,
 ) -> PyResult<Bound<'py, PyArray3<f64>>> {
     validate_resolution(resolution)?;
-    let cells = cells
-        .as_slice()
-        .map_err(|_| PyValueError::new_err("cells must be C-contiguous."))?;
+    let cells = slice(&cells, "cells")?;
     let values = py
         .detach(|| {
             ring::validate_cell_range(cells, resolution, "cells")?;

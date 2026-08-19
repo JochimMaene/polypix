@@ -58,7 +58,7 @@ One `cover_sweep()` call covers all 14,400 intervals for a satellite:
 
 Consecutive occupied intervals from any satellite form one merged occupied-bin
 run. Those runs are only an intermediate here, so the example fuses the per-cell
-statistics instead of materializing them, then maps the ordinal gaps to seconds
+statistics instead of building them, then maps the ordinal gaps to seconds
 to derive both mean and maximum complete end-to-start gaps:
 
 ```{literalinclude} ../../examples/earth_observation_constellation.py
@@ -69,7 +69,7 @@ to derive both mean and maximum complete end-to-start gaps:
 ```
 
 The reducer never expands and sorts the nine million interval–cell hits as an
-event table, and it never materializes the roughly nine million runs either:
+event table, and it never builds the roughly nine million runs either:
 working state is one accumulator per observed cell. `first_start` and
 `last_stop` carry the observed window, so a mission workflow can add horizon-edge
 gaps or periodic wraparound from this result. Percentiles, completeness rules,

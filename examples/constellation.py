@@ -153,20 +153,6 @@ def map_coordinates(
     )
 
 
-def clipped_range(
-    values: npt.NDArray[np.float64],
-    *,
-    low_percentile: float,
-    high_percentile: float,
-) -> tuple[float, float]:
-    """Return a percentile range so a thin tail cannot flatten the color scale."""
-    low = float(np.percentile(values, low_percentile))
-    high = float(np.percentile(values, high_percentile))
-    if high <= low:
-        return low, low + 1.0
-    return low, high
-
-
 def tiling_marker_size(
     figure: object,
     axes: object,

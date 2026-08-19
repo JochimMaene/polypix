@@ -136,9 +136,14 @@ rather than Python lists for anything large.
 Adding a public function means updating `polypix/__init__.py`, `docs/api.md`,
 and the tests and benchmarks that cover it.
 
-```{toctree}
-:hidden:
-:maxdepth: 1
+## Architecture decisions
 
-decisions
-```
+These records explain why Polypix owns a focused native RING kernel and why a
+small number of fused reductions were admitted. They are maintainer evidence
+rather than user instructions:
+
+- [Project goal](https://github.com/JochimMaene/polypix/blob/main/decisions/project-goal.md)
+- [Owned HEALPix kernel](https://github.com/JochimMaene/polypix/blob/main/decisions/owned-healpix-kernel.md)
+- [Exact caps and segmented occupancy](https://github.com/JochimMaene/polypix/blob/main/decisions/cap-and-occupancy-primitives.md)
+- [API surface beyond constellation examples](https://github.com/JochimMaene/polypix/blob/main/decisions/api-surface-beyond-constellations.md)
+- [Coverage reductions and ordinal occupancy runs](https://github.com/JochimMaene/polypix/blob/main/decisions/coverage-reductions-and-occupancy-runs.md)

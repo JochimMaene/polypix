@@ -68,12 +68,22 @@ class Coverage:
             owned_offsets.view(np.uint64),
             resolved,
         )
+        return cls._from_owned(owned_cells, owned_offsets, resolved)
+
+    @classmethod
+    def _from_owned(
+        cls,
+        cells: npt.NDArray[np.int64],
+        offsets: npt.NDArray[np.int64],
+        resolution: int,
+    ) -> Coverage:
+        """Take ownership of arrays already known to satisfy the invariants."""
         result = object.__new__(cls)
-        _freeze_array(owned_cells)
-        _freeze_array(owned_offsets)
-        object.__setattr__(result, "cells", owned_cells)
-        object.__setattr__(result, "offsets", owned_offsets)
-        object.__setattr__(result, "resolution", resolved)
+        _freeze_array(cells)
+        _freeze_array(offsets)
+        object.__setattr__(result, "cells", cells)
+        object.__setattr__(result, "offsets", offsets)
+        object.__setattr__(result, "resolution", resolution)
         return result
 
     @classmethod
@@ -131,7 +141,7 @@ class Coverage:
         """Accumulate this coverage with a :class:`Count` or :class:`Sum`.
 
         The reducer vocabulary is the one the covering operations accept as
-        ``into=``, so a materialized coverage reduces exactly as a fused call
+        ``into=``, so a stored coverage reduces exactly as a fused call
         would have.
         """
         if not isinstance(reducer, (Count, Sum)):
@@ -158,10 +168,11 @@ class Coverage:
         cumulative = np.empty(selected.size + 1, dtype=np.int64)
         cumulative[0] = 0
         np.cumsum(selected, dtype=np.int64, out=cumulative[1:])
-        filtered_offsets = cumulative[self.offsets]
-        return Coverage.from_arrays(
+        # Dropping hits keeps cells in range, keeps offsets nondecreasing, and
+        # keeps each segment's cells unique, so the result needs no rescan.
+        return Coverage._from_owned(
             self.cells[selected],
-            filtered_offsets,
+            cumulative[self.offsets],
             self.resolution,
         )
 
@@ -282,13 +293,18 @@ class OccupancyStats:
         return self.run_counts - 1
 
 
-def _as_resolution(value: int) -> int:
+def _as_integer(value: object, name: str, expected: str) -> int:
+    """Reject bool, then coerce through ``__index__``, naming the argument."""
     if isinstance(value, (bool, np.bool_)):
-        raise TypeError("resolution must be an integer, not bool.")
+        raise TypeError(f"{name} must be {expected}, not bool.")
     try:
-        resolution = operator.index(value)
+        return operator.index(cast(SupportsIndex, value))
     except TypeError as exc:
-        raise TypeError("resolution must be an integer.") from exc
+        raise TypeError(f"{name} must be {expected}.") from exc
+
+
+def _as_resolution(value: int) -> int:
+    resolution = _as_integer(value, "resolution", "an integer")
     if resolution < 0 or resolution > _MAX_RESOLUTION:
         raise ValueError(f"resolution must be between 0 and {_MAX_RESOLUTION}.")
     return resolution
@@ -300,27 +316,25 @@ def cell_count(resolution: int) -> int:
     return 12 * (1 << (2 * resolved))
 
 
+def _as_candidates(
+    candidate_cells: int | Sequence[int] | npt.NDArray[np.integer[Any]] | None,
+) -> npt.NDArray[np.uint64] | None:
+    if candidate_cells is None:
+        return None
+    return _as_uint64_vector(candidate_cells, "candidate_cells")
+
+
 def _as_threads(value: int | None) -> int | None:
     if value is None:
         return None
-    if isinstance(value, (bool, np.bool_)):
-        raise TypeError("threads must be a positive integer, not bool.")
-    try:
-        threads = operator.index(value)
-    except TypeError as exc:
-        raise TypeError("threads must be a positive integer or None.") from exc
+    threads = _as_integer(value, "threads", "a positive integer")
     if threads < 1:
         raise ValueError("threads must be a positive integer.")
     return threads
 
 
 def _as_uint64_scalar(value: object, name: str) -> int:
-    if isinstance(value, (bool, np.bool_)):
-        raise TypeError(f"{name} must contain integers, not bool.")
-    try:
-        integer = operator.index(cast(SupportsIndex, value))
-    except TypeError as exc:
-        raise TypeError(f"{name} must contain integers.") from exc
+    integer = _as_integer(value, name, "an integer")
     if integer < 0:
         raise ValueError(f"{name} must contain non-negative integers.")
     if integer > np.iinfo(np.uint64).max:
@@ -369,9 +383,7 @@ def _owned_int64_vector(
     return np.array(converted, dtype=np.int64, order="C", copy=True)
 
 
-def _signed_view(
-    values: npt.NDArray[np.uint64],
-) -> npt.NDArray[np.int64]:
+def _signed_view(values: npt.NDArray[np.uint64]) -> npt.NDArray[np.int64]:
     """Expose trusted non-negative native indices as a zero-copy signed view."""
     return values.view(np.int64)
 
@@ -477,21 +489,18 @@ def _ragged_polygons(values: Sequence[object]) -> tuple[np.ndarray, np.ndarray]:
 def _as_polygons(
     values: object,
 ) -> tuple[np.ndarray, np.ndarray]:
-    if isinstance(values, np.ndarray):
-        return _require_dense_polygons(values)
-    if not isinstance(values, Sequence):
+    """Accept one polygon, a uniform batch, or a batch of differing lengths."""
+    if not isinstance(values, Sequence) or isinstance(values, np.ndarray):
         return _require_dense_polygons(values)
     if len(values) == 0:
         return np.empty((0, 3), dtype=np.float64), np.zeros(1, dtype=np.uint64)
-    if np.asarray(values[0]).ndim == 2:
-        try:
-            dense = np.asarray(values)
-        except ValueError:
-            return _ragged_polygons(values)
-        if dense.dtype != object:
-            return _require_dense_polygons(dense)
-        return _ragged_polygons(values)
-    return _require_dense_polygons(values)
+    if np.ndim(values[0]) != 2:
+        return _require_dense_polygons(values)
+    # A batch of polygons. Equal vertex counts pack into one dense array; only
+    # differing counts need the per-polygon path.
+    if len({np.shape(polygon)[0] for polygon in values}) == 1:
+        return _require_dense_polygons(values)
+    return _ragged_polygons(values)
 
 
 def _as_packed_polygons(
@@ -542,45 +551,11 @@ class Sum:
 
 
 @dataclass(frozen=True, slots=True)
-class Runs:
-    """Keep every maximal half-open occupied-bin run. The default result."""
-
-
-@dataclass(frozen=True, slots=True)
 class Stats:
-    """Accumulate per-cell occupancy statistics without materializing runs."""
+    """Accumulate per-cell occupancy statistics without building the runs."""
 
 
 CoverageReducer = Count | Sum
-OccupancyReducer = Runs | Stats
-
-
-def _coverage(payload: tuple[np.ndarray, np.ndarray], resolution: int) -> Coverage:
-    cells, offsets = payload
-    return Coverage._from_native(
-        cells=cells,
-        offsets=offsets,
-        resolution=resolution,
-    )
-
-
-def _cover_xyz(
-    vertices: np.ndarray,
-    offsets: np.ndarray,
-    resolution: int,
-    candidate_cells: int | Sequence[int] | np.ndarray | None,
-    threads: int | None,
-) -> Coverage:
-    requested_threads = _as_threads(threads)
-    candidates = (
-        None
-        if candidate_cells is None
-        else _as_uint64_vector(candidate_cells, "candidate_cells")
-    )
-    return _coverage(
-        _cover(vertices, offsets, resolution, candidates, requested_threads),
-        resolution,
-    )
 
 
 @overload
@@ -653,7 +628,7 @@ def cover_convex_polygon(
     into
         Optional :class:`Count` or :class:`Sum` reducer. ``None`` returns the
         segmented ``Coverage``; a reducer returns its accumulated array and
-        lets Polypix skip materializing membership where it can.
+        lets Polypix skip building the cell lists where it can.
     threads
         ``None`` selects the automatic policy, 1 is sequential, and larger
         values are reusable worker-pool maximums.
@@ -671,7 +646,7 @@ def cover_convex_polygon(
     ValueError
         If shapes, indices, vectors, or polygon geometry are invalid.
     MemoryError
-        If the explicit segmented result cannot be materialized.
+        If the explicit segmented result does not fit in memory.
     """
     resolved = _as_resolution(resolution)
     vertices, offsets = (
@@ -680,7 +655,16 @@ def cover_convex_polygon(
         else _as_packed_polygons(polygons_xyz, vertex_offsets)
     )
     reducer = _as_coverage_reducer(into)
-    coverage = _cover_xyz(vertices, offsets, resolved, candidate_cells, threads)
+    coverage = Coverage._from_native(
+        *_cover(
+            vertices,
+            offsets,
+            resolved,
+            _as_candidates(candidate_cells),
+            _as_threads(threads),
+        ),
+        resolved,
+    )
     return coverage if reducer is None else _reduce_coverage(coverage, reducer)
 
 
@@ -738,26 +722,28 @@ def cover_cap(
     vectors are normalized internally. Other arguments and the segmented
     result follow :func:`cover_convex_polygon`.
 
-    ``into=Count()`` uses private RING spans when that is cheaper. For selected
-    cells, Polypix estimates fused point-testing versus covering and reducing,
-    choosing the faster path; the fused path avoids cap-cell materialization.
+    ``into=Count()`` counts caps per cell directly, without building cap
+    coverage first. For selected cells the kernel picks whichever of the two is
+    cheaper and falls back to covering once and counting when that wins.
     """
     resolved = _as_resolution(resolution)
     reducer = _as_coverage_reducer(into)
     centers = _as_cap_centers(centers_xyz)
     radii = _as_cap_radii(radii_rad, centers.shape[0])
-    if isinstance(reducer, Count) and candidate_cells is None:
-        fused = _fused_cap_count(centers, radii, resolved, reducer, threads)
-        if fused is not None:
-            return fused
     requested_threads = _as_threads(threads)
-    candidates = (
-        None
-        if candidate_cells is None
-        else _as_uint64_vector(candidate_cells, "candidate_cells")
-    )
-    coverage = _coverage(
-        _cover_cap(centers, radii, resolved, candidates, requested_threads),
+    if isinstance(reducer, Count) and candidate_cells is None:
+        selected = (
+            None if reducer.cells is None else _as_uint64_vector(reducer.cells, "cells")
+        )
+        counts = _count_caps_per_cell(
+            centers, radii, resolved, selected, requested_threads
+        )
+        if counts is not None:
+            return counts
+    coverage = Coverage._from_native(
+        *_cover_cap(
+            centers, radii, resolved, _as_candidates(candidate_cells), requested_threads
+        ),
         resolved,
     )
     return coverage if reducer is None else _reduce_coverage(coverage, reducer)
@@ -792,66 +778,11 @@ def _as_segment_values(
     return cast(npt.NDArray[np.float64], array)
 
 
-# Measured native throughput on the development host, in nanoseconds. Covering
-# emits a hit for about 10 ns and a selected reduction gathers a requested cell
-# for about the same, while a selected fused count pays about 43 ns per
-# requested cell to decode its RING centre plus about 0.48 ns per cap test.
-# Fusing a selected query is therefore only worth it while the request stays
-# small relative to the coverage it would otherwise allocate.
-_HIT_COST_NS = 10.0
-_GATHER_COST_NS = 10.0
-_CELL_DECODE_COST_NS = 43.0
-_CAP_TEST_COST_NS = 0.48
-
-
-def _expected_cap_hits(radii: np.ndarray, resolution: int) -> float:
-    """Estimate materialized cap-coverage hits from the caps' solid angles."""
-    with np.errstate(invalid="ignore"):
-        fraction = float(np.sum(0.5 * (1.0 - np.cos(radii))))
-    return cell_count(resolution) * fraction
-
-
-def _fused_cap_count(
-    centers: np.ndarray,
-    radii: np.ndarray,
-    resolution: int,
-    reducer: Count,
-    threads: int | None,
-) -> npt.NDArray[np.int64] | None:
-    """Count caps per cell natively, or decline when covering is cheaper.
-
-    With ``cells=None`` the kernel accumulates private RING spans and always
-    wins. A selected query instead costs one cap test per requested cell, which
-    loses badly to covering once and reducing when both counts are large, yet
-    stays the only viable path for caps too large to materialize. Declining
-    returns ``None`` so the caller falls through to the generic reduction.
-    """
-    if reducer.cells is None:
-        return _count_caps_per_cell(
-            centers, radii, resolution, None, _as_threads(threads)
-        )
-    requested = _as_uint64_vector(reducer.cells, "cells")
-    fused_cost = requested.size * (
-        _CELL_DECODE_COST_NS + _CAP_TEST_COST_NS * radii.size
-    )
-    covering_cost = (
-        _HIT_COST_NS * _expected_cap_hits(radii, resolution)
-        + _GATHER_COST_NS * requested.size
-    )
-    # Malformed radii make the estimate non-finite, so this comparison is false
-    # and the fused path runs; both paths then reject them identically.
-    if fused_cost > covering_cost:
-        return None
-    return _count_caps_per_cell(
-        centers, radii, resolution, requested, _as_threads(threads)
-    )
-
-
 def _reduce_coverage(
     coverage: Coverage,
     reducer: CoverageReducer,
 ) -> npt.NDArray[np.int64] | npt.NDArray[np.float64]:
-    """Apply a coverage reducer to already-materialized membership."""
+    """Apply a coverage reducer to cell lists that are already built."""
     requested = (
         None
         if reducer.cells is None
@@ -946,25 +877,17 @@ def cover_sweep(
             "left_edge_xyz and right_edge_xyz must contain the same number of samples."
         )
     requested_threads = _as_threads(threads)
-    candidates = (
-        None
-        if candidate_cells is None
-        else _as_uint64_vector(candidate_cells, "candidate_cells")
-    )
-    coverage = _coverage(
-        _cover_sweep(left, right, resolved, candidates, requested_threads),
+    coverage = Coverage._from_native(
+        *_cover_sweep(
+            left, right, resolved, _as_candidates(candidate_cells), requested_threads
+        ),
         resolved,
     )
     return coverage if reducer is None else _reduce_coverage(coverage, reducer)
 
 
 def _as_minimum_sources(value: int) -> int:
-    if isinstance(value, (bool, np.bool_)):
-        raise TypeError("minimum_sources must be a positive integer, not bool.")
-    try:
-        minimum_sources = operator.index(value)
-    except TypeError as exc:
-        raise TypeError("minimum_sources must be a positive integer.") from exc
+    minimum_sources = _as_integer(value, "minimum_sources", "a positive integer")
     if minimum_sources < 1:
         raise ValueError("minimum_sources must be a positive integer.")
     return minimum_sources
@@ -1020,7 +943,7 @@ def occupancy(
     sources: Coverage | Sequence[Coverage],
     *,
     minimum_sources: int = 1,
-    into: None | Runs = None,
+    into: None = None,
 ) -> OccupancyRuns: ...
 
 
@@ -1037,7 +960,7 @@ def occupancy(
     sources: Coverage | Sequence[Coverage],
     *,
     minimum_sources: int = 1,
-    into: OccupancyReducer | None = None,
+    into: Stats | None = None,
 ) -> OccupancyRuns | OccupancyStats:
     """Read aligned coverage segments as ordered occupancy bins.
 
@@ -1048,29 +971,29 @@ def occupancy(
     boundaries map to physical time and how leading, trailing, or cyclic gaps
     should be treated.
 
-    ``into=Runs()``, the default, keeps every maximal half-open run and so
-    costs memory proportional to the run count, which approaches the hit count
-    when cells are occupied briefly and repeatedly. ``into=Stats()``
-    accumulates per-cell counts and complete internal gaps in a single pass
-    without materializing runs. Choose :class:`Runs` when the boundaries
-    themselves are the answer: percentiles, minimum-duration filtering,
-    short-gap merging, or arbitrary per-run timestamps.
+    By default every maximal half-open run is kept, which costs memory in
+    proportion to the run count; that approaches the hit count when cells are
+    occupied briefly and repeatedly. ``into=Stats()`` instead accumulates
+    per-cell counts and complete internal gaps in one pass, without building
+    the runs at all. Keep the default when the boundaries themselves are the
+    answer: percentiles, minimum-duration filtering, short-gap merging, or
+    arbitrary per-run timestamps.
     """
-    if into is not None and not isinstance(into, (Runs, Stats)):
-        raise TypeError("into must be a Runs or Stats reducer, or None.")
+    if into is not None and not isinstance(into, Stats):
+        raise TypeError("into must be a Stats reducer, or None.")
     cells, offsets, resolution, segment_count, threshold, count = _prepared_sources(
         sources, minimum_sources, "occupancy"
     )
     native_threshold = min(threshold, count + 1)
     if isinstance(into, Stats):
         return OccupancyStats._from_native(
-            _occupancy_stats(cells, offsets, resolution, native_threshold, True),
+            _occupancy_stats(cells, offsets, resolution, native_threshold),
             resolution=resolution,
             segment_count=segment_count,
             minimum_sources=threshold,
             source_count=count,
         )
-    result = _occupancy_runs(cells, offsets, resolution, native_threshold, True)
+    result = _occupancy_runs(cells, offsets, resolution, native_threshold)
     return OccupancyRuns._from_native(
         cells=result[0],
         offsets=result[1],
@@ -1136,7 +1059,6 @@ __all__ = [
     "Coverage",
     "OccupancyRuns",
     "OccupancyStats",
-    "Runs",
     "Stats",
     "Sum",
     "__version__",

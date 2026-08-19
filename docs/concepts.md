@@ -13,28 +13,13 @@ region's coverage falls into a contiguous span on each ring it touches, which is
 also why coverage cost tracks a region's latitude extent more than its shape.
 
 Polypix uses fixed-resolution RING ordering throughout, and calls the HEALPix
-order `resolution`:
-
-```text
-nside      = 2 ** resolution
-cell_count = 12 * 4 ** resolution
-```
-
-| Resolution | `nside` | Cells |
-| ---: | ---: | ---: |
-| 0 | 1 | 12 |
-| 1 | 2 | 48 |
-| 2 | 4 | 192 |
-| 8 | 256 | 786,432 |
-| 12 | 4,096 | 201,326,592 |
-
-Every step up quadruples the grid and roughly halves the cell scale, so the
-numbers get away from you quickly. Resolution 12 already needs about 1.5 GiB
-for one `int64` per cell. Resolutions run to 29, which is only useful for sparse
-transforms and selected-cell queries, never for a complete dense map.
-[Resolutions](resolutions.md) shows what the grid looks like at each level, and
-lists every one with its angular size, its size on the ground, and what a dense
-map would cost.
+order `resolution`. Every step up quadruples the grid and roughly halves the
+cell scale, so the numbers get away from you quickly: resolution 12 already
+needs about 1.5 GiB for one `int64` per cell. Resolutions run to 29, which is
+only useful for sparse transforms and selected-cell queries, never for a
+complete dense map. [Resolutions](resolutions.md) gives the formulas, shows what
+the grid looks like at each level, and lists every resolution with its angular
+size, its size on the ground, and what a dense map would cost.
 
 What you get back are ordinary RING pixel indices in `[0, cell_count)`. They are
 not packed tokens and they do not encode their resolution. The result object

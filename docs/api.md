@@ -16,7 +16,7 @@ HEALPix and NumPy handoff conventions see
 | [`cover_sweep`](#cover_sweep) | Cover the quadrilaterals between two sampled edges |
 | [`occupancy`](#occupancy) | Read aligned coverage as ordered occupancy bins |
 | [`Count`](#reducers), [`Sum`](#reducers) | Reducers accepted by the covering calls |
-| [`Runs`](#reducers), [`Stats`](#reducers) | Reducers accepted by `occupancy()` |
+| [`Stats`](#reducers) | Reducer accepted by `occupancy()` |
 | [`cell_at`](#cell_at) | Direction vectors to RING cell IDs |
 | [`cell_centers`](#cell_centers) | Cell center vectors |
 | [`cell_corners`](#cell_corners) | Cell corner vectors |
@@ -71,7 +71,7 @@ Cover convex spherical polygons by HEALPix cell-center inclusion.
 `into`
 : *[`Count`](#reducers), [`Sum`](#reducers), or None, default None*. `None`
   returns the segmented `Coverage`. A reducer returns its accumulated array
-  instead and lets Polypix skip materializing membership where it can. See
+  instead and lets Polypix skip building the cell lists where it can. See
   [Choosing a reducer](#choosing-a-reducer).
 
 **Returns**
@@ -88,7 +88,7 @@ Cover convex spherical polygons by HEALPix cell-center inclusion.
 : Invalid shapes, resolution, vectors, or polygon geometry.
 
 `MemoryError`
-: The explicit segmented result cannot be materialized.
+: The explicit segmented result does not fit in memory.
 
 **Notes**
 
@@ -150,7 +150,7 @@ Cover exact spherical caps by HEALPix cell-center inclusion.
 `ndarray`
 : With `into=Count()` or `into=Sum(values)`, the accumulated array described
   under [reducers](#reducers). `into=Count()` accumulates private RING spans
-  without materializing cap-cell membership.
+  without building the per-cap cell lists.
 
 **Raises**
 
@@ -161,7 +161,7 @@ Cover exact spherical caps by HEALPix cell-center inclusion.
 : Shapes, vectors, radii, resolution, or candidates are invalid.
 
 `MemoryError`
-: The explicit segmented result cannot be materialized; use
+: The explicit segmented result does not fit in memory; use
   `into=Count()` if counts are the intended result.
 
 **Notes**
@@ -177,7 +177,7 @@ thread before the call returns.
 
 Use this function instead of approximating a circular field of view with a
 many-sided polygon. When only the number of caps covering each cell matters,
-[`into=Count()`](#reducers) avoids materializing repeated
+[`into=Count()`](#reducers) avoids storing repeated
 cap-cell IDs.
 
 ## cover_sweep
@@ -224,7 +224,7 @@ called a HEALPix "strip".
 : Mismatched edge lengths or an invalid or zero-area segment.
 
 `MemoryError`
-: The explicit segmented result cannot be materialized.
+: The explicit segmented result does not fit in memory.
 
 **Notes**
 
@@ -273,8 +273,8 @@ empty separator bin.
   result.
 
 `into`
-: *[`Runs`](#reducers) or [`Stats`](#reducers), default `Runs()`*. Selects the
-  result. See [Choosing a reducer](#choosing-a-reducer).
+: *[`Stats`](#reducers) or None, default None*. Selects the result. Omit it to
+  get every run. See [Choosing a reducer](#choosing-a-reducer).
 
 **Returns**
 
@@ -302,19 +302,18 @@ boundary times are uncertain at the input sampling scale.
 ## Reducers
 
 A reducer names the result you want, and the covering calls and `occupancy()`
-accept one through `into=`. Passing `into=None` returns the materialized
+accept one through `into=`. Passing `into=None` returns the full
 `Coverage` or `OccupancyRuns` instead, which is the default.
 
 ```python
 Count(cells=None)
 Sum(values, cells=None)
-Runs()
 Stats()
 ```
 
 `Count` and `Sum` are accepted by `cover_convex_polygon()`, `cover_cap()`,
-`cover_sweep()`, and [`Coverage.reduce()`](#coverage). `Runs` and `Stats` are
-accepted by `occupancy()`.
+`cover_sweep()`, and [`Coverage.reduce()`](#coverage). `Stats` is accepted by
+`occupancy()`.
 
 `cells`
 : *int, sequence of int, ndarray, or None*. With `None` the result is a dense
@@ -331,19 +330,19 @@ accepted by `occupancy()`.
 ### Choosing a reducer
 
 A reducer is a request, not a promise about the algorithm. Polypix fuses the
-accumulation into the geometry kernel where that is faster and materializes
+accumulation into the geometry kernel where that is faster and builds the
 membership otherwise; the result is identical either way.
 
 `cover_cap(..., into=Count())` is the case where fusing currently wins by a
 wide margin, because the cap kernel accumulates private RING spans and never
 allocates cap-cell membership. Pass `candidate_cells` and it falls back to
-materializing.
+building them.
 
-For `occupancy()`, `Runs()` keeps every boundary and so costs memory
+For `occupancy()`, the default keeps every boundary and so costs memory
 proportional to the run count, which approaches the hit count when cells are
 occupied briefly and repeatedly. `Stats()` accumulates per-cell counts and
 complete internal gaps in one pass and allocates by represented cell instead.
-Choose `Runs()` when the boundaries themselves are the answer: percentiles,
+Keep the default when the boundaries themselves are the answer: percentiles,
 minimum-duration filtering, short-gap merging, or arbitrary per-run timestamps.
 
 
@@ -489,7 +488,7 @@ coverage = px.Coverage.from_arrays(
 `reduce(reducer)`
 : Accumulate this coverage with a [`Count`](#reducers) or [`Sum`](#reducers),
   returning the same array a fused `into=` call would have produced. Use it to
-  take several reductions from one materialized coverage.
+  take several reductions from one stored coverage.
 
 `segment_indices()`
 : Return the segment index aligned with every flat cell hit.

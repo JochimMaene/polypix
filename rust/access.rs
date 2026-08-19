@@ -13,8 +13,8 @@ pub(crate) struct OccupancyRuns {
     pub(crate) run_stops: Vec<u64>,
 }
 
-fn runs_materialization_error() -> NativeError {
-    NativeError::materialization("Occupancy runs are too large to materialize.")
+fn runs_out_of_memory_error() -> NativeError {
+    NativeError::out_of_memory("Occupancy runs are too large to fit in memory.")
 }
 
 fn validate_run_sources(
@@ -22,7 +22,6 @@ fn validate_run_sources(
     offset_arrays: &[&[u64]],
     resolution: u8,
     minimum_sources: usize,
-    trusted: bool,
 ) -> Result<usize, String> {
     if minimum_sources == 0 {
         return Err("minimum_sources must be at least 1.".to_owned());
@@ -49,20 +48,16 @@ fn validate_run_sources(
         );
     }
 
+    // Every source is a `Coverage`, which validates its cells and offsets once
+    // at construction and exposes them read-only, so the per-hit scans have
+    // already run and cannot be invalidated afterwards. Only the offsets are
+    // re-read here, to agree on a shared segment count.
     let mut segment_count = None;
-    for (source, (&cells, &offsets)) in cell_arrays.iter().zip(offset_arrays).enumerate() {
-        // A `Coverage` validates its arrays once at construction and exposes
-        // them read-only, so its invariants cannot be broken afterwards. Only
-        // caller-supplied raw arrays need the two full per-hit scans here.
-        if trusted {
-            if offsets.is_empty() {
-                return Err(format!(
-                    "sources[{source}]: offsets must contain at least the initial zero."
-                ));
-            }
-        } else {
-            ring::validate_coverage_arrays(cells, offsets, resolution)
-                .map_err(|message| format!("sources[{source}]: {message}"))?;
+    for (source, &offsets) in offset_arrays.iter().enumerate() {
+        if offsets.is_empty() {
+            return Err(format!(
+                "sources[{source}]: offsets must contain at least the initial zero."
+            ));
         }
         let source_segment_count = offsets.len() - 1;
         if segment_count.is_some_and(|expected| expected != source_segment_count) {
@@ -82,7 +77,7 @@ fn validate_run_sources(
 fn push_run(runs: &mut Vec<(u64, u64, u64)>, cell: u64, start: u64, stop: u64) -> NativeResult<()> {
     if runs.len() == runs.capacity() {
         runs.try_reserve(1)
-            .map_err(|_| runs_materialization_error())?;
+            .map_err(|_| runs_out_of_memory_error())?;
     }
     runs.push((cell, start, stop));
     Ok(())
@@ -122,11 +117,7 @@ impl DenseCellState {
     };
 }
 
-fn dense_state_length(
-    resolution: u8,
-    total_hits: usize,
-    element_bytes: usize,
-) -> Option<usize> {
+fn dense_state_length(resolution: u8, total_hits: usize, element_bytes: usize) -> Option<usize> {
     let cell_count = usize::try_from(ring::raw_cell_count(resolution)).ok()?;
     let state_bytes = cell_count.checked_mul(element_bytes)?;
     if state_bytes > DENSE_STATE_MAX_BYTES {
@@ -154,7 +145,7 @@ fn zeroed_run_vector(length: usize) -> NativeResult<Vec<u64>> {
     let mut values = Vec::new();
     values
         .try_reserve_exact(length)
-        .map_err(|_| runs_materialization_error())?;
+        .map_err(|_| runs_out_of_memory_error())?;
     values.resize(length, 0);
     Ok(values)
 }
@@ -175,7 +166,7 @@ fn accumulate_dense_segment(
                 if touched.len() == touched.capacity() {
                     touched
                         .try_reserve(1)
-                        .map_err(|_| runs_materialization_error())?;
+                        .map_err(|_| runs_out_of_memory_error())?;
                 }
                 touched.push(cell);
             }
@@ -216,7 +207,7 @@ fn occupancy_runs_dense(
                     state.run_count_or_cursor = state
                         .run_count_or_cursor
                         .checked_add(1)
-                        .ok_or_else(runs_materialization_error)?;
+                        .ok_or_else(runs_out_of_memory_error)?;
                 }
                 state.last_segment = segment;
             }
@@ -231,10 +222,10 @@ fn occupancy_runs_dense(
         if state.run_count_or_cursor != 0 {
             output_cell_count = output_cell_count
                 .checked_add(1)
-                .ok_or_else(runs_materialization_error)?;
+                .ok_or_else(runs_out_of_memory_error)?;
             total_run_count = total_run_count
                 .checked_add(state.run_count_or_cursor)
-                .ok_or_else(runs_materialization_error)?;
+                .ok_or_else(runs_out_of_memory_error)?;
         }
     }
     if total_run_count == 0 {
@@ -243,15 +234,15 @@ fn occupancy_runs_dense(
 
     let cell_offset_count = output_cell_count
         .checked_add(1)
-        .ok_or_else(runs_materialization_error)?;
+        .ok_or_else(runs_out_of_memory_error)?;
     let mut cells = Vec::new();
     cells
         .try_reserve_exact(output_cell_count)
-        .map_err(|_| runs_materialization_error())?;
+        .map_err(|_| runs_out_of_memory_error())?;
     let mut cell_offsets = Vec::new();
     cell_offsets
         .try_reserve_exact(cell_offset_count)
-        .map_err(|_| runs_materialization_error())?;
+        .map_err(|_| runs_out_of_memory_error())?;
     cell_offsets.push(0);
 
     let mut run_cursor = 0usize;
@@ -265,8 +256,8 @@ fn occupancy_runs_dense(
         state.run_count_or_cursor = run_cursor;
         run_cursor = run_cursor
             .checked_add(run_count)
-            .ok_or_else(runs_materialization_error)?;
-        cell_offsets.push(u64::try_from(run_cursor).map_err(|_| runs_materialization_error())?);
+            .ok_or_else(runs_out_of_memory_error)?;
+        cell_offsets.push(u64::try_from(run_cursor).map_err(|_| runs_out_of_memory_error())?);
     }
     debug_assert_eq!(run_cursor, total_run_count);
 
@@ -335,7 +326,7 @@ fn occupancy_runs_sparse(
                 {
                     interval_counts
                         .try_reserve(1)
-                        .map_err(|_| runs_materialization_error())?;
+                        .map_err(|_| runs_out_of_memory_error())?;
                 }
                 *interval_counts.entry(cell).or_insert(0) += 1;
             }
@@ -349,7 +340,7 @@ fn occupancy_runs_sparse(
             if open_runs.len() == open_runs.capacity() && !open_runs.contains_key(&cell) {
                 open_runs
                     .try_reserve(1)
-                    .map_err(|_| runs_materialization_error())?;
+                    .map_err(|_| runs_out_of_memory_error())?;
             }
             match open_runs.entry(cell) {
                 std::collections::hash_map::Entry::Occupied(mut entry) => {
@@ -380,7 +371,7 @@ fn occupancy_runs_sparse(
         .count();
     let cell_offset_count = cell_count
         .checked_add(1)
-        .ok_or_else(runs_materialization_error)?;
+        .ok_or_else(runs_out_of_memory_error)?;
     let mut result = OccupancyRuns {
         cells: Vec::new(),
         cell_offsets: Vec::new(),
@@ -390,19 +381,19 @@ fn occupancy_runs_sparse(
     result
         .cells
         .try_reserve_exact(cell_count)
-        .map_err(|_| runs_materialization_error())?;
+        .map_err(|_| runs_out_of_memory_error())?;
     result
         .cell_offsets
         .try_reserve_exact(cell_offset_count)
-        .map_err(|_| runs_materialization_error())?;
+        .map_err(|_| runs_out_of_memory_error())?;
     result
         .run_starts
         .try_reserve_exact(runs.len())
-        .map_err(|_| runs_materialization_error())?;
+        .map_err(|_| runs_out_of_memory_error())?;
     result
         .run_stops
         .try_reserve_exact(runs.len())
-        .map_err(|_| runs_materialization_error())?;
+        .map_err(|_| runs_out_of_memory_error())?;
 
     result.cell_offsets.push(0);
     let mut previous_cell = None;
@@ -426,15 +417,9 @@ pub(crate) fn occupancy_runs(
     offset_arrays: &[&[u64]],
     resolution: u8,
     minimum_sources: usize,
-    trusted: bool,
 ) -> NativeResult<OccupancyRuns> {
-    let segment_count = validate_run_sources(
-        cell_arrays,
-        offset_arrays,
-        resolution,
-        minimum_sources,
-        trusted,
-    )?;
+    let segment_count =
+        validate_run_sources(cell_arrays, offset_arrays, resolution, minimum_sources)?;
     if minimum_sources > cell_arrays.len() || segment_count == 0 {
         return Ok(empty_runs());
     }
@@ -490,7 +475,7 @@ mod tests {
         resolution: u8,
         minimum_sources: usize,
     ) -> String {
-        match occupancy_runs(cell_arrays, offset_arrays, resolution, minimum_sources, false) {
+        match occupancy_runs(cell_arrays, offset_arrays, resolution, minimum_sources) {
             Ok(_) => panic!("expected occupancy_runs() to reject the input"),
             Err(error) => error.to_string(),
         }
@@ -586,7 +571,7 @@ mod tests {
         let offsets_b = [0, 0, 1, 2, 4, 5, 6, 6];
 
         let actual =
-            occupancy_runs(&[&cells_a, &cells_b], &[&offsets_a, &offsets_b], 0, 1, false).unwrap();
+            occupancy_runs(&[&cells_a, &cells_b], &[&offsets_a, &offsets_b], 0, 1).unwrap();
 
         assert_runs(actual, &[1, 3], &[0, 1, 3], &[0, 0, 5], &[7, 4, 7]);
     }
@@ -599,7 +584,7 @@ mod tests {
         let offsets_b = [0, 0, 1, 2, 4, 5, 6, 6];
 
         let actual =
-            occupancy_runs(&[&cells_a, &cells_b], &[&offsets_a, &offsets_b], 0, 2, false).unwrap();
+            occupancy_runs(&[&cells_a, &cells_b], &[&offsets_a, &offsets_b], 0, 2).unwrap();
 
         assert_runs(actual, &[1, 3], &[0, 1, 2], &[5, 2], &[6, 4]);
     }
@@ -617,7 +602,7 @@ mod tests {
             let state_length =
                 dense_state_length(6, total_hits, size_of::<DenseCellState>()).unwrap();
             let implementations = [
-                occupancy_runs(&cell_slices, &offset_slices, 6, minimum_sources, false).unwrap(),
+                occupancy_runs(&cell_slices, &offset_slices, 6, minimum_sources).unwrap(),
                 occupancy_runs_dense(
                     &cell_slices,
                     &offset_slices,
@@ -647,11 +632,13 @@ mod tests {
         let cells = [final_cell, 0, final_cell];
         let offsets = [0, 1, 2, 3];
 
-        assert!(
-            dense_state_length(ring::MAX_RESOLUTION, cells.len(), size_of::<DenseCellState>())
-                .is_none()
-        );
-        let actual = occupancy_runs(&[&cells], &[&offsets], ring::MAX_RESOLUTION, 1, false).unwrap();
+        assert!(dense_state_length(
+            ring::MAX_RESOLUTION,
+            cells.len(),
+            size_of::<DenseCellState>()
+        )
+        .is_none());
+        let actual = occupancy_runs(&[&cells], &[&offsets], ring::MAX_RESOLUTION, 1).unwrap();
 
         assert_runs(actual, &[0, final_cell], &[0, 1, 3], &[1, 0, 2], &[2, 1, 3]);
     }
@@ -661,7 +648,7 @@ mod tests {
         let cells = [1];
         let offsets = [0, 1];
 
-        let actual = occupancy_runs(&[&cells], &[&offsets], 0, 2, false).unwrap();
+        let actual = occupancy_runs(&[&cells], &[&offsets], 0, 2).unwrap();
 
         assert_runs(actual, &[], &[0], &[], &[]);
     }
@@ -671,13 +658,6 @@ mod tests {
         let cells = [1];
         let offsets = [0, 1];
         assert!(error_message(&[&cells], &[&offsets], 0, 0).contains("at least 1"));
-
-        let duplicate_cells = [1, 1];
-        let duplicate_offsets = [0, 2];
-        assert!(
-            error_message(&[&duplicate_cells], &[&duplicate_offsets], 0, 1)
-                .contains("must be unique")
-        );
 
         let empty_cells: [u64; 0] = [];
         let two_segments = [0, 0, 0];
@@ -690,11 +670,26 @@ mod tests {
         )
         .contains("same number of segments"));
 
-        let out_of_range = [12];
-        assert!(error_message(&[&out_of_range], &[&offsets], 0, 1).contains("valid RING indices"));
+        let no_offsets: [u64; 0] = [];
+        assert!(error_message(&[&empty_cells], &[&no_offsets], 0, 1)
+            .contains("at least the initial zero"));
         assert!(
             error_message(&[&empty_cells], &[&[0]], ring::MAX_RESOLUTION + 1, 1)
                 .contains("resolution must be between")
+        );
+    }
+
+    #[test]
+    fn coverage_construction_owns_the_per_hit_invariants() {
+        // `occupancy_*` trusts its sources because every one is a `Coverage`,
+        // which rejects duplicate and out-of-range cells when it is built.
+        let duplicate = ring::validate_coverage_arrays(&[1, 1], &[0, 2], 0).unwrap_err();
+        assert!(duplicate.contains("must be unique"), "{duplicate}");
+
+        let out_of_range = ring::validate_coverage_arrays(&[12], &[0, 1], 0).unwrap_err();
+        assert!(
+            out_of_range.contains("valid RING indices"),
+            "{out_of_range}"
         );
     }
 }
@@ -754,8 +749,8 @@ impl StatsState {
     }
 }
 
-fn stats_materialization_error() -> NativeError {
-    NativeError::materialization("Occupancy statistics are too large to materialize.")
+fn stats_out_of_memory_error() -> NativeError {
+    NativeError::out_of_memory("Occupancy statistics are too large to fit in memory.")
 }
 
 fn push_stats(out: &mut OccupancyStats, cell: u64, state: &StatsState) {
@@ -784,15 +779,9 @@ pub(crate) fn occupancy_stats(
     offset_arrays: &[&[u64]],
     resolution: u8,
     minimum_sources: usize,
-    trusted: bool,
 ) -> NativeResult<OccupancyStats> {
-    let segment_count = validate_run_sources(
-        cell_arrays,
-        offset_arrays,
-        resolution,
-        minimum_sources,
-        trusted,
-    )?;
+    let segment_count =
+        validate_run_sources(cell_arrays, offset_arrays, resolution, minimum_sources)?;
     if minimum_sources > cell_arrays.len() || segment_count == 0 {
         return Ok(empty_stats());
     }
@@ -807,8 +796,7 @@ pub(crate) fn occupancy_stats(
 
     // Dense state is a flat grid; sparse state is keyed by observed cell. Both
     // hold one accumulator per cell, never one per run.
-    if let Some(cell_count) = dense_state_length(resolution, total_hits, size_of::<StatsState>())
-    {
+    if let Some(cell_count) = dense_state_length(resolution, total_hits, size_of::<StatsState>()) {
         let mut states = Vec::new();
         if states.try_reserve_exact(cell_count).is_ok() {
             states.resize(cell_count, StatsState::EMPTY);
@@ -818,9 +806,9 @@ pub(crate) fn occupancy_stats(
                     for &cell in &cells[offsets[segment] as usize..offsets[segment + 1] as usize] {
                         let state = &mut states[cell as usize];
                         if state.interval_count == 0 {
-                            touched.try_reserve(1).map_err(|_| {
-                                stats_materialization_error()
-                            })?;
+                            touched
+                                .try_reserve(1)
+                                .map_err(|_| stats_out_of_memory_error())?;
                             touched.push(cell as usize);
                         }
                         if state.interval_count < minimum_sources {
@@ -854,7 +842,7 @@ pub(crate) fn occupancy_stats(
             for &cell in &cells[offsets[segment] as usize..offsets[segment + 1] as usize] {
                 interval_counts
                     .try_reserve(1)
-                    .map_err(|_| stats_materialization_error())?;
+                    .map_err(|_| stats_out_of_memory_error())?;
                 *interval_counts.entry(cell).or_insert(0) += 1;
             }
         }
@@ -865,7 +853,7 @@ pub(crate) fn occupancy_stats(
             }
             states
                 .try_reserve(1)
-                .map_err(|_| stats_materialization_error())?;
+                .map_err(|_| stats_out_of_memory_error())?;
             states
                 .entry(cell)
                 .or_insert(StatsState::EMPTY)

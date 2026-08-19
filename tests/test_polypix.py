@@ -351,7 +351,7 @@ class PolypixTests(unittest.TestCase):
         np.testing.assert_array_equal(empty.cells, [])
         np.testing.assert_array_equal(empty.offsets, [0, 0])
 
-    def test_count_caps_per_cell_matches_materialized_coverage(self) -> None:
+    def test_count_caps_per_cell_matches_stored_coverage(self) -> None:
         random = np.random.default_rng(20260812)
         resolution = 4
         centers = random.normal(size=(128, 3))
@@ -1451,7 +1451,6 @@ class PolypixTests(unittest.TestCase):
                 "Coverage",
                 "OccupancyRuns",
                 "OccupancyStats",
-                "Runs",
                 "Stats",
                 "Sum",
                 "__version__",

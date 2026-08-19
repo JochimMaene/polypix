@@ -1,0 +1,114 @@
+"""Input shapes, grid helpers, and segment alignment of the covering calls."""
+
+from __future__ import annotations
+
+import math
+
+import numpy as np
+import pytest
+
+import polypix as px
+
+
+def _xyz(longitude_deg: float, latitude_deg: float) -> tuple[float, float, float]:
+    longitude = math.radians(longitude_deg)
+    latitude = math.radians(latitude_deg)
+    cos_latitude = math.cos(latitude)
+    return (
+        cos_latitude * math.cos(longitude),
+        cos_latitude * math.sin(longitude),
+        math.sin(latitude),
+    )
+
+
+def test_polygon_api_accepts_packed_and_ragged_vertices() -> None:
+    first = np.asarray(
+        [_xyz(-8, -5), _xyz(6, -5), _xyz(6, 7), _xyz(-8, 7)],
+        dtype=np.float64,
+    )
+    second = np.asarray(
+        [_xyz(32, 11), _xyz(43, 11), _xyz(43, 20), _xyz(32, 20)],
+        dtype=np.float64,
+    )
+
+    ragged = px.cover_convex_polygon([first, second], resolution=4)
+    packed = px.cover_convex_polygon(
+        np.vstack((first, second)),
+        resolution=4,
+        vertex_offsets=[0, len(first), len(first) + len(second)],
+    )
+
+    np.testing.assert_array_equal(packed.cells, ragged.cells)
+    np.testing.assert_array_equal(packed.offsets, ragged.offsets)
+
+    with pytest.raises(ValueError, match="polygons_xyz"):
+        px.cover_convex_polygon(np.ones((2, 2)), resolution=1)
+    for invalid_offsets in ([], [1, 8], [0, 9], [0, 6, 5, 8]):
+        with pytest.raises(ValueError, match="vertex_offsets"):
+            px.cover_convex_polygon(
+                np.vstack((first, second)),
+                resolution=4,
+                vertex_offsets=invalid_offsets,
+            )
+
+
+def test_grid_names_and_cell_count() -> None:
+    assert px.cell_count(0) == 12
+    assert px.cell_count(6) == 12 * 4**6
+    with pytest.raises(ValueError):
+        px.cell_count(30)
+
+    cells = np.asarray([0, 7, 31], dtype=np.int64)
+    assert px.cell_centers(cells, 1).shape == (3, 3)
+    assert px.cell_corners(cells, 1).shape == (3, 4, 3)
+
+
+def test_coverage_helpers_preserve_segment_alignment() -> None:
+    coverage = px.Coverage.from_arrays(
+        cells=[1, 4, 4, 2, 7],
+        offsets=[0, 2, 2, 3, 5],
+        resolution=1,
+    )
+
+    assert coverage.cells.dtype == np.int64
+    assert coverage.offsets.dtype == np.int64
+    np.testing.assert_array_equal(coverage.segment_sizes, [2, 0, 1, 2])
+    np.testing.assert_array_equal(coverage.segment_indices(), [0, 0, 2, 3, 3])
+
+    filtered = coverage.filter_hits([True, False, True, False, True])
+    np.testing.assert_array_equal(filtered.cells, [1, 4, 7])
+    np.testing.assert_array_equal(filtered.offsets, [0, 1, 1, 2, 3])
+    assert filtered.resolution == coverage.resolution
+
+    with pytest.raises(ValueError, match="one value per covered cell"):
+        coverage.filter_hits([True])
+    with pytest.raises(TypeError, match="boolean"):
+        coverage.filter_hits([1, 0, 1, 0, 1])
+    empty = px.Coverage.from_arrays([], [0], resolution=1)
+    with pytest.raises(TypeError, match="boolean"):
+        empty.filter_hits(np.empty(0, dtype=np.int64))
+
+
+def test_empty_cap_batches_validate_scalar_radii() -> None:
+    empty = np.empty((0, 3), dtype=np.float64)
+    for invalid in (-1.0, math.nextafter(math.pi, math.inf), np.nan, np.inf):
+        with pytest.raises(ValueError, match="radii_rad"):
+            px.cover_cap(empty, invalid, resolution=1)
+        with pytest.raises(ValueError, match="radii_rad"):
+            px.cover_cap(empty, invalid, resolution=1, into=px.Count())
+
+
+def test_sweep_accepts_an_empty_interval_axis() -> None:
+    empty = np.empty((0, 3), dtype=np.float64)
+    one = np.asarray([_xyz(0, 0)], dtype=np.float64)
+
+    for edge in (empty, one):
+        coverage = px.cover_sweep(edge, edge, resolution=2)
+        assert coverage.segment_count == 0
+        np.testing.assert_array_equal(coverage.cells, [])
+        np.testing.assert_array_equal(coverage.offsets, [0])
+
+    for invalid in ([0.0, 0.0, 0.0], [np.nan, 0.0, 1.0]):
+        edge = np.asarray([invalid], dtype=np.float64)
+        with pytest.raises(ValueError, match="left_edge_xyz"):
+            px.cover_sweep(edge, edge, resolution=2)

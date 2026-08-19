@@ -37,20 +37,19 @@ fn invalid_cell(argument_name: &str, resolution: u8) -> NativeError {
     format!("{argument_name} must contain valid RING indices at resolution {resolution}.").into()
 }
 
-const DENSE_COUNT_TOO_LARGE: &str = "Dense coverage-count result is too large to materialize.";
-const DENSE_SUM_TOO_LARGE: &str = "Dense coverage-sum result is too large to materialize.";
+const DENSE_COUNT_TOO_LARGE: &str = "Dense coverage-count result is too large to fit in memory.";
+const DENSE_SUM_TOO_LARGE: &str = "Dense coverage-sum result is too large to fit in memory.";
 
 fn dense_buffer<T: Clone>(
     cell_count: u64,
     zero: T,
     too_large: &'static str,
 ) -> NativeResult<Vec<T>> {
-    let length = usize::try_from(cell_count)
-        .map_err(|_| NativeError::materialization(too_large))?;
+    let length = usize::try_from(cell_count).map_err(|_| NativeError::out_of_memory(too_large))?;
     let mut values = Vec::new();
     values
         .try_reserve_exact(length)
-        .map_err(|_| NativeError::materialization(too_large))?;
+        .map_err(|_| NativeError::out_of_memory(too_large))?;
     values.resize(length, zero);
     Ok(values)
 }
@@ -76,7 +75,7 @@ fn gathered<T: Copy>(
     let mut output = Vec::new();
     output
         .try_reserve_exact(requested_cells.len())
-        .map_err(|_| NativeError::materialization(too_large))?;
+        .map_err(|_| NativeError::out_of_memory(too_large))?;
     for &cell in requested_cells {
         if cell >= cell_count {
             return Err(invalid_cell("requested_cells", resolution));
@@ -92,19 +91,23 @@ fn selected_counts(
     cell_count: u64,
     resolution: u8,
 ) -> NativeResult<Vec<i64>> {
-    if dense_scratch_fits(cell_count, size_of::<i64>(), cells.len() + requested_cells.len()) {
+    if dense_scratch_fits(
+        cell_count,
+        size_of::<i64>(),
+        cells.len() + requested_cells.len(),
+    ) {
         let scratch = dense_counts(cells, cell_count, resolution)?;
         return gathered(
             &scratch,
             requested_cells,
             cell_count,
             resolution,
-            "Selected coverage-count result is too large to materialize.",
+            "Selected coverage-count result is too large to fit in memory.",
         );
     }
     let mut counts = HashMap::new();
     counts.try_reserve(requested_cells.len()).map_err(|_| {
-        NativeError::materialization("Selected coverage-count result is too large to materialize.")
+        NativeError::out_of_memory("Selected coverage-count result is too large to fit in memory.")
     })?;
     for &cell in requested_cells {
         if cell >= cell_count {
@@ -125,8 +128,8 @@ fn selected_counts(
     output
         .try_reserve_exact(requested_cells.len())
         .map_err(|_| {
-            NativeError::materialization(
-                "Selected coverage-count result is too large to materialize.",
+            NativeError::out_of_memory(
+                "Selected coverage-count result is too large to fit in memory.",
             )
         })?;
     output.extend(requested_cells.iter().map(|cell| counts[cell]));
@@ -169,7 +172,7 @@ fn validate_weighted_coverage(
         return Err("offsets must be nondecreasing.".to_owned().into());
     }
     let cells_length = u64::try_from(cells.len())
-        .map_err(|_| NativeError::materialization("Coverage is too large to address."))?;
+        .map_err(|_| NativeError::out_of_memory("Coverage is too large to address."))?;
     if offsets[offsets.len() - 1] != cells_length {
         return Err("offsets[-1] must equal the number of cells."
             .to_owned()
@@ -225,7 +228,11 @@ fn selected_sums(
     cell_count: u64,
     resolution: u8,
 ) -> NativeResult<Vec<f64>> {
-    if dense_scratch_fits(cell_count, size_of::<f64>(), cells.len() + requested_cells.len()) {
+    if dense_scratch_fits(
+        cell_count,
+        size_of::<f64>(),
+        cells.len() + requested_cells.len(),
+    ) {
         // Only the requested cells are returned, so overflow in a cell the
         // caller did not ask for stays invisible, exactly as below.
         let scratch = dense_sums(cells, offsets, values, cell_count, resolution)?;
@@ -234,12 +241,12 @@ fn selected_sums(
             requested_cells,
             cell_count,
             resolution,
-            "Selected coverage-sum result is too large to materialize.",
+            "Selected coverage-sum result is too large to fit in memory.",
         )?);
     }
     let mut sums = HashMap::new();
     sums.try_reserve(requested_cells.len()).map_err(|_| {
-        NativeError::materialization("Selected coverage-sum result is too large to materialize.")
+        NativeError::out_of_memory("Selected coverage-sum result is too large to fit in memory.")
     })?;
     for &cell in requested_cells {
         if cell >= cell_count {
@@ -267,8 +274,8 @@ fn selected_sums(
     output
         .try_reserve_exact(requested_cells.len())
         .map_err(|_| {
-            NativeError::materialization(
-                "Selected coverage-sum result is too large to materialize.",
+            NativeError::out_of_memory(
+                "Selected coverage-sum result is too large to fit in memory.",
             )
         })?;
     output.extend(requested_cells.iter().map(|cell| sums[cell]));
@@ -301,7 +308,7 @@ pub(crate) fn sum_coverage_per_cell(
 mod tests {
     use super::{count_coverage_per_cell, sum_coverage_per_cell};
     use crate::error::NativeError;
-    use crate::ring::{self, MAX_RESOLUTION};
+    use crate::ring::MAX_RESOLUTION;
 
     #[test]
     fn counts_dense_coverage_hits() {
@@ -322,8 +329,8 @@ mod tests {
         let dense = count_coverage_per_cell(&cells, 0, Some(&requested)).unwrap();
         assert_eq!(dense, vec![1, 3, 1, 3, 1]);
 
-        let dense_sums = sum_coverage_per_cell(&cells, &offsets, &values, 0, Some(&requested))
-            .unwrap();
+        let dense_sums =
+            sum_coverage_per_cell(&cells, &offsets, &values, 0, Some(&requested)).unwrap();
         assert_eq!(dense_sums, vec![2.0, 3.0, 2.0, 3.0, 0.5]);
     }
 
@@ -391,9 +398,11 @@ mod tests {
     fn rejects_invalid_cells_and_requests() {
         let invalid_cells = count_coverage_per_cell(&[12], 0, None).unwrap_err();
         let invalid_requests = count_coverage_per_cell(&[], 0, Some(&[12])).unwrap_err();
-        assert!(invalid_cells.message().contains("cells must contain valid"));
+        assert!(invalid_cells
+            .to_string()
+            .contains("cells must contain valid"));
         assert!(invalid_requests
-            .message()
+            .to_string()
             .contains("requested_cells must contain valid"));
     }
 
@@ -417,7 +426,7 @@ mod tests {
         let error =
             sum_coverage_per_cell(&[0, 0], &[0, 1, 2], &[f64::MAX, f64::MAX], 0, None).unwrap_err();
         assert_eq!(
-            error.message(),
+            error.to_string(),
             "Coverage values overflowed float64 during summation."
         );
     }

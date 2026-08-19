@@ -3,28 +3,23 @@ use std::fmt::{Display, Formatter};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NativeError {
     InvalidInput(String),
-    Materialization(String),
+    OutOfMemory(String),
 }
 
 impl NativeError {
-    pub(crate) fn materialization(message: impl Into<String>) -> Self {
-        Self::Materialization(message.into())
+    pub(crate) fn out_of_memory(message: impl Into<String>) -> Self {
+        Self::OutOfMemory(message.into())
     }
 
-    pub(crate) fn is_materialization(&self) -> bool {
-        matches!(self, Self::Materialization(_))
-    }
-
-    pub(crate) fn message(&self) -> &str {
-        match self {
-            Self::InvalidInput(message) | Self::Materialization(message) => message,
-        }
+    pub(crate) fn is_out_of_memory(&self) -> bool {
+        matches!(self, Self::OutOfMemory(_))
     }
 }
 
 impl Display for NativeError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.message())
+        let (Self::InvalidInput(message) | Self::OutOfMemory(message)) = self;
+        formatter.write_str(message)
     }
 }
 
@@ -42,12 +37,12 @@ mod tests {
 
     #[test]
     fn category_does_not_depend_on_message_text() {
-        let message = "Coverage result is too large to materialize.";
+        let message = "Coverage result is too large to fit in memory.";
         let invalid = NativeError::InvalidInput(message.to_owned());
-        let allocation = NativeError::materialization(message);
+        let allocation = NativeError::out_of_memory(message);
 
-        assert!(!invalid.is_materialization());
-        assert!(allocation.is_materialization());
-        assert_eq!(invalid.message(), allocation.message());
+        assert!(!invalid.is_out_of_memory());
+        assert!(allocation.is_out_of_memory());
+        assert_eq!(invalid.to_string(), allocation.to_string());
     }
 }

@@ -48,7 +48,7 @@ class EarthObservationAnalysis:
     mean_internal_gap_s: npt.NDArray[np.float64]
     max_internal_gap_s: npt.NDArray[np.float64]
     gap_counts: npt.NDArray[np.int64]
-    materialized_count: int
+    stored_hit_count: int
     swath_elapsed_s: float
     coverage_elapsed_s: float
     reduction_elapsed_s: float
@@ -61,7 +61,7 @@ def cover_constellation(
 ) -> tuple[list[px.Coverage], int, float]:
     """Cover each satellite's ten-day swept strip."""
     coverages: list[px.Coverage] = []
-    materialized_count = 0
+    stored_hit_count = 0
     elapsed_s = 0.0
 
     # --8<-- [start:eo-cover]
@@ -74,9 +74,9 @@ def cover_constellation(
         )
         elapsed_s += time.perf_counter() - started
         coverages.append(coverage)
-        materialized_count += int(coverage.cells.size)
+        stored_hit_count += int(coverage.cells.size)
     # --8<-- [end:eo-cover]
-    return coverages, materialized_count, elapsed_s
+    return coverages, stored_hit_count, elapsed_s
 
 
 def reduce_coverage(
@@ -107,7 +107,7 @@ def reduce_coverage(
         raise ValueError("all satellite strips must have the same interval count")
 
     # Runs are only an intermediate here, so fuse the per-cell statistics and
-    # never materialize run boundaries. Physical time and the choice of which
+    # never build run boundaries. Physical time and the choice of which
     # gaps to summarize remain downstream of the ordinal occupancy operation.
     # --8<-- [start:eo-reduce]
     stats = px.occupancy(coverages, into=px.Stats())
@@ -157,7 +157,7 @@ def analyze() -> EarthObservationAnalysis:
     # --8<-- [end:eo-swaths]
     swath_elapsed_s = time.perf_counter() - swath_started
 
-    coverages, materialized_count, coverage_elapsed_s = cover_constellation(
+    coverages, stored_hit_count, coverage_elapsed_s = cover_constellation(
         left_edges,
         right_edges,
     )
@@ -173,7 +173,7 @@ def analyze() -> EarthObservationAnalysis:
         mean_internal_gap_s=mean_internal_gap_s,
         max_internal_gap_s=max_internal_gap_s,
         gap_counts=gap_counts,
-        materialized_count=materialized_count,
+        stored_hit_count=stored_hit_count,
         swath_elapsed_s=swath_elapsed_s,
         coverage_elapsed_s=coverage_elapsed_s,
         reduction_elapsed_s=reduction_elapsed_s,
@@ -267,7 +267,7 @@ def build_documentation_assets() -> None:
         MEASUREMENTS_PATH,
         {
             "interval_count": DURATION_S // CADENCE_S * SATELLITE_COUNT,
-            "materialized_count": result.materialized_count,
+            "stored_hit_count": result.stored_hit_count,
             "swath_ms": result.swath_elapsed_s * 1_000,
             "coverage_ms": result.coverage_elapsed_s * 1_000,
             "reduction_ms": result.reduction_elapsed_s * 1_000,
@@ -312,7 +312,7 @@ def documentation_html() -> str:
 
 <div class="example-metrics">
   <div><strong>{m["interval_count"]:,}</strong><span>swept intervals</span></div>
-  <div><strong>{m["materialized_count"]:,}</strong><span>interval–cell hits</span></div>
+  <div><strong>{m["stored_hit_count"]:,}</strong><span>interval–cell hits</span></div>
   <div><strong>{m["cells_observed"]:,}</strong><span>cells observed</span></div>
   <div><strong>{m["cell_count"] - m["cells_observed"]:,}</strong><span>cells never observed</span></div>
 </div>

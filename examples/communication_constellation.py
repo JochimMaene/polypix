@@ -103,7 +103,7 @@ def analyze() -> CommunicationsAnalysis:
     reduction_elapsed_s = 0.0
 
     # Exact caps and their dense per-cell counts are processed one timestamp at
-    # a time. The fused count operation never materializes the much larger list
+    # a time. The fused count operation never builds the much larger list
     # of repeated cap-cell pairs.
     # --8<-- [start:communications-coverage]
     for snapshot_positions_km in positions_km:
@@ -228,7 +228,7 @@ def documentation_html() -> str:
 <div class="example-metrics">
   <div><strong>{m["satellite_count"]:,}</strong><span>catalogued objects</span></div>
   <div><strong>{m["cap_count"]:,}</strong><span>caps evaluated</span></div>
-  <div><strong>{m["covered_pair_count"]:,}</strong><span>cap–cell hits counted without materializing</span></div>
+  <div><strong>{m["covered_pair_count"]:,}</strong><span>cap–cell hits counted without storing them</span></div>
 </div>
 
 <table class="example-timings">
