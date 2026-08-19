@@ -100,7 +100,7 @@ fn empty_runs() -> OccupancyRuns {
 // This cap covers the fixed state array, measured against the accumulator the
 // caller actually allocates. Because HEALPix cell counts quadruple, the largest
 // admitted grid is resolution 9 for both accumulators: 48 MiB of 16-byte run
-// state or 96 MiB of 32-byte statistics state, leaving headroom for the
+// state or 72 MiB of 24-byte statistics state, leaving headroom for the
 // touched-cell indices (at most one per cell).
 const DENSE_STATE_MAX_BYTES: usize = 128 * 1024 * 1024;
 const DENSE_STATE_ALWAYS_BYTES: usize = 8 * 1024 * 1024;
@@ -712,13 +712,19 @@ pub(crate) struct OccupancyStats {
 ///
 /// `last_segment + 1` is the current run's stop, so no separate stop field is
 /// needed. `run_count == 0` marks a cell that has not qualified yet.
+///
+/// Every counter is 32-bit because `validate_run_sources` rejects more than
+/// `u32::MAX` segments: a cell cannot hold more runs than there are segments,
+/// and its internal gaps are disjoint subintervals of the segment axis, so
+/// their total cannot exceed it either. Keeping the accumulator at 24 rather
+/// than 32 bytes shrinks both the dense grid and the sparse map.
 #[derive(Clone, Copy)]
 struct StatsState {
     interval_count: u32,
     last_segment: u32,
-    run_count: u64,
+    run_count: u32,
     first_start: u32,
-    gap_sum: u64,
+    gap_sum: u32,
     max_gap: u32,
 }
 
@@ -739,7 +745,7 @@ impl StatsState {
                 self.first_start = segment;
             } else {
                 let gap = segment - (self.last_segment + 1);
-                self.gap_sum += u64::from(gap);
+                self.gap_sum += gap;
                 self.max_gap = self.max_gap.max(gap);
             }
             self.run_count += 1;
@@ -754,8 +760,8 @@ fn stats_materialization_error() -> NativeError {
 
 fn push_stats(out: &mut OccupancyStats, cell: u64, state: &StatsState) {
     out.cells.push(cell);
-    out.run_counts.push(state.run_count);
-    out.internal_gap_steps_sum.push(state.gap_sum);
+    out.run_counts.push(u64::from(state.run_count));
+    out.internal_gap_steps_sum.push(u64::from(state.gap_sum));
     out.maximum_internal_gap_steps
         .push(u64::from(state.max_gap));
     out.first_start.push(u64::from(state.first_start));

@@ -185,11 +185,13 @@ Earth-observation example, the same workload end to end:
 | `occupancy(into=Stats())` | 52 ms | 208 ms | 132 MiB |
 
 Those figures are the dense-state path, which covers resolutions up to 9.
-Above that both reducers fall back to hash-keyed state, and there `Stats()` is
-about 35 percent *slower* than `Runs()` — 111 ms against 84 ms for 725,000 runs
-at resolution 11 — while still avoiding the run allocation. The sparse fallback
-also still collects runs into one global vector and sorts it, which the dense
-path was rewritten to avoid. Both remain open.
+Above that both reducers fall back to hash-keyed state, and there `Stats()`
+stays *slower* than `Runs()` — about 115 ms against 87 ms for 725,000 runs at
+resolution 11 — while still avoiding the run allocation. Narrowing every
+statistics counter to 32 bits, which the segment-count bound already permits,
+took the accumulator from 32 to 24 bytes and recovered 9 to 16 percent of that
+gap across resolutions 9 to 12 and on the dense path. The remainder is the cost
+of a larger per-cell accumulator in a hash map, and is accepted.
 
 The middle row is not an implementation defect. A cell here is observed briefly
 and revisited hours later, so 9.28 million hits yield 9.20 million runs: the
@@ -297,6 +299,20 @@ intersection coverage.
   downstream NumPy that consumes a result, so it would not have removed the
   Earth-observation cost, and it would cost `Coverage` its defining property as
   a concrete zero-copy interchange value for a pipeline only two nodes deep.
+- Unifying the dense and sparse occupancy paths behind one state-store
+  abstraction, to remove the accumulation skeleton that is written out for each
+  combination of reducer and memory profile. This was implemented and measured,
+  and it is 2.8x to 4.2x slower: `occupancy()` on a sparse resolution-12
+  workload went from 422 ms to 1.78 s, and the dense resolution-8 path from
+  31 ms to 88 ms. Two independent costs explain it. Nesting the per-segment
+  interval count inside a generic accumulator adds alignment padding, taking the
+  dense run state from 16 to 24 bytes and the statistics state from 32 to 40.
+  And a single shared driver forces one algorithm on both profiles: the dense
+  path wants two passes over cheap array indexing so it can write boundaries
+  into an exact allocation, while the sparse path wants one pass because every
+  probe is expensive, and paying for two doubles its hashing. The duplication is
+  therefore load-bearing rather than accidental, and it stays.
+
 - A shared kernel sink abstraction, so every geometry could fuse every reducer.
   Admissible later and invisible to the API by construction, but unjustified
   now: only the cap kernel has a measured fusing advantage.
