@@ -88,7 +88,7 @@ def test_constellation_rejects_uneven_plane_distribution() -> None:
         )
 
 
-def test_reduce_coverage_counts_observations_and_mean_revisit_gaps() -> None:
+def test_reduce_coverage_counts_windows_and_mean_uncovered_gaps() -> None:
     first = px.Coverage.from_arrays(
         cells=np.asarray([1, 2, 1, 1, 2], dtype=np.uint64),
         offsets=np.asarray([0, 2, 3, 3, 5], dtype=np.uint64),
@@ -100,19 +100,41 @@ def test_reduce_coverage_counts_observations_and_mean_revisit_gaps() -> None:
         resolution=1,
     )
 
-    observations, mean_revisit_s, revisit_counts = reduce_coverage(
+    observations, mean_internal_gap_s, max_internal_gap_s, gap_counts = reduce_coverage(
         [first, second],
         cell_count=48,
         cadence_s=60,
     )
 
-    assert observations[1] == 3
-    assert observations[2] == 3
-    assert mean_revisit_s[1] == 60
-    assert mean_revisit_s[2] == 60
-    assert revisit_counts[1] == 1
-    assert revisit_counts[2] == 1
-    assert np.isnan(mean_revisit_s[3])
+    assert observations[1] == 2
+    assert observations[2] == 2
+    assert mean_internal_gap_s[1] == 60
+    assert mean_internal_gap_s[2] == 60
+    assert max_internal_gap_s[1] == 60
+    assert max_internal_gap_s[2] == 60
+    assert gap_counts[1] == 1
+    assert gap_counts[2] == 1
+    assert np.isnan(mean_internal_gap_s[3])
+    assert np.isnan(max_internal_gap_s[3])
+
+
+def test_reduce_coverage_excludes_horizon_edge_gaps() -> None:
+    coverage = px.Coverage.from_arrays(
+        cells=[4, 4],
+        offsets=[0, 0, 1, 1, 2, 2],
+        resolution=1,
+    )
+
+    observations, mean_internal_gap_s, max_internal_gap_s, gap_counts = reduce_coverage(
+        [coverage], cell_count=48, cadence_s=60
+    )
+
+    assert observations[4] == 2
+    assert gap_counts[4] == 1
+    assert mean_internal_gap_s[4] == 60
+    assert max_internal_gap_s[4] == 60
+    # The unobserved first and last bins are deliberately not part of this
+    # complete internal-gap statistic.
 
 
 def test_reduce_coverage_rejects_mismatched_interval_counts() -> None:

@@ -37,9 +37,10 @@ The durable boundary is:
 
 ```text
 physical model or source geometry
-    -> resolved directions, caps, footprint vertices, or paired sweep edges
+    -> resolved directions, caps, convex-polygon vertices, or paired sweep edges
 Polypix
-    -> validated HEALPix center membership or focused occupancy summaries
+    -> validated HEALPix center membership
+    -> optional native per-cell accumulation or ordinal occupancy runs
 maps, joins, scheduling, statistics, storage, and visualization
 ```
 
@@ -81,9 +82,9 @@ examples, benchmarks, and future API decisions:
 | Workload | Input to Polypix | Useful result |
 | --- | --- | --- |
 | Satellite visibility, service redundancy, and spot beams | Exact caps or already-projected beam contours | Segmented coverage or per-cell counts |
-| Earth-observation, aerial, maritime, radar, or telescope sweeps | Paired sampled sweep edges | Per-interval coverage and ordinal run/gap summaries |
+| Earth-observation, aerial, maritime, radar, or telescope sweeps | Paired sampled sweep edges | Per-interval coverage and ordinal occupancy runs |
 | Astronomy survey tiling and repeated sky exposure | Exact caps or convex focal-plane footprints | Visit-count maps or segmented coverage |
-| Planetary imaging and mapping | Body-fixed directions for the Moon, Mars, or another sphere | Coverage and ordinal revisit summaries |
+| Planetary imaging and mapping | Body-fixed directions for the Moon, Mars, or another sphere | Coverage and ordinal revisit windows |
 | Frame, scene, or acquisition rasterization | Large dense or ragged footprint batches | Center-selected input-to-cell membership for inversion by a database or NumPy |
 | Preselected grid centers and static cell masks | Regions plus selected RING cells | Sparse candidate membership or positional cap counts at those cell centers |
 | Monte Carlo regions, uncertainty cones, and repeated event ensembles | Large batches of caps or convex regions | Per-cell frequency or explicit membership |
@@ -110,7 +111,8 @@ be expressed in the same frame. Polypix does not label or transform frames.
 Datum, ellipsoid, geodetic, and coordinate-reference-system interpretation
 belongs upstream or downstream.
 
-A footprint is a convex spherical polygon:
+A convex polygon (often a projected sensor footprint) is a convex spherical
+polygon:
 
 - it is contained within an open hemisphere, so a hemisphere or larger region
   cannot be represented;
@@ -122,7 +124,7 @@ A footprint is a convex spherical polygon:
   floating-point precision;
 - degenerate, antipodal, self-intersecting, and non-convex geometry is rejected.
 
-Validation is subject to a documented numerical scale floor. Footprints below
+Validation is subject to a documented numerical scale floor. Polygons below
 roughly `1e-8` radians in angular extent are unsupported and may be rejected as
 degenerate; the exact threshold depends on vertex layout and conditioning.
 
@@ -210,49 +212,68 @@ that evidence exists.
 Every coverage operation returns one `Coverage`, including a single footprint.
 Its canonical representation is:
 
-- `cells`: one eager, flat array of standard RING indices;
-- `offsets`: segment boundaries for the input caps, footprints, or sweep intervals;
+- `cells`: one eager, flat signed `int64` array of non-negative standard RING
+  indices;
+- `offsets`: signed `int64` segment boundaries for the input caps, polygons, or
+  sweep intervals;
 - `resolution`: stored once for the result;
-- `counts`: derived from `offsets`.
+- `segment_sizes`: derived from `offsets`.
 
 Segments preserve input region or interval order and contain no duplicate cells.
 Within a segment, native traversal order is deterministic but is not
 promised to be ascending. Polypix never sorts solely for presentation.
 
-Explicit cells remain the canonical geometry result for the current API. Two
-measured fused operations avoid intermediates that users cannot remove with
-downstream NumPy:
+Explicit cells remain the canonical geometry result. Native reducers consume
+that common representation regardless of the geometry that produced it:
+
+- `count_coverage_per_cell()` counts segments containing each cell;
+- `sum_coverage_per_cell()` adds one finite `float64` value per segment into
+  its covered cells.
+
+Both return either a dense grid or positional values for explicitly requested
+cells. The selected-cell path does not allocate the full grid. This supplies
+the useful symmetry across caps, polygons, and sweeps without multiplying the
+public surface into geometry-specific count and sum verbs.
+
+Two bounded operations address cases where merely retaining a summary would
+otherwise discard essential information or where explicit membership itself
+is the measured bottleneck:
 
 - `count_caps_per_cell()` returns dense counts indexed by RING ID, or positional
-  counts for explicitly requested cells;
-- `summarize_occupancy()` returns sparse per-cell source-run counts and
-  merged-gap aggregates from aligned segmented `Coverage` sources.
+  counts for explicitly requested cells, while consuming private cap ranges
+  without materializing cap-cell pairs;
+- `occupancy_runs()` returns every maximal half-open ordinal run per cell after
+  thresholding aligned `Coverage` sources.
 
-Per-cell cap counting is a broadly useful raster accumulation, but counts are
-only the all-ones case and caps are only one geometry. The cross-domain review
-will test sparse, weighted, footprint, and sweep accumulation before this
-family is considered complete. `summarize_occupancy()` remains provisional as a
-core API until independent aligned-bin occupancy workloads validate its exact
-result fields. Neither current operation introduces arbitrary reducers,
-map algebra, or time units.
+`OccupancyRuns` is lossless with respect to the thresholded ordinal state. It
+does not choose a cadence, convert to timestamps, silently wrap a period, omit
+boundary gaps, or hard-code mean/max/median revisit statistics. Those choices
+remain downstream. It retains the applied threshold and input source-entry
+count as provenance. The older mixed `OccupancySummary` result and
+`summarize_occupancy()` were removed because they combined source-local run
+counts with source-unioned mean-gap ingredients.
 
 `Coverage` is the public interchange seam between region generation, Polypix,
 and downstream tools. Native operations wrap their newly owned buffers without
 copying. Imported arrays use
 `Coverage.from_arrays(cells, offsets, resolution)`, which copies and validates
 offsets, cell ranges, and within-segment uniqueness. Result arrays are
-read-only. `OccupancySummary` follows the same ownership policy and is
-constructed only by Polypix.
+read-only. `OccupancyRuns` follows the same ownership policy and is constructed
+only by Polypix. Public cell IDs, offsets, and ordinal run indices are signed
+`int64` for frictionless NumPy and neighboring-library use; the native kernel
+may retain unsigned counters internally.
 
 ### Current candidate public API
 
-The implemented surface is a candidate rather than the complete 1.0 target:
+The implemented canonical surface is a candidate rather than the complete 1.0
+target:
 
 ```python
-cover_footprint(
-    footprints_xyz,
+cover_convex_polygon(
+    polygons_xyz,
     resolution,
     *,
+    vertex_offsets=None,
     candidate_cells=None,
     threads=None,
 ) -> Coverage
@@ -273,7 +294,7 @@ count_caps_per_cell(
     *,
     cells=None,
     threads=None,
-) -> ndarray
+) -> ndarray[int64]
 
 cover_sweep(
     left_edge_xyz,
@@ -284,44 +305,54 @@ cover_sweep(
     threads=None,
 ) -> Coverage
 
-summarize_occupancy(sources) -> OccupancySummary
+count_coverage_per_cell(coverage, *, cells=None) -> ndarray[int64]
+sum_coverage_per_cell(coverage, values, *, cells=None) -> ndarray[float64]
+
+occupancy_runs(sources, *, minimum_sources=1) -> OccupancyRuns
 
 cell_at(vectors_xyz, resolution)
-centers(cells, resolution)
-corners(cells, resolution)
+cell_centers(cells, resolution)
+cell_corners(cells, resolution)
+cell_count(resolution)
 ```
 
-Before this becomes the 1.0 surface, the project will test general additive and
-sparse raster outputs and review compressed membership. The paired-edge operation is named
-`cover_sweep()` to avoid conflict with the established HEALPix meaning of a
-latitude strip. The four-point cell transform is named `corners()` because it
-does not sample the curved HEALPix cell edges.
+The paired-edge operation is named `cover_sweep()` to avoid conflict with the
+established HEALPix meaning of a latitude strip. `cover_convex_polygon()` names
+the actual accepted geometry instead of overloading "footprint," which may also
+mean a point, cap, line, or non-convex region in upstream libraries. The former
+`cover_footprint()`, `centers()`, and `corners()` spellings were removed while
+the project is pre-1.0 instead of creating a permanent parallel vocabulary.
 
-`cover_footprint()` accepts one `(vertices, 3)` array, a dense
-`(footprints, vertices, 3)` batch, or a sequence of arrays for a ragged batch.
-Ordinary numeric array-like inputs are accepted and converted once when needed.
-Compatible contiguous arrays use a zero-copy fast path; the API exposes no
-memory-layout or copying controls.
+`cover_convex_polygon()` accepts one `(vertices, 3)` array, a dense
+`(polygons, vertices, 3)` batch, a sequence of arrays for a ragged batch, or a
+packed vertex array with `vertex_offsets=`. Ordinary numeric array-like inputs
+are accepted and converted once when needed. Compatible contiguous arrays use a
+zero-copy fast path; the API exposes no memory-layout or copying controls.
 
 `cover_cap()` accepts `(3,)` or `(caps, 3)` centers with scalar or pairwise
 radii. `count_caps_per_cell()` shares those inputs. Its `cells` query preserves
 order and duplicates, unlike the set semantics of coverage candidates.
 
-The provisional `summarize_occupancy()` accepts one `Coverage` or one per
-independent source with
-the same number of aligned, ordered occupancy bins. An observation is a maximal
-consecutive run for a source and cell. Revisit merges all sources first and
-measures only complete uncovered gaps between windows. Its sparse result uses
-ascending cells and expresses gaps in ordinal segment steps. `Coverage` stores
-no cadence: equal duration is a caller assertion required only when converting
-those steps to physical time.
+`count_coverage_per_cell()` and `sum_coverage_per_cell()` accept any materialized
+`Coverage`. `values` is a scalar or one finite `float64` value per segment.
+`cells=None` returns a dense array indexed by RING ID; `cells=` preserves query
+order and duplicates without allocating a resolution-sized grid. Floating sums
+are accumulated deterministically in segment and hit order.
+
+`occupancy_runs()` accepts one `Coverage` or one per source entry with the same
+resolution and number of aligned, ordered bins. The caller owns source
+uniqueness, identical bin boundaries, and temporal adjacency. For each cell it
+returns every maximal half-open `[start, stop)` interval where at least
+`minimum_sources` entries cover that cell. Runs use ordinal segment indices.
+Callers map segment boundaries to constant or variable time edges and choose
+complete, leading, trailing, or cyclic revisit-gap semantics themselves.
 
 `cell_at()` maps finite nonzero direction vectors to their fixed-resolution
-RING cells and completes the inverse bridge to `centers()`. Cell centers must
-round-trip, but the API does not promise which adjacent cell owns a direction
+RING cells and completes the inverse bridge to `cell_centers()`. Cell centers
+must round-trip, but the API does not promise which adjacent cell owns a direction
 numerically on an exact mathematical edge or vertex across platforms.
-`corners()` returns only the four HEALPix corner vectors for each cell; HEALPix
-cell edges are curved, so those corners must not be round-tripped as an exact
+`cell_corners()` returns only the four HEALPix corner vectors for each cell;
+HEALPix cell edges are curved, so those corners must not be round-tripped as an exact
 great-circle polygon. Polypix does not otherwise grow into a general
 cell-manipulation library.
 
@@ -345,14 +376,18 @@ backend selectors, or algorithm controls.
 - A fused verb is admitted only when it has one stable result type and avoids a
   measured intermediate or Python loop that callers cannot otherwise remove.
   Private RING spans, traversal sinks, and parallel strategies stay private.
+- Geometry-neutral reducers operate on `Coverage`. Geometry-specific fused
+  reducers are retained only where benchmarks show that materializing
+  `Coverage` is itself the dominant avoidable cost. This is why fused cap
+  counting coexists with generic coverage counting, but there is no automatic
+  family of polygon-, sweep-, and cap-specific count/sum names.
 - Fused candidates are evaluated as an operation-by-geometry matrix: explicit
   membership, per-input counts, dense/selected/sparse per-cell accumulation,
   and compressed membership. API symmetry alone does not admit every cell in
   that matrix.
-- `summarize_occupancy()` remains a provisional bounded ordinal-occupancy
-  accelerator, not the seed of a general statistics framework. Before 1.0 it
-  must earn its exact fields and core placement from independent workloads or
-  move to an experimental or analysis layer.
+- Ordinal occupancy exposes maximal runs rather than a fixed statistic.
+  Physical time, observation attribution, gap censoring, cyclic periods,
+  cadence conversion, and revisit statistics stay in downstream analysis.
 - New convenience features should normally be conversion recipes or optional
   adapters. They enter the package only when they repeatedly prevent user error
   without adding a physical model or runtime dependency.
@@ -374,7 +409,8 @@ repository's regression benchmarks cover:
 - representative dense and ragged footprint batches;
 - sweep intervals;
 - exact cap materialization and fused per-cell cap counts;
-- segmented occupancy summaries;
+- generic per-cell coverage counts and weighted sums;
+- segmented ordinal occupancy runs;
 - multiple useful resolutions and output sizes;
 - sparse candidate-cell workloads;
 - single-threaded and automatic parallel execution;
@@ -485,7 +521,7 @@ differences may affect only centers inside the documented floating-point
 boundary tolerance.
 
 The native kernel must be tested against independent oracles with randomized
-and adversarial footprints, caps, and segmented occupancy sources. Tests cover
+and adversarial polygons, caps, reductions, and segmented occupancy sources. Tests cover
 poles, longitude wraparound, cell boundaries, hemisphere limits, invalid
 geometry, empty batches, ragged inputs, candidate sets, sparse high-resolution
 state, and parallel execution. Performance work may change strategy, never
@@ -531,7 +567,7 @@ The following are outside the committed product:
   or fractional rule requires a separately admitted verb and contract;
 - general-purpose geometry or map boolean algebra, arbitrary reducers,
   access-window lists, timestamps, and variable-duration time integration; the
-  fixed occupancy union inside `summarize_occupancy()` is the sole current union;
+  ordinal `occupancy_runs()` result deliberately leaves those policies downstream;
 - NESTED or mixed-resolution results;
 - MOCs, map operations, neighbors, hierarchy traversal, interpolation,
   spherical harmonics, FITS, or plotting;
@@ -550,12 +586,13 @@ fused cap counts consume those spans without expansion. A public compressed
 result remains evidence-gated: it enters the API only if workloads need to
 retain ranges rather than explicit cells or one of the focused aggregations.
 
-The operation-by-geometry experiments include counts without cell
-materialization; dense, selected, and sparse per-cell counts; one bounded
-constant-weight sum; packed ragged polygon input; and cell-to-region incidence.
-Footprint or sweep accumulation enters the API only when an unrelated workload
-proves that explicit `Coverage` materialization is the limiting cost. API
-symmetry alone is not evidence.
+The operation-by-geometry experiments still include per-input counts without
+cell materialization, sparse touched-cell results, and cell-to-region incidence.
+Dense and selected generic counts, one bounded constant-weight sum, and packed
+ragged polygon input have been admitted. A polygon- or sweep-specific fused
+accumulator enters the API only when an unrelated workload proves that explicit
+`Coverage` materialization is the limiting cost. API symmetry alone is not
+evidence.
 
 A conservative guaranteed-superset candidate cover is the most consequential
 unresolved coverage-rule experiment. It is required for no-false-negative
@@ -576,9 +613,8 @@ While Polypix remains in `0.x`, clean breaking changes are preferred over
 deprecation aliases and compatibility layers. Each release is still tested,
 documented, and usable. There is no deadline for 1.0.
 
-Before 1.0, the standard cell dtype, center-raster versus
-conservative-indexing claims, the placement of ordinal occupancy analysis, the
-complete public API, supported wheel matrix, deterministic correctness,
+Before 1.0, center-raster versus conservative-indexing claims, the complete
+public API, supported wheel matrix, deterministic correctness,
 provenance, and benchmark contract must all be settled and proven. After 1.0,
 Polypix follows semantic versioning and normal deprecation periods.
 

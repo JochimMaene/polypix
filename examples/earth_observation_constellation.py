@@ -1,4 +1,4 @@
-"""Map ten days of observations and revisit time for an EO constellation."""
+"""Map ten days of occupied-bin runs and internal gaps for an EO constellation."""
 
 from __future__ import annotations
 
@@ -42,11 +42,12 @@ HEALPIX_RESOLUTION = 6
 
 @dataclass(frozen=True)
 class EarthObservationAnalysis:
-    """Observation and revisit results with stage timings."""
+    """Sampled occupied-bin and internal-gap results with stage timings."""
 
     observations: npt.NDArray[np.int64]
-    mean_revisit_s: npt.NDArray[np.float64]
-    revisit_counts: npt.NDArray[np.int64]
+    mean_internal_gap_s: npt.NDArray[np.float64]
+    max_internal_gap_s: npt.NDArray[np.float64]
+    gap_counts: npt.NDArray[np.int64]
     materialized_count: int
     swath_elapsed_s: float
     coverage_elapsed_s: float
@@ -86,36 +87,51 @@ def reduce_coverage(
 ) -> tuple[
     npt.NDArray[np.int64],
     npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
     npt.NDArray[np.int64],
 ]:
-    """Count observations and mean gaps between constellation accesses."""
+    """Count merged occupied-bin runs and their complete internal gaps."""
     if not coverages:
         empty_int = np.zeros(cell_count, dtype=np.int64)
         return (
             empty_int,
             np.full(cell_count, np.nan, dtype=np.float64),
+            np.full(cell_count, np.nan, dtype=np.float64),
             empty_int.copy(),
         )
-    expected_cell_count = 12 * 4 ** coverages[0].resolution
+    expected_cell_count = px.cell_count(coverages[0].resolution)
     if cell_count != expected_cell_count:
         raise ValueError("cell_count must match the coverage resolution")
     interval_count = coverages[0].offsets.size - 1
     if any(coverage.offsets.size - 1 != interval_count for coverage in coverages):
         raise ValueError("all satellite strips must have the same interval count")
 
-    # Each source's observation runs and the constellation-wide merged gaps
-    # are reduced natively without sorting or Python work per interval.
+    # Preserve every merged occupied-bin run. Physical time and the choice of which gaps
+    # to summarize remain downstream of the ordinal occupancy operation.
     # --8<-- [start:eo-reduce]
-    summary = px.summarize_occupancy(coverages)
+    runs = px.occupancy_runs(coverages)
     observations = np.zeros(cell_count, dtype=np.int64)
-    revisit_counts = np.zeros(cell_count, dtype=np.int64)
-    mean_revisit_s = np.full(cell_count, np.nan, dtype=np.float64)
-    cells = summary.cells.astype(np.int64, copy=False)
-    observations[cells] = summary.run_counts
-    revisit_counts[cells] = summary.merged_gap_counts
-    mean_revisit_s[cells] = summary.mean_merged_gap_steps * cadence_s
+    gap_counts = np.zeros(cell_count, dtype=np.int64)
+    mean_internal_gap_s = np.full(cell_count, np.nan, dtype=np.float64)
+    max_internal_gap_s = np.full(cell_count, np.nan, dtype=np.float64)
+    observations[runs.cells] = runs.run_counts
+    observed_gap_counts = runs.run_counts - 1
+    gap_counts[runs.cells] = observed_gap_counts
+    if runs.starts.size:
+        # Adjacent flattened runs belonging to different cells are not gaps.
+        # Pad one zero so reduceat also handles a final cell with one run.
+        gap_steps = np.zeros(runs.starts.size, dtype=np.int64)
+        gap_steps[:-1] = runs.starts[1:] - runs.stops[:-1]
+        gap_steps[runs.offsets[1:-1] - 1] = 0
+        gap_steps_sum = np.add.reduceat(gap_steps, runs.offsets[:-1])
+        max_gap_steps = np.maximum.reduceat(gap_steps, runs.offsets[:-1])
+        measured = observed_gap_counts > 0
+        mean_internal_gap_s[runs.cells[measured]] = (
+            gap_steps_sum[measured] / observed_gap_counts[measured] * cadence_s
+        )
+        max_internal_gap_s[runs.cells[measured]] = max_gap_steps[measured] * cadence_s
     # --8<-- [end:eo-reduce]
-    return observations, mean_revisit_s, revisit_counts
+    return observations, mean_internal_gap_s, max_internal_gap_s, gap_counts
 
 
 def analyze() -> EarthObservationAnalysis:
@@ -149,16 +165,17 @@ def analyze() -> EarthObservationAnalysis:
         right_edges,
     )
     reduction_started = time.perf_counter()
-    observations, mean_revisit_s, revisit_counts = reduce_coverage(
+    observations, mean_internal_gap_s, max_internal_gap_s, gap_counts = reduce_coverage(
         coverages,
-        cell_count=12 * 4**HEALPIX_RESOLUTION,
+        cell_count=px.cell_count(HEALPIX_RESOLUTION),
         cadence_s=CADENCE_S,
     )
     reduction_elapsed_s = time.perf_counter() - reduction_started
     return EarthObservationAnalysis(
         observations=observations,
-        mean_revisit_s=mean_revisit_s,
-        revisit_counts=revisit_counts,
+        mean_internal_gap_s=mean_internal_gap_s,
+        max_internal_gap_s=max_internal_gap_s,
+        gap_counts=gap_counts,
         materialized_count=materialized_count,
         swath_elapsed_s=swath_elapsed_s,
         coverage_elapsed_s=coverage_elapsed_s,
@@ -177,7 +194,7 @@ def plot_observations(
     ],
     dpi: int = 150,
 ) -> None:
-    """Render distinct satellite observations per cell."""
+    """Render merged constellation occupied-bin runs per cell."""
     import matplotlib.colors as colors
     import matplotlib.pyplot as plt
 
@@ -192,7 +209,7 @@ def plot_observations(
         coordinates=coordinates,
         visible=visible,
         resolution=HEALPIX_RESOLUTION,
-        colorbar_label="Distinct satellite observations per cell",
+        colorbar_label="Merged occupied-bin runs per cell",
         cmap=plt.get_cmap(sequential_colormap(), len(levels)),
         norm=colors.BoundaryNorm(levels, len(levels), extend="max"),
         colorbar_ticks=levels,
@@ -211,23 +228,23 @@ def plot_revisit(
     ],
     dpi: int = 150,
 ) -> None:
-    """Render mean gaps between constellation access windows."""
+    """Render mean internal gaps between sampled occupied-bin runs."""
     import matplotlib.colors as colors
     import matplotlib.pyplot as plt
 
-    measured = np.isfinite(result.mean_revisit_s)
-    revisit_hours = result.mean_revisit_s / 3_600
+    measured = np.isfinite(result.mean_internal_gap_s)
+    gap_hours = result.mean_internal_gap_s / 3_600
     # Most measured cells sit close to the median, so a continuous ramp spends
     # its range on differences nobody can see. Banding by hour reads like a
     # contour map and can be taken straight off the colorbar.
     levels = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0]
     plot_global_map(
-        revisit_hours,
+        gap_hours,
         output,
         coordinates=coordinates,
         visible=measured,
         resolution=HEALPIX_RESOLUTION,
-        colorbar_label="Mean revisit gap (hours)",
+        colorbar_label="Mean internal uncovered gap (hours)",
         cmap=plt.get_cmap(gap_colormap(), len(levels)),
         norm=colors.BoundaryNorm(levels, len(levels), extend="max"),
         colorbar_ticks=levels,
@@ -247,8 +264,8 @@ def build_documentation_assets() -> None:
     plot_revisit(result, REVISIT_FIGURE_PATH, coordinates=coordinates, dpi=100)
     plotting_elapsed_s = time.perf_counter() - plotting_started
 
-    measured = np.isfinite(result.mean_revisit_s)
-    revisit_hours = result.mean_revisit_s[measured] / 3_600
+    measured = np.isfinite(result.mean_internal_gap_s)
+    gap_hours = result.mean_internal_gap_s[measured] / 3_600
     write_measurements(
         MEASUREMENTS_PATH,
         {
@@ -260,11 +277,15 @@ def build_documentation_assets() -> None:
             "analysis_ms": result.analysis_elapsed_s * 1_000,
             "plotting_ms": plotting_elapsed_s * 1_000,
             "cells_observed": int(np.count_nonzero(result.observations)),
+            "cells_with_internal_gaps": int(np.count_nonzero(measured)),
             "cell_count": int(result.observations.size),
             "observations_max": int(result.observations.max()),
-            "revisit_median_h": float(np.median(revisit_hours)),
-            "revisit_min_h": float(revisit_hours.min()),
-            "revisit_max_h": float(revisit_hours.max()),
+            "gap_median_h": float(np.median(gap_hours)),
+            "gap_min_h": float(gap_hours.min()),
+            "gap_max_h": float(gap_hours.max()),
+            "maximum_internal_gap_h": float(
+                np.nanmax(result.max_internal_gap_s) / 3_600
+            ),
         },
     )
 
@@ -275,19 +296,20 @@ def documentation_html() -> str:
     return f"""
 <figure class="example-figure">
   <img src="{DOC_FIGURE_URL}/{OBSERVATIONS_FIGURE_PATH.name}"
-       alt="Global map of distinct Earth observations over ten days"
+       alt="Global map of merged Earth-observation occupied-bin runs over ten days"
        loading="lazy">
   <figcaption>
-    Consecutive one-minute hits by the same satellite are one observation.
+    Consecutive one-minute hits by any satellite form one merged occupied-bin run.
   </figcaption>
 </figure>
 
 <figure class="example-figure">
   <img src="{DOC_FIGURE_URL}/{REVISIT_FIGURE_PATH.name}"
-       alt="Global map of mean Earth-observation revisit time over ten days"
+       alt="Observed-cell map of mean internal uncovered gaps over ten days"
        loading="lazy">
   <figcaption>
-    Mean uncovered gap between globally merged constellation access windows.
+    Mean internal gap between sampled occupied-bin runs. Horizon-edge gaps are
+    excluded, and cells with fewer than two runs have no value.
   </figcaption>
 </figure>
 
@@ -295,6 +317,7 @@ def documentation_html() -> str:
   <div><strong>{m["interval_count"]:,}</strong><span>swept intervals</span></div>
   <div><strong>{m["materialized_count"]:,}</strong><span>interval–cell hits</span></div>
   <div><strong>{m["cells_observed"]:,}</strong><span>cells observed</span></div>
+  <div><strong>{m["cell_count"] - m["cells_observed"]:,}</strong><span>cells never observed</span></div>
 </div>
 
 <table class="example-timings">
@@ -307,7 +330,7 @@ def documentation_html() -> str:
         <td><strong>{m["coverage_ms"]:.0f} ms</strong></td></tr>
     <tr><td>Orbits and swath edges</td>
         <td>{m["swath_ms"]:.0f} ms</td></tr>
-    <tr><td>Occupancy summary and scatter</td>
+    <tr><td>Occupancy runs and scatter</td>
         <td>{m["reduction_ms"]:.0f} ms</td></tr>
     <tr><td>Complete analysis</td>
         <td>{m["analysis_ms"]:.0f} ms</td></tr>
@@ -343,7 +366,7 @@ def main() -> None:
         f"in {result.coverage_elapsed_s:.3f} s."
     )
     print(
-        f"Complete observation and revisit analysis took "
+        f"Complete sampled-occupancy and internal-gap analysis took "
         f"{result.analysis_elapsed_s:.3f} s."
     )
     print(f"Rendering both maps took {plotting_elapsed_s:.3f} s.")

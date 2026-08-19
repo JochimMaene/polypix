@@ -1,6 +1,21 @@
 # Exact Caps and Segmented Occupancy Reduction
 
-Status: **accepted; measured primary-workload primitives**
+Status: **accepted for exact caps; occupancy result superseded**
+
+## Later outcome
+
+The cap decision and fused `count_caps_per_cell()` remain current. The
+provisional occupancy summary did not survive the broader workflow review:
+`run_counts` described each source separately while gap fields described their
+union, and retaining only gap sum/count could not support maximum, minimum,
+median, boundary-censored, or cyclic revisit analyses. The canonical replacement
+is lossless ordinal `occupancy_runs()`; the provisional summary API and native
+implementation were removed. Generic native `Coverage` count/sum
+reducers and the consolidated naming/dtype decisions are recorded in
+[Coverage Reductions and Ordinal Occupancy Runs](coverage-reductions-and-occupancy-runs.md).
+
+The remainder of this record preserves the evidence and historical decision
+that introduced the original operations.
 
 ## Decision
 

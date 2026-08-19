@@ -59,8 +59,8 @@ vectors_n3 = np.moveaxis(vectors_3n, 0, -1)
 cells = px.cell_at(vectors_n3, resolution=8)
 ```
 
-Use `cell_at()` when your input is points rather than regions, and `centers()`
-to go back the other way. Be careful about what "back" means: `centers()` gives
+Use `cell_at()` when your input is points rather than regions, and `cell_centers()`
+to go back the other way. Be careful about what "back" means: `cell_centers()` gives
 you the grid representative, not the direction you started with. Cell centers
 round-trip exactly; arbitrary directions do not. A direction sitting numerically
 on a cell edge is a floating-point tie. It is repeatable for one build and
@@ -99,7 +99,7 @@ directly instead of emitting one cell ID per cap–cell pair.
 
 ## Batches and segments
 
-`cover_footprint()` takes one footprint, a dense batch, or a ragged sequence.
+`cover_convex_polygon()` takes one footprint, a dense batch, or a ragged sequence.
 `cover_cap()` takes one center or a batch, with a shared radius or one per cap.
 `cover_sweep()` turns consecutive pairs of two sampled edges into independent
 quadrilaterals. All three hand back a single `Coverage`:
@@ -119,19 +119,26 @@ past 180° you get the opposite arc; exactly ambiguous steps are rejected. Polyp
 cannot tell a deliberate minor arc from an undersampled trajectory, so sample
 densely enough that each arc is the boundary you meant.
 
-## Occupancy summaries
+## Occupancy runs
 
-`summarize_occupancy()` reads the segments of one or more `Coverage` results as
-aligned, ordered bins. It counts consecutive runs per source, then merges every
-source to measure the uncovered bins between occupied windows.
+`occupancy_runs()` reads the segments of one or more `Coverage` results as
+aligned, ordered bins. It returns every maximal half-open `[start, stop)` run,
+grouped by cell, where at least `minimum_sources` source entries cover the cell.
+Matching indices must describe identical bin boundaries, and consecutive bins
+must really be adjacent; those are caller assertions because `Coverage` carries
+no clock. Split an analysis at time discontinuities or insert an empty separator
+bin so a run cannot bridge them.
 
-Gaps are counts of bins, not durations. Polypix has no clock. Hits in bins 0
-and 2 give a gap of one, so this is an uncovered interval and not a
-start-to-start period. Equal bin duration only matters when you multiply those
-counts out into real time.
+Runs use segment indices, not durations. Polypix has no clock. Map `starts` and
+`stops` through your own array of time edges, then choose whether revisit means
+end-to-start, start-to-start, a finite-horizon edge gap, or a cyclic gap.
 
-The result is sparse and sorted by cell ID, so a high resolution does not force
-a dense global allocation.
+The result is sparse and sorted by cell ID, so high resolution does not force a
+dense global allocation. Sequence positions count independently, so callers
+also own source uniqueness. Multi-source thresholding intentionally drops
+source identity; extract runs once per source when observer attribution is
+required. A sampled sweep yields occupied-bin runs, not exact continuous access
+events; physical boundary precision is limited by the sampling cadence.
 
 ## Handing cells to other libraries
 
@@ -139,18 +146,13 @@ Polypix exchanges exactly two things with the rest of the ecosystem: `(N, 3)`
 direction arrays and fixed-resolution RING IDs. There is no frame object model
 to adopt and no Astropy or geospatial runtime to install.
 
-Standard RING IDs go straight to healpy, astropy-healpix, or cdshealpix for
-everything Polypix leaves out: ordering conversion, neighbors, interpolation,
-resampling, harmonics, file formats. Every valid cell ID fits in signed
-`int64`, so when an API insists on signed:
-
-```python
-signed_cells = coverage.cells.astype(np.int64, copy=False)
-```
+Signed `int64` RING IDs go straight to healpy, astropy-healpix, or cdshealpix
+for everything Polypix leaves out: ordering conversion, neighbors,
+interpolation, resampling, harmonics, and file formats.
 
 Two things to watch when you hand data over:
 
-- `corners()` returns four corner vectors, and HEALPix cell edges are curved.
+- `cell_corners()` returns four corner vectors, and HEALPix cell edges are curved.
   Those four points are not a sampled boundary, so do not round-trip them as an
   exact great-circle polygon.
 - A MOC represents whole cells by area. Converting center-selected cells into a

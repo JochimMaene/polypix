@@ -9,6 +9,7 @@ use pyo3::prelude::*;
 mod access;
 mod error;
 mod geometry;
+mod reduce;
 mod ring;
 
 use error::NativeError;
@@ -19,12 +20,11 @@ type PyCoverage<'py> = (
     Bound<'py, numpy::PyArray1<u64>>,
 );
 
-type PyOccupancySummary<'py> = (
+type PyOccupancyRuns<'py> = (
     Bound<'py, numpy::PyArray1<u64>>,
     Bound<'py, numpy::PyArray1<u64>>,
     Bound<'py, numpy::PyArray1<u64>>,
     Bound<'py, numpy::PyArray1<u64>>,
-    usize,
 );
 
 fn validate_resolution(resolution: u8) -> PyResult<()> {
@@ -169,13 +169,74 @@ fn _count_caps_per_cell<'py>(
     Ok(counts.into_pyarray(py))
 }
 
+#[pyfunction(signature = (cells, resolution, requested_cells=None))]
+fn _count_coverage_per_cell<'py>(
+    py: Python<'py>,
+    cells: PyReadonlyArray1<'py, u64>,
+    resolution: u8,
+    requested_cells: Option<PyReadonlyArray1<'py, u64>>,
+) -> PyResult<Bound<'py, numpy::PyArray1<i64>>> {
+    validate_resolution(resolution)?;
+    let cells = cells
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("cells must be C-contiguous."))?;
+    let requested_cells = requested_cells
+        .as_ref()
+        .map(|values| {
+            values
+                .as_slice()
+                .map_err(|_| PyValueError::new_err("requested_cells must be C-contiguous."))
+        })
+        .transpose()?;
+    let counts = py
+        .detach(|| reduce::count_coverage_per_cell(cells, resolution, requested_cells))
+        .map_err(native_error)?;
+    Ok(counts.into_pyarray(py))
+}
+
+#[pyfunction(signature = (cells, offsets, values, resolution, requested_cells=None))]
+fn _sum_coverage_per_cell<'py>(
+    py: Python<'py>,
+    cells: PyReadonlyArray1<'py, u64>,
+    offsets: PyReadonlyArray1<'py, u64>,
+    values: PyReadonlyArray1<'py, f64>,
+    resolution: u8,
+    requested_cells: Option<PyReadonlyArray1<'py, u64>>,
+) -> PyResult<Bound<'py, numpy::PyArray1<f64>>> {
+    validate_resolution(resolution)?;
+    let cells = cells
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("cells must be C-contiguous."))?;
+    let offsets = offsets
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("offsets must be C-contiguous."))?;
+    let values = values
+        .as_slice()
+        .map_err(|_| PyValueError::new_err("values must be C-contiguous."))?;
+    let requested_cells = requested_cells
+        .as_ref()
+        .map(|requested| {
+            requested
+                .as_slice()
+                .map_err(|_| PyValueError::new_err("requested_cells must be C-contiguous."))
+        })
+        .transpose()?;
+    let sums = py
+        .detach(|| {
+            reduce::sum_coverage_per_cell(cells, offsets, values, resolution, requested_cells)
+        })
+        .map_err(native_error)?;
+    Ok(sums.into_pyarray(py))
+}
+
 #[pyfunction]
-fn _summarize_occupancy<'py>(
+fn _occupancy_runs<'py>(
     py: Python<'py>,
     cell_arrays: Vec<PyReadonlyArray1<'py, u64>>,
     offset_arrays: Vec<PyReadonlyArray1<'py, u64>>,
     resolution: u8,
-) -> PyResult<PyOccupancySummary<'py>> {
+    minimum_sources: usize,
+) -> PyResult<PyOccupancyRuns<'py>> {
     validate_resolution(resolution)?;
     let cells = cell_arrays
         .iter()
@@ -193,15 +254,14 @@ fn _summarize_occupancy<'py>(
                 .map_err(|_| PyValueError::new_err("Coverage offsets must be C-contiguous."))
         })
         .collect::<PyResult<Vec<_>>>()?;
-    let (summary, segment_count) = py
-        .detach(|| access::summarize(&cells, &offsets, resolution))
+    let runs = py
+        .detach(|| access::occupancy_runs(&cells, &offsets, resolution, minimum_sources))
         .map_err(native_error)?;
     Ok((
-        readonly_vec(summary.cells, py),
-        readonly_vec(summary.run_counts, py),
-        readonly_vec(summary.merged_gap_steps_sum, py),
-        readonly_vec(summary.merged_gap_counts, py),
-        segment_count,
+        readonly_vec(runs.cells, py),
+        readonly_vec(runs.cell_offsets, py),
+        readonly_vec(runs.run_starts, py),
+        readonly_vec(runs.run_stops, py),
     ))
 }
 
@@ -218,7 +278,6 @@ fn _cover_sweep<'py>(
     if left_edge_xyz.shape().get(1) != Some(&3)
         || right_edge_xyz.shape().get(1) != Some(&3)
         || left_edge_xyz.shape()[0] != right_edge_xyz.shape()[0]
-        || left_edge_xyz.shape()[0] < 2
     {
         return Err(PyValueError::new_err("Invalid internal sweep buffers."));
     }
@@ -335,7 +394,9 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_cover_cap, module)?)?;
     module.add_function(wrap_pyfunction!(_cover_sweep, module)?)?;
     module.add_function(wrap_pyfunction!(_count_caps_per_cell, module)?)?;
-    module.add_function(wrap_pyfunction!(_summarize_occupancy, module)?)?;
+    module.add_function(wrap_pyfunction!(_count_coverage_per_cell, module)?)?;
+    module.add_function(wrap_pyfunction!(_occupancy_runs, module)?)?;
+    module.add_function(wrap_pyfunction!(_sum_coverage_per_cell, module)?)?;
     module.add_function(wrap_pyfunction!(_validate_coverage, module)?)?;
     module.add_function(wrap_pyfunction!(_cell_at, module)?)?;
     module.add_function(wrap_pyfunction!(_center, module)?)?;

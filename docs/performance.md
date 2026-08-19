@@ -18,10 +18,10 @@ Public output storage, ignoring temporary native chunks:
 | --- | --- |
 | Explicit `Coverage` | `8 * hit_count + 8 * (segment_count + 1)` bytes |
 | `cell_at()` | 8 bytes per direction |
-| `centers()` | 24 bytes per cell |
-| `corners()` | 96 bytes per cell |
+| `cell_centers()` | 24 bytes per cell |
+| `cell_corners()` | 96 bytes per cell |
 | Dense cap counts | `8 * cell_count` bytes |
-| Sparse `OccupancySummary` | `32 * observed_cell_count` bytes |
+| Sparse `OccupancyRuns` | `8 * (2 * represented_cell_count + 2 * run_count + 1)` bytes |
 
 Parallel coverage builds ordered worker chunks and merges them, so peak native
 memory can reach roughly twice the final `cells` array. If allocation fails you
@@ -30,8 +30,8 @@ get a `MemoryError` rather than a crash.
 When the whole result will not fit, batch the input and consume each chunk:
 
 ```python
-for start in range(0, len(footprints), 10_000):
-    chunk = px.cover_footprint(footprints[start : start + 10_000], resolution=8)
+for start in range(0, len(polygons), 10_000):
+    chunk = px.cover_convex_polygon(polygons[start : start + 10_000], resolution=8)
     consume(chunk)
 ```
 
@@ -41,13 +41,23 @@ Concatenating all chunks recreates the original memory requirement.
 
 | What you need | Use | What you avoid |
 | --- | --- | --- |
-| Membership per region | `cover_cap()`, `cover_footprint()`, `cover_sweep()` | nothing; membership is the point |
+| Membership per region | `cover_cap()`, `cover_convex_polygon()`, `cover_sweep()` | nothing; membership is the point |
+| Counts from existing membership | `count_coverage_per_cell()` | sorting or Python accumulation |
+| Weighted values from existing membership | `sum_coverage_per_cell()` | one repeated value per hit |
 | Caps per cell | `count_caps_per_cell()` | one cell ID per cap-cell hit, plus a `bincount()` |
-| Runs and merged gaps over aligned bins | `summarize_occupancy()` | Python work per source and segment |
+| Complete occupied-bin runs | `occupancy_runs()` | expanding and sorting every hit as an event |
 
-Occupancy summarization still consumes a `Coverage`, so sweep membership does
-get materialized. It fuses the reduction, not the geometry. The
+Generic reductions and occupancy runs still consume a `Coverage`, so geometry
+membership is materialized. They fuse downstream accumulation, not geometry.
+The cap counter remains a separate fast path because it skips that materialized
+membership entirely. The
 [architecture decisions](decisions.md) carry the benchmark evidence.
+
+`OccupancyRuns` is lossless, so it is not guaranteed to be smaller than its
+input. A cell hit in alternating bins creates one run per hit. Moderate grids
+use bounded dense state and write the exact cell-major result directly; sparse
+high-resolution grids use a map-backed path rather than allocating by global
+cell count. Size the unavoidable output with the table above.
 
 ## Dense counts versus selected cells
 
@@ -77,7 +87,7 @@ Either way the predicate is evaluated at cell centers. If those IDs came out of
 | Argument | Semantics | Output |
 | --- | --- | --- |
 | `candidate_cells=` | set filter for coverage | native cell order |
-| `cells=` | positional cap-count query | preserves your order and duplicates |
+| `cells=` | positional reduction or cap-count query | preserves your order and duplicates |
 
 They are not interchangeable. Candidate planning also retains normalized
 geometry for the whole batch and may cache a bounded span of candidate centers,
@@ -105,12 +115,12 @@ thread while a call is running.
 ## Threading
 
 ```python
-serial = px.cover_footprint(batch, resolution=8, threads=1)
-automatic = px.cover_footprint(batch, resolution=8)  # threads=None
+serial = px.cover_convex_polygon(batch, resolution=8, threads=1)
+automatic = px.cover_convex_polygon(batch, resolution=8)  # threads=None
 ```
 
 Automatic mode stays sequential below measured crossovers. `cell_at()`,
-`centers()`, and `corners()` parallelize large arrays too, but expose no
+`cell_centers()`, and `cell_corners()` parallelize large arrays too, but expose no
 control.
 
 If you already run several Polypix calls concurrently from your own executor,

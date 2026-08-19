@@ -89,7 +89,7 @@ def analyze() -> CommunicationsAnalysis:
     if not np.all(np.isfinite(positions_km)):
         raise ValueError("Astroz returned a non-finite propagated position")
 
-    cell_count = 12 * 4**HEALPIX_RESOLUTION
+    cell_count = px.cell_count(HEALPIX_RESOLUTION)
     visible_sum = np.zeros(cell_count, dtype=np.int64)
     minimum_visible = np.full(
         cell_count,

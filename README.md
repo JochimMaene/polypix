@@ -48,7 +48,7 @@ centers = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
 radii = np.deg2rad([5.0, 8.0])
 
 coverage = px.cover_cap(centers, radii, resolution=8)
-print(coverage.counts)  # [1502 3824]
+print(coverage.segment_sizes)  # [1502 3824]
 ```
 
 `coverage[i]` contains the cells selected for cap `i`. Selection is based on

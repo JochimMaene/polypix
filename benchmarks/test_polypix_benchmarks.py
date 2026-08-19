@@ -134,6 +134,24 @@ def eo_shaped_coverage() -> px.Coverage:
 
 
 @pytest.fixture(scope="module")
+def sparse_high_resolution_reduction(
+    eo_shaped_coverage: px.Coverage,
+) -> tuple[px.Coverage, np.ndarray]:
+    coverage = px.Coverage.from_arrays(
+        eo_shaped_coverage.cells,
+        eo_shaped_coverage.offsets,
+        resolution=29,
+    )
+    queried = np.concatenate(
+        (
+            np.arange(12 * 4**6, dtype=np.int64),
+            1_000_000_000_000 + np.arange(16_384, dtype=np.int64),
+        )
+    )
+    return coverage, queried
+
+
+@pytest.fixture(scope="module")
 def many_sparse_sources() -> list[px.Coverage]:
     empty = px.Coverage.from_arrays(
         cells=np.empty(0, dtype=np.uint64),
@@ -150,7 +168,7 @@ def many_sparse_sources() -> list[px.Coverage]:
 
 @pytest.fixture(scope="module")
 def cells(footprints: np.ndarray) -> np.ndarray:
-    return px.cover_footprint(footprints, resolution=7, threads=1).cells
+    return px.cover_convex_polygon(footprints, resolution=7, threads=1).cells
 
 
 @pytest.fixture(scope="module")
@@ -181,25 +199,25 @@ def multi_million_sorted_resolution_12_cells() -> np.ndarray:
 @pytest.mark.parametrize(
     "resolution", [4, 6, 7], ids=lambda value: f"resolution_{value}"
 )
-def test_cover_footprint_batch(
+def test_cover_convex_polygon_batch(
     benchmark, footprints: np.ndarray, resolution: int
 ) -> None:
-    coverage = benchmark(px.cover_footprint, footprints, resolution, threads=1)
+    coverage = benchmark(px.cover_convex_polygon, footprints, resolution, threads=1)
 
     assert coverage.offsets.shape == (footprints.shape[0] + 1,)
-    assert coverage.cells.dtype == np.uint64
+    assert coverage.cells.dtype == np.int64
 
 
-def test_cover_footprint_single_latency(benchmark, footprints: np.ndarray) -> None:
-    coverage = benchmark(px.cover_footprint, footprints[0], 7, threads=1)
+def test_cover_convex_polygon_single_latency(benchmark, footprints: np.ndarray) -> None:
+    coverage = benchmark(px.cover_convex_polygon, footprints[0], 7, threads=1)
 
     assert coverage.offsets.shape == (2,)
 
 
-def test_cover_footprint_single_automatic_latency(
+def test_cover_convex_polygon_single_automatic_latency(
     benchmark, footprints: np.ndarray
 ) -> None:
-    coverage = benchmark(px.cover_footprint, footprints[0], 7)
+    coverage = benchmark(px.cover_convex_polygon, footprints[0], 7)
 
     assert coverage.offsets.shape == (2,)
 
@@ -208,10 +226,10 @@ def test_cover_footprint_single_automatic_latency(
     "resolution", [6, 7, 9], ids=lambda value: f"resolution_{value}"
 )
 @pytest.mark.parallel
-def test_cover_footprint_automatic_parallel(
+def test_cover_convex_polygon_automatic_parallel(
     benchmark, large_footprints: np.ndarray, resolution: int
 ) -> None:
-    coverage = benchmark(px.cover_footprint, large_footprints, resolution)
+    coverage = benchmark(px.cover_convex_polygon, large_footprints, resolution)
 
     assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
 
@@ -227,7 +245,7 @@ def test_cover_few_large_footprints(
     threads: int | None,
 ) -> None:
     coverage = benchmark(
-        px.cover_footprint,
+        px.cover_convex_polygon,
         few_large_footprints,
         10,
         threads=threads,
@@ -237,45 +255,45 @@ def test_cover_few_large_footprints(
 
 
 @pytest.mark.parametrize("resolution", [6, 12], ids=lambda value: f"resolution_{value}")
-def test_cover_footprint_automatic_light_batch(
+def test_cover_convex_polygon_automatic_light_batch(
     benchmark, footprints: np.ndarray, resolution: int
 ) -> None:
-    coverage = benchmark(px.cover_footprint, footprints[:300], resolution)
+    coverage = benchmark(px.cover_convex_polygon, footprints[:300], resolution)
 
     assert coverage.offsets.shape == (301,)
 
 
 @pytest.mark.parametrize("threads", [1, None], ids=["serial", "automatic"])
-def test_cover_footprint_automatic_prepass_cost(
+def test_cover_convex_polygon_automatic_prepass_cost(
     benchmark,
     large_footprints: np.ndarray,
     threads: int | None,
 ) -> None:
     footprints = large_footprints[:2_000]
-    coverage = benchmark(px.cover_footprint, footprints, 2, threads=threads)
+    coverage = benchmark(px.cover_convex_polygon, footprints, 2, threads=threads)
 
     assert coverage.offsets.shape == (2_001,)
 
 
 @pytest.mark.parallel
-def test_cover_footprint_explicit_pool_reuse(
+def test_cover_convex_polygon_explicit_pool_reuse(
     benchmark, large_footprints: np.ndarray
 ) -> None:
-    coverage = benchmark(px.cover_footprint, large_footprints, 9, threads=4)
+    coverage = benchmark(px.cover_convex_polygon, large_footprints, 9, threads=4)
 
     assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
 
 
-def test_cover_footprint_dense_nested_list(
+def test_cover_convex_polygon_dense_nested_list(
     benchmark, large_footprints: np.ndarray
 ) -> None:
     nested = large_footprints.tolist()
-    coverage = benchmark(px.cover_footprint, nested, 7, threads=1)
+    coverage = benchmark(px.cover_convex_polygon, nested, 7, threads=1)
 
     assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
 
 
-def test_cover_footprint_mixed_ragged_batch(
+def test_cover_convex_polygon_mixed_ragged_batch(
     benchmark, large_footprints: np.ndarray
 ) -> None:
     midpoint = large_footprints[-1, 1] + large_footprints[-1, 2]
@@ -283,13 +301,13 @@ def test_cover_footprint_mixed_ragged_batch(
     pentagon = np.vstack((large_footprints[-1, :2], midpoint, large_footprints[-1, 2:]))
     ragged = tuple(large_footprints[:-1]) + (pentagon,)
 
-    coverage = benchmark(px.cover_footprint, ragged, 9, threads=1)
+    coverage = benchmark(px.cover_convex_polygon, ragged, 9, threads=1)
 
     assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
 
 
 @pytest.mark.parallel
-def test_cover_footprint_mixed_ragged_batch_automatic(
+def test_cover_convex_polygon_mixed_ragged_batch_automatic(
     benchmark, large_footprints: np.ndarray
 ) -> None:
     midpoint = large_footprints[-1, 1] + large_footprints[-1, 2]
@@ -297,12 +315,12 @@ def test_cover_footprint_mixed_ragged_batch_automatic(
     pentagon = np.vstack((large_footprints[-1, :2], midpoint, large_footprints[-1, 2:]))
     ragged = tuple(large_footprints[:-1]) + (pentagon,)
 
-    coverage = benchmark(px.cover_footprint, ragged, 9)
+    coverage = benchmark(px.cover_convex_polygon, ragged, 9)
 
     assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
 
 
-def test_cover_footprint_with_large_sparse_candidate_set(
+def test_cover_convex_polygon_with_large_sparse_candidate_set(
     benchmark,
     large_footprints: np.ndarray,
     large_sparse_resolution_12_cells: np.ndarray,
@@ -310,7 +328,7 @@ def test_cover_footprint_with_large_sparse_candidate_set(
     resolution = 12
 
     coverage = benchmark(
-        px.cover_footprint,
+        px.cover_convex_polygon,
         large_footprints,
         resolution,
         candidate_cells=large_sparse_resolution_12_cells,
@@ -325,14 +343,14 @@ def test_cover_footprint_with_large_sparse_candidate_set(
     [1, pytest.param(None, marks=pytest.mark.parallel)],
     ids=["serial", "automatic"],
 )
-def test_cover_footprint_with_candidates_parallel_scaling(
+def test_cover_convex_polygon_with_candidates_parallel_scaling(
     benchmark,
     large_footprints: np.ndarray,
     multi_million_sorted_resolution_12_cells: np.ndarray,
     threads: int | None,
 ) -> None:
     coverage = benchmark(
-        px.cover_footprint,
+        px.cover_convex_polygon,
         large_footprints,
         12,
         candidate_cells=multi_million_sorted_resolution_12_cells,
@@ -347,14 +365,14 @@ def test_cover_footprint_with_candidates_parallel_scaling(
     [1, pytest.param(None, marks=pytest.mark.parallel)],
     ids=["serial", "automatic"],
 )
-def test_cover_footprint_with_small_sparse_candidate_set(
+def test_cover_convex_polygon_with_small_sparse_candidate_set(
     benchmark,
     large_footprints: np.ndarray,
     sparse_resolution_12_cells: np.ndarray,
     threads: int | None,
 ) -> None:
     coverage = benchmark(
-        px.cover_footprint,
+        px.cover_convex_polygon,
         large_footprints,
         12,
         candidate_cells=sparse_resolution_12_cells,
@@ -370,7 +388,7 @@ def test_cover_single_with_large_sparse_candidate_set(
     large_sparse_resolution_12_cells: np.ndarray,
 ) -> None:
     coverage = benchmark(
-        px.cover_footprint,
+        px.cover_convex_polygon,
         large_footprints[0],
         12,
         candidate_cells=large_sparse_resolution_12_cells,
@@ -386,7 +404,7 @@ def test_cover_with_multi_million_sorted_candidates(
     multi_million_sorted_resolution_12_cells: np.ndarray,
 ) -> None:
     coverage = benchmark(
-        px.cover_footprint,
+        px.cover_convex_polygon,
         large_footprints[:64],
         12,
         candidate_cells=multi_million_sorted_resolution_12_cells,
@@ -401,7 +419,7 @@ def test_cover_sweep(benchmark, strip_edges: tuple[np.ndarray, np.ndarray]) -> N
     coverage = benchmark(px.cover_sweep, left, right, 7, threads=1)
 
     assert coverage.offsets.shape == (left.shape[0],)
-    assert coverage.cells.dtype == np.uint64
+    assert coverage.cells.dtype == np.int64
 
 
 @pytest.mark.parallel
@@ -431,7 +449,7 @@ def test_cover_sweep_with_sparse_high_resolution_candidates(
     )
 
     assert coverage.offsets.shape == (left.shape[0],)
-    assert coverage.cells.dtype == np.uint64
+    assert coverage.cells.dtype == np.int64
 
 
 @pytest.mark.parametrize(
@@ -448,7 +466,7 @@ def test_cover_cap_constellation_batch(
     coverage = benchmark(px.cover_cap, centers, radii, 6, threads=threads)
 
     assert coverage.offsets.shape == (centers.shape[0] + 1,)
-    assert coverage.cells.dtype == np.uint64
+    assert coverage.cells.dtype == np.int64
     assert coverage.cells.size == 1_629_277
 
 
@@ -487,40 +505,86 @@ def test_coverage_from_arrays_eo_shape(
     assert not imported.cells.flags.writeable
 
 
-def test_summarize_occupancy_eo_shape(
+def test_count_coverage_per_cell_eo_shape(
     benchmark,
     eo_shaped_coverage: px.Coverage,
 ) -> None:
-    summary = benchmark(px.summarize_occupancy, [eo_shaped_coverage] * 10)
+    counts = benchmark(px.count_coverage_per_cell, eo_shaped_coverage)
 
-    assert summary.segment_count == 14_400
-    assert summary.cells.dtype == np.uint64
-    assert summary.run_counts.dtype == np.uint64
-    assert summary.cells.size == 49_152
-    assert int(summary.run_counts.sum()) == 9_216_000
-    assert int(summary.merged_gap_steps_sum.sum()) == 641_429_424
-    assert int(summary.merged_gap_counts.sum()) == 872_448
+    assert counts.shape == (12 * 4**6,)
+    assert counts.dtype == np.int64
+    assert int(counts.sum()) == 921_600
 
 
-def test_summarize_occupancy_many_sparse_sources(
+def test_sum_coverage_per_cell_eo_shape(
+    benchmark,
+    eo_shaped_coverage: px.Coverage,
+) -> None:
+    values = np.linspace(0.25, 1.25, eo_shaped_coverage.segment_count)
+    sums = benchmark(px.sum_coverage_per_cell, eo_shaped_coverage, values)
+
+    assert sums.shape == (12 * 4**6,)
+    assert sums.dtype == np.float64
+    assert np.isclose(sums.sum(), 64 * values.sum())
+
+
+def test_count_coverage_selected_sparse_high_resolution(
+    benchmark,
+    sparse_high_resolution_reduction: tuple[px.Coverage, np.ndarray],
+) -> None:
+    coverage, queried = sparse_high_resolution_reduction
+    counts = benchmark(px.count_coverage_per_cell, coverage, cells=queried)
+
+    assert counts.shape == queried.shape
+    assert counts.dtype == np.int64
+    assert int(counts.sum()) == coverage.cells.size
+
+
+def test_occupancy_runs_many_sources_eo_shape(
+    benchmark,
+    eo_shaped_coverage: px.Coverage,
+) -> None:
+    runs = benchmark(px.occupancy_runs, [eo_shaped_coverage] * 10)
+
+    assert runs.segment_count == 14_400
+    assert runs.cells.dtype == np.int64
+    assert runs.starts.dtype == np.int64
+    assert runs.cells.size == 49_152
+    assert runs.starts.size == 921_600
+    assert int(runs.run_counts.sum()) == 921_600
+
+
+def test_occupancy_runs_output_heavy_eo_shape(
+    benchmark,
+    eo_shaped_coverage: px.Coverage,
+) -> None:
+    runs = benchmark(px.occupancy_runs, eo_shaped_coverage)
+
+    assert runs.cells.size == 49_152
+    assert runs.starts.size == 921_600
+    assert int(runs.run_counts.sum()) == 921_600
+
+
+def test_occupancy_runs_many_sparse_sources(
     benchmark,
     many_sparse_sources: list[px.Coverage],
 ) -> None:
-    summary = benchmark(px.summarize_occupancy, many_sparse_sources)
+    runs = benchmark(px.occupancy_runs, many_sparse_sources)
 
-    np.testing.assert_array_equal(summary.cells, [123])
-    np.testing.assert_array_equal(summary.run_counts, [1])
+    np.testing.assert_array_equal(runs.cells, [123])
+    np.testing.assert_array_equal(runs.starts, [0])
+    np.testing.assert_array_equal(runs.stops, [1])
 
 
 def test_centers(benchmark, cells: np.ndarray) -> None:
-    centers = benchmark(px.centers, cells, 7)
+    centers = benchmark(px.cell_centers, cells, 7)
 
     assert centers.shape == (cells.size, 3)
     assert centers.dtype == np.float64
 
 
 def test_corners(benchmark, cells: np.ndarray) -> None:
-    corners = benchmark(px.corners, cells[:256], 7)
+    corners = benchmark(px.cell_corners, cells[:256], 7)
 
     assert corners.shape == (min(cells.size, 256), 4, 3)
     assert corners.dtype == np.float64
@@ -533,7 +597,7 @@ def test_corners(benchmark, cells: np.ndarray) -> None:
 )
 def test_centers_transform_scaling(benchmark, count: int) -> None:
     cells = np.arange(count, dtype=np.uint64)
-    centers = benchmark(px.centers, cells, 12)
+    centers = benchmark(px.cell_centers, cells, 12)
 
     assert centers.shape == (count, 3)
 
@@ -545,7 +609,7 @@ def test_centers_transform_scaling(benchmark, count: int) -> None:
 )
 def test_cell_at_transform_scaling(benchmark, count: int) -> None:
     cells = np.arange(count, dtype=np.uint64)
-    vectors = px.centers(cells, 12)
+    vectors = px.cell_centers(cells, 12)
     actual = benchmark(px.cell_at, vectors, 12)
 
     np.testing.assert_array_equal(actual, cells)
@@ -558,6 +622,6 @@ def test_cell_at_transform_scaling(benchmark, count: int) -> None:
 )
 def test_corners_transform_scaling(benchmark, count: int) -> None:
     cells = np.arange(count, dtype=np.uint64)
-    corners = benchmark(px.corners, cells, 12)
+    corners = benchmark(px.cell_corners, cells, 12)
 
     assert corners.shape == (count, 4, 3)

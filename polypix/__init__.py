@@ -17,16 +17,18 @@ from ._core import (
     _center,
     _corner_many,
     _count_caps_per_cell,
+    _count_coverage_per_cell,
     _cover,
     _cover_cap,
     _cover_sweep,
-    _summarize_occupancy,
+    _occupancy_runs,
+    _sum_coverage_per_cell,
     _validate_coverage,
 )
 
-_FOOTPRINT_SHAPE_ERROR = (
-    "footprints_xyz must have shape (vertices, 3), "
-    "(footprints, vertices, 3), or be a sequence of (vertices, 3) arrays."
+_POLYGON_SHAPE_ERROR = (
+    "polygons_xyz must have shape (vertices, 3), "
+    "(polygons, vertices, 3), or be a sequence of (vertices, 3) arrays."
 )
 
 
@@ -40,8 +42,8 @@ class Coverage:
     performs an implicit linear scan.
     """
 
-    cells: npt.NDArray[np.uint64]
-    offsets: npt.NDArray[np.uint64]
+    cells: npt.NDArray[np.int64]
+    offsets: npt.NDArray[np.int64]
     resolution: int
 
     def __init__(self, *_args: object, **_kwargs: object) -> None:
@@ -58,9 +60,13 @@ class Coverage:
     ) -> Coverage:
         """Copy and validate imported segmented RING-cell arrays."""
         resolved = _as_resolution(resolution)
-        owned_cells = _owned_uint64_vector(cells, "cells")
-        owned_offsets = _owned_uint64_vector(offsets, "offsets")
-        _validate_coverage(owned_cells, owned_offsets, resolved)
+        owned_cells = _owned_int64_vector(cells, "cells")
+        owned_offsets = _owned_int64_vector(offsets, "offsets")
+        _validate_coverage(
+            owned_cells.view(np.uint64),
+            owned_offsets.view(np.uint64),
+            resolved,
+        )
         result = object.__new__(cls)
         _freeze_array(owned_cells)
         _freeze_array(owned_offsets)
@@ -78,8 +84,8 @@ class Coverage:
     ) -> Coverage:
         """Construct from trusted, newly owned native output buffers."""
         result = object.__new__(cls)
-        object.__setattr__(result, "cells", cells)
-        object.__setattr__(result, "offsets", offsets)
+        object.__setattr__(result, "cells", _signed_view(cells))
+        object.__setattr__(result, "offsets", _signed_view(offsets))
         object.__setattr__(result, "resolution", resolution)
         return result
 
@@ -87,7 +93,7 @@ class Coverage:
         """Return the number of input items (segments)."""
         return self.segment_count
 
-    def __getitem__(self, index: SupportsIndex) -> npt.NDArray[np.uint64]:
+    def __getitem__(self, index: SupportsIndex) -> npt.NDArray[np.int64]:
         """Return a read-only view of one segment's cell IDs."""
         if isinstance(index, (bool, np.bool_)):
             raise TypeError("Coverage indices must be integers, not bool.")
@@ -106,63 +112,101 @@ class Coverage:
         return self.offsets.size - 1
 
     @property
-    def counts(self) -> npt.NDArray[np.intp]:
+    def segment_sizes(self) -> npt.NDArray[np.int64]:
         """Number of covered cells for each input item."""
-        return np.diff(self.offsets).astype(np.intp, copy=False)
+        return np.diff(self.offsets)
+
+    def segment_indices(self) -> npt.NDArray[np.int64]:
+        """Return the segment index aligned with every flat cell hit."""
+        return np.repeat(
+            np.arange(self.segment_count, dtype=np.int64),
+            self.segment_sizes,
+        )
+
+    def filter_hits(
+        self,
+        mask: Sequence[bool] | npt.NDArray[np.bool_],
+    ) -> Coverage:
+        """Return coverage containing only flat hits selected by a boolean mask."""
+        selected = np.asarray(mask)
+        if selected.ndim != 1:
+            raise ValueError("mask must be a one-dimensional boolean array.")
+        if selected.size != self.cells.size:
+            raise ValueError("mask must contain one value per covered cell.")
+        if selected.size == 0:
+            if isinstance(mask, np.ndarray) and not np.issubdtype(
+                selected.dtype, np.bool_
+            ):
+                raise TypeError("mask must contain boolean values.")
+            selected = np.empty(0, dtype=np.bool_)
+        elif not np.issubdtype(selected.dtype, np.bool_):
+            raise TypeError("mask must contain boolean values.")
+
+        cumulative = np.empty(selected.size + 1, dtype=np.int64)
+        cumulative[0] = 0
+        np.cumsum(selected, dtype=np.int64, out=cumulative[1:])
+        filtered_offsets = cumulative[self.offsets]
+        return Coverage.from_arrays(
+            self.cells[selected],
+            filtered_offsets,
+            self.resolution,
+        )
 
 
 @dataclass(frozen=True, eq=False, init=False, slots=True)
-class OccupancySummary:
-    """Read-only sparse run and merged-gap statistics for coverage sources."""
+class OccupancyRuns:
+    """Read-only cell-major ordinal occupancy runs.
 
-    cells: npt.NDArray[np.uint64]
-    run_counts: npt.NDArray[np.uint64]
-    merged_gap_steps_sum: npt.NDArray[np.uint64]
-    merged_gap_counts: npt.NDArray[np.uint64]
+    For cell ``i``, ``starts[offsets[i]:offsets[i + 1]]`` and the matching
+    ``stops`` form maximal half-open segment intervals ``[start, stop)``.
+    """
+
+    cells: npt.NDArray[np.int64]
+    offsets: npt.NDArray[np.int64]
+    starts: npt.NDArray[np.int64]
+    stops: npt.NDArray[np.int64]
     resolution: int
     segment_count: int
+    minimum_sources: int
+    source_count: int
 
     def __init__(self, *_args: object, **_kwargs: object) -> None:
-        raise TypeError("OccupancySummary values are constructed by Polypix.")
+        raise TypeError("OccupancyRuns values are constructed by Polypix.")
 
     @classmethod
     def _from_native(
         cls,
         cells: npt.NDArray[np.uint64],
-        run_counts: npt.NDArray[np.uint64],
-        merged_gap_steps_sum: npt.NDArray[np.uint64],
-        merged_gap_counts: npt.NDArray[np.uint64],
+        offsets: npt.NDArray[np.uint64],
+        starts: npt.NDArray[np.uint64],
+        stops: npt.NDArray[np.uint64],
         resolution: int,
         segment_count: int,
-    ) -> OccupancySummary:
+        minimum_sources: int,
+        source_count: int,
+    ) -> OccupancyRuns:
         result = object.__new__(cls)
         for name, array in (
             ("cells", cells),
-            ("run_counts", run_counts),
-            ("merged_gap_steps_sum", merged_gap_steps_sum),
-            ("merged_gap_counts", merged_gap_counts),
+            ("offsets", offsets),
+            ("starts", starts),
+            ("stops", stops),
         ):
-            object.__setattr__(result, name, array)
+            object.__setattr__(result, name, _signed_view(array))
         object.__setattr__(result, "resolution", resolution)
         object.__setattr__(result, "segment_count", segment_count)
+        object.__setattr__(result, "minimum_sources", minimum_sources)
+        object.__setattr__(result, "source_count", source_count)
         return result
 
     def __len__(self) -> int:
-        """Return the number of observed cells in the sparse summary."""
+        """Return the number of cells having at least one qualifying run."""
         return self.cells.size
 
     @property
-    def mean_merged_gap_steps(self) -> npt.NDArray[np.float64]:
-        """Mean uncovered steps between merged occupancy windows per cell."""
-        mean = np.full(self.cells.size, np.nan, dtype=np.float64)
-        measured = self.merged_gap_counts > 0
-        np.divide(
-            self.merged_gap_steps_sum,
-            self.merged_gap_counts,
-            out=mean,
-            where=measured,
-        )
-        return mean
+    def run_counts(self) -> npt.NDArray[np.int64]:
+        """Number of qualifying runs for each cell."""
+        return np.diff(self.offsets)
 
 
 def _as_resolution(value: int) -> int:
@@ -175,6 +219,12 @@ def _as_resolution(value: int) -> int:
     if resolution < 0 or resolution > _MAX_RESOLUTION:
         raise ValueError(f"resolution must be between 0 and {_MAX_RESOLUTION}.")
     return resolution
+
+
+def cell_count(resolution: int) -> int:
+    """Return the number of fixed-resolution HEALPix cells."""
+    resolved = _as_resolution(resolution)
+    return 12 * (1 << (2 * resolved))
 
 
 def _as_threads(value: int | None) -> int | None:
@@ -223,6 +273,8 @@ def _as_uint64_vector(
     if np.issubdtype(array.dtype, np.signedinteger):
         if np.any(array < 0):
             raise ValueError(f"{name} must contain non-negative integers.")
+        if array.dtype == np.dtype(np.int64) and array.flags.c_contiguous:
+            return array.view(np.uint64)
         return np.ascontiguousarray(array.astype(np.uint64, copy=False))
     if array.dtype == np.dtype("O"):
         integers = [_as_uint64_scalar(value, name) for value in array.tolist()]
@@ -230,16 +282,25 @@ def _as_uint64_vector(
     raise TypeError(f"{name} must contain integers.")
 
 
-def _owned_uint64_vector(
+def _owned_int64_vector(
     values: Sequence[int] | npt.NDArray[np.integer[Any]],
     name: str,
-) -> npt.NDArray[np.uint64]:
-    """Return an owned one-dimensional uint64 copy for a public result object."""
+) -> npt.NDArray[np.int64]:
+    """Return an owned one-dimensional int64 copy for a public result object."""
     array = np.asarray(values)
     if array.ndim != 1:
         raise ValueError(f"{name} must be a one-dimensional integer array.")
     converted = _as_uint64_vector(array, name)
-    return np.array(converted, dtype=np.uint64, order="C", copy=True)
+    if np.any(converted > np.iinfo(np.int64).max):
+        raise OverflowError(f"{name} value is out of range for int64.")
+    return np.array(converted, dtype=np.int64, order="C", copy=True)
+
+
+def _signed_view(
+    values: npt.NDArray[np.uint64],
+) -> npt.NDArray[np.int64]:
+    """Expose trusted non-negative native indices as a zero-copy signed view."""
+    return values.view(np.int64)
 
 
 def _freeze_array(array: np.ndarray) -> None:
@@ -286,70 +347,91 @@ def _as_cap_centers(values: object) -> np.ndarray:
 def _as_cap_radii(values: object, count: int) -> np.ndarray:
     radii = _as_float_array(values, "radii_rad")
     if radii.ndim == 0:
-        return np.full(count, radii.item(), dtype=np.float64)
+        radius = float(radii.item())
+        if not np.isfinite(radius) or radius < 0.0 or radius > np.pi:
+            raise ValueError("radii_rad must be finite and between zero and pi.")
+        return np.full(count, radius, dtype=np.float64)
     if radii.ndim != 1 or radii.shape[0] != count:
         raise ValueError("radii_rad must be a scalar or contain one radius per center.")
     return radii
 
 
-def _dense_footprints(array: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
+def _dense_polygons(array: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
     if array.ndim == 1 and array.size == 0:
         return np.empty((0, 3), dtype=np.float64), np.zeros(1, dtype=np.uint64)
     if array.ndim == 2 and array.shape[1] == 3:
         return array, np.asarray([0, array.shape[0]], dtype=np.uint64)
     if array.ndim == 3 and array.shape[2] == 3:
-        footprint_count, vertex_count, _ = array.shape
-        vertices = np.ascontiguousarray(
-            array.reshape(footprint_count * vertex_count, 3)
-        )
+        polygon_count, vertex_count, _ = array.shape
+        vertices = np.ascontiguousarray(array.reshape(polygon_count * vertex_count, 3))
         if vertex_count == 0:
-            offsets = np.zeros(footprint_count + 1, dtype=np.uint64)
+            offsets = np.zeros(polygon_count + 1, dtype=np.uint64)
         else:
             offsets = np.arange(0, vertices.shape[0] + 1, vertex_count, dtype=np.uint64)
         return vertices, offsets
     return None
 
 
-def _require_dense_footprints(values: object) -> tuple[np.ndarray, np.ndarray]:
-    dense = _dense_footprints(_as_float_array(values, "footprints_xyz"))
+def _require_dense_polygons(values: object) -> tuple[np.ndarray, np.ndarray]:
+    dense = _dense_polygons(_as_float_array(values, "polygons_xyz"))
     if dense is None:
-        raise ValueError(_FOOTPRINT_SHAPE_ERROR)
+        raise ValueError(_POLYGON_SHAPE_ERROR)
     return dense
 
 
-def _ragged_footprints(values: Sequence[object]) -> tuple[np.ndarray, np.ndarray]:
-    footprints = [
-        _as_float_matrix(footprint, 3, f"footprints_xyz[{index}]")
-        for index, footprint in enumerate(values)
+def _ragged_polygons(values: Sequence[object]) -> tuple[np.ndarray, np.ndarray]:
+    polygons = [
+        _as_float_matrix(polygon, 3, f"polygons_xyz[{index}]")
+        for index, polygon in enumerate(values)
     ]
-    counts = np.asarray(
-        [footprint.shape[0] for footprint in footprints], dtype=np.uint64
-    )
+    counts = np.asarray([polygon.shape[0] for polygon in polygons], dtype=np.uint64)
     offsets = np.concatenate(
         (np.zeros(1, dtype=np.uint64), np.cumsum(counts, dtype=np.uint64))
     )
-    vertices = np.ascontiguousarray(np.concatenate(footprints, axis=0))
+    vertices = np.ascontiguousarray(np.concatenate(polygons, axis=0))
     return vertices, offsets
 
 
-def _as_footprints(
+def _as_polygons(
     values: object,
 ) -> tuple[np.ndarray, np.ndarray]:
     if isinstance(values, np.ndarray):
-        return _require_dense_footprints(values)
+        return _require_dense_polygons(values)
     if not isinstance(values, Sequence):
-        return _require_dense_footprints(values)
+        return _require_dense_polygons(values)
     if len(values) == 0:
         return np.empty((0, 3), dtype=np.float64), np.zeros(1, dtype=np.uint64)
     if np.asarray(values[0]).ndim == 2:
         try:
             dense = np.asarray(values)
         except ValueError:
-            return _ragged_footprints(values)
+            return _ragged_polygons(values)
         if dense.dtype != object:
-            return _require_dense_footprints(dense)
-        return _ragged_footprints(values)
-    return _require_dense_footprints(values)
+            return _require_dense_polygons(dense)
+        return _ragged_polygons(values)
+    return _require_dense_polygons(values)
+
+
+def _as_packed_polygons(
+    values: object,
+    vertex_offsets: Sequence[int] | npt.NDArray[np.integer[Any]],
+) -> tuple[np.ndarray, np.ndarray]:
+    vertices = _as_float_matrix(values, 3, "polygons_xyz")
+    raw_offsets = np.asarray(vertex_offsets)
+    if raw_offsets.ndim != 1:
+        raise ValueError("vertex_offsets must be a one-dimensional integer array.")
+    offsets = _as_uint64_vector(raw_offsets, "vertex_offsets")
+    if offsets.size == 0:
+        raise ValueError("vertex_offsets must contain at least the initial zero.")
+    if offsets[0] != 0:
+        raise ValueError("vertex_offsets must start at zero.")
+    if np.any(offsets[1:] < offsets[:-1]):
+        raise ValueError("vertex_offsets must be monotonically non-decreasing.")
+    if offsets[-1] != vertices.shape[0]:
+        raise ValueError(
+            "vertex_offsets must end at the number of packed polygon vertices."
+        )
+    return vertices, offsets
 
 
 def _coverage(payload: tuple[np.ndarray, np.ndarray], resolution: int) -> Coverage:
@@ -365,7 +447,7 @@ def _cover_xyz(
     vertices: np.ndarray,
     offsets: np.ndarray,
     resolution: int,
-    candidate_cells: Sequence[int] | np.ndarray | None,
+    candidate_cells: int | Sequence[int] | np.ndarray | None,
     threads: int | None,
 ) -> Coverage:
     requested_threads = _as_threads(threads)
@@ -380,25 +462,28 @@ def _cover_xyz(
     )
 
 
-def cover_footprint(
-    footprints_xyz: Sequence[Sequence[float]]
+def cover_convex_polygon(
+    polygons_xyz: Sequence[Sequence[float]]
     | Sequence[Sequence[Sequence[float]]]
     | npt.ArrayLike,
     resolution: int,
     *,
-    candidate_cells: Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
+    vertex_offsets: Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
+    candidate_cells: int | Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
     threads: int | None = None,
 ) -> Coverage:
-    """Cover convex spherical footprints by HEALPix cell-center inclusion.
+    """Cover convex spherical polygons by HEALPix cell-center inclusion.
 
     Parameters
     ----------
-    footprints_xyz
-        One ``(vertices, 3)`` footprint, a dense batch, or a ragged sequence.
+    polygons_xyz
+        One ``(vertices, 3)`` polygon, a dense batch, or a ragged sequence.
         Finite nonzero vectors are normalized; edges follow minor great-circle
         arcs.
     resolution
         HEALPix resolution from 0 through 29.
+    vertex_offsets
+        Optional boundaries for a packed ``(vertices, 3)`` ragged batch.
     candidate_cells
         Optional RING indices restricting which cell centers are tested.
     threads
@@ -420,7 +505,11 @@ def cover_footprint(
         If the explicit segmented result cannot be materialized.
     """
     resolved = _as_resolution(resolution)
-    vertices, offsets = _as_footprints(footprints_xyz)
+    vertices, offsets = (
+        _as_polygons(polygons_xyz)
+        if vertex_offsets is None
+        else _as_packed_polygons(polygons_xyz, vertex_offsets)
+    )
     return _cover_xyz(vertices, offsets, resolved, candidate_cells, threads)
 
 
@@ -429,7 +518,7 @@ def cover_cap(
     radii_rad: float | Sequence[float] | npt.ArrayLike,
     resolution: int,
     *,
-    candidate_cells: Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
+    candidate_cells: int | Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
     threads: int | None = None,
 ) -> Coverage:
     """Cover exact spherical caps by HEALPix cell-center inclusion.
@@ -439,7 +528,7 @@ def cover_cap(
     ``(caps,)`` array with one radius per center; length-one arrays are not
     broadcast. Radii must be finite and lie between zero and pi radians. Input
     vectors are normalized internally. Other arguments and the segmented
-    result follow :func:`cover_footprint`.
+    result follow :func:`cover_convex_polygon`.
     """
     resolved = _as_resolution(resolution)
     centers = _as_cap_centers(centers_xyz)
@@ -488,12 +577,83 @@ def count_caps_per_cell(
     )
 
 
+def _coverage_cells(
+    values: int | Sequence[int] | npt.NDArray[np.integer[Any]],
+    resolution: int,
+) -> npt.NDArray[np.uint64]:
+    cells = _as_uint64_vector(values, "cells")
+    if np.any(cells >= cell_count(resolution)):
+        raise ValueError(
+            f"cells must contain valid RING indices at resolution {resolution}."
+        )
+    return cells
+
+
+def count_coverage_per_cell(
+    coverage: Coverage,
+    *,
+    cells: int | Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
+) -> npt.NDArray[np.int64]:
+    """Count how many coverage segments contain each cell."""
+    if not isinstance(coverage, Coverage):
+        raise TypeError("coverage must be a Coverage value.")
+    requested = None if cells is None else _coverage_cells(cells, coverage.resolution)
+    if requested is not None and requested.size == 0:
+        return np.empty(0, dtype=np.int64)
+    return _count_coverage_per_cell(
+        _as_uint64_vector(coverage.cells, "coverage.cells"),
+        coverage.resolution,
+        requested,
+    )
+
+
+def _as_segment_values(
+    values: object,
+    segment_count: int,
+) -> npt.NDArray[np.float64]:
+    array = _as_float_array(values, "values")
+    if array.ndim == 0:
+        value = float(array.item())
+        if not np.isfinite(value):
+            raise ValueError("values must contain only finite values.")
+        return np.full(segment_count, value, dtype=np.float64)
+    if array.ndim != 1 or array.size != segment_count:
+        raise ValueError(
+            "values must be a scalar or contain one value per coverage segment."
+        )
+    return cast(npt.NDArray[np.float64], array)
+
+
+def sum_coverage_per_cell(
+    coverage: Coverage,
+    values: float | Sequence[float] | npt.ArrayLike,
+    *,
+    cells: int | Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
+) -> npt.NDArray[np.float64]:
+    """Sum constant per-segment values into covered cells."""
+    if not isinstance(coverage, Coverage):
+        raise TypeError("coverage must be a Coverage value.")
+    segment_values = _as_segment_values(values, coverage.segment_count)
+    requested = None if cells is None else _coverage_cells(cells, coverage.resolution)
+    if requested is not None and requested.size == 0:
+        if np.any(~np.isfinite(segment_values)):
+            raise ValueError("values must contain only finite values.")
+        return np.empty(0, dtype=np.float64)
+    return _sum_coverage_per_cell(
+        _as_uint64_vector(coverage.cells, "coverage.cells"),
+        _as_uint64_vector(coverage.offsets, "coverage.offsets"),
+        segment_values,
+        coverage.resolution,
+        requested,
+    )
+
+
 def cover_sweep(
     left_edge_xyz: Sequence[Sequence[float]] | npt.ArrayLike,
     right_edge_xyz: Sequence[Sequence[float]] | npt.ArrayLike,
     resolution: int,
     *,
-    candidate_cells: Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
+    candidate_cells: int | Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
     threads: int | None = None,
 ) -> Coverage:
     """Cover the quadrilateral segments between two sampled spherical edges.
@@ -501,7 +661,7 @@ def cover_sweep(
     Each output segment covers ``[left[i], right[i], right[i+1], left[i+1]]``.
     Repeated paired samples create a zero-area segment and are rejected.
     Inputs, resolution, candidates, threading, return value, and errors follow
-    :func:`cover_footprint`.
+    :func:`cover_convex_polygon`.
     """
     resolved = _as_resolution(resolution)
     left = _as_float_matrix(left_edge_xyz, 3, "left_edge_xyz")
@@ -510,9 +670,6 @@ def cover_sweep(
         raise ValueError(
             "left_edge_xyz and right_edge_xyz must contain the same number of samples."
         )
-    if left.shape[0] < 2:
-        raise ValueError("cover_sweep() requires at least two edge samples.")
-
     requested_threads = _as_threads(threads)
     candidates = (
         None
@@ -525,22 +682,33 @@ def cover_sweep(
     )
 
 
-def summarize_occupancy(
+def _as_minimum_sources(value: int) -> int:
+    if isinstance(value, (bool, np.bool_)):
+        raise TypeError("minimum_sources must be a positive integer, not bool.")
+    try:
+        minimum_sources = operator.index(value)
+    except TypeError as exc:
+        raise TypeError("minimum_sources must be a positive integer.") from exc
+    if minimum_sources < 1:
+        raise ValueError("minimum_sources must be a positive integer.")
+    return minimum_sources
+
+
+def occupancy_runs(
     sources: Coverage | Sequence[Coverage],
-) -> OccupancySummary:
-    """Summarize source-local runs and merged occupancy gaps.
+    *,
+    minimum_sources: int = 1,
+) -> OccupancyRuns:
+    """Return maximal cell-major runs over aligned coverage segments.
 
-    Each input ``Coverage`` represents one independent source whose segments
-    are aligned, ordered occupancy intervals or bins. A run is maximal over
-    consecutive segments for one source and cell. Merged gaps are uncovered
-    bins between windows after unioning all sources; leading and trailing bins
-    outside the observed windows are excluded. Hits in bins zero and two have
-    a merged gap of one.
-
-    The result contains only observed cells in ascending RING order. Gap values
-    are expressed in ordinal steps, so callers retain ownership of cadence and
-    physical time units.
+    Each sequence entry is counted as one source. A returned half-open run
+    contains consecutive segments where at least ``minimum_sources`` entries
+    cover the cell. Callers must supply unique sources with identical,
+    temporally adjacent bin boundaries when those semantics matter. The result
+    remains ordinal; callers decide how boundaries map to physical time and how
+    leading, trailing, or cyclic gaps should be treated.
     """
+    threshold = _as_minimum_sources(minimum_sources)
     normalized_sources: tuple[Coverage, ...]
     if isinstance(sources, Coverage):
         normalized_sources = (sources,)
@@ -549,16 +717,18 @@ def summarize_occupancy(
     else:
         raise TypeError("sources must be a Coverage or a sequence of Coverage values.")
     if not normalized_sources:
-        raise ValueError("summarize_occupancy() requires at least one coverage source.")
+        raise ValueError("occupancy_runs() requires at least one coverage source.")
     if not all(isinstance(source, Coverage) for source in normalized_sources):
         raise TypeError("sources must contain only Coverage values.")
 
-    resolutions = tuple(
-        _as_resolution(source.resolution) for source in normalized_sources
-    )
-    resolution = resolutions[0]
-    if any(source_resolution != resolution for source_resolution in resolutions[1:]):
+    resolution = normalized_sources[0].resolution
+    if any(source.resolution != resolution for source in normalized_sources[1:]):
         raise ValueError("all coverage sources must use the same resolution.")
+    segment_count = normalized_sources[0].segment_count
+    if any(source.segment_count != segment_count for source in normalized_sources[1:]):
+        raise ValueError(
+            "all coverage sources must contain the same number of segments."
+        )
 
     cell_arrays = [
         _as_uint64_vector(source.cells, f"sources[{index}].cells")
@@ -568,29 +738,26 @@ def summarize_occupancy(
         _as_uint64_vector(source.offsets, f"sources[{index}].offsets")
         for index, source in enumerate(normalized_sources)
     ]
-    segment_count = offset_arrays[0].size - 1
-    if any(offsets.size - 1 != segment_count for offsets in offset_arrays[1:]):
-        raise ValueError(
-            "all coverage sources must contain the same number of segments."
-        )
-    (
-        cells,
-        run_counts,
-        merged_gap_steps_sum,
-        merged_gap_counts,
-        native_segment_count,
-    ) = _summarize_occupancy(cell_arrays, offset_arrays, resolution)
-    return OccupancySummary._from_native(
+    native_threshold = min(threshold, len(normalized_sources) + 1)
+    cells, offsets, starts, stops = _occupancy_runs(
+        cell_arrays,
+        offset_arrays,
+        resolution,
+        native_threshold,
+    )
+    return OccupancyRuns._from_native(
         cells=cells,
-        run_counts=run_counts,
-        merged_gap_steps_sum=merged_gap_steps_sum,
-        merged_gap_counts=merged_gap_counts,
+        offsets=offsets,
+        starts=starts,
+        stops=stops,
         resolution=resolution,
-        segment_count=native_segment_count,
+        segment_count=segment_count,
+        minimum_sources=threshold,
+        source_count=len(normalized_sources),
     )
 
 
-def centers(
+def cell_centers(
     cells: int | Sequence[int] | npt.NDArray[np.integer[Any]],
     resolution: int,
 ) -> npt.NDArray[np.float64]:
@@ -607,7 +774,7 @@ def centers(
 def cell_at(
     vectors_xyz: Sequence[float] | Sequence[Sequence[float]] | npt.ArrayLike,
     resolution: int,
-) -> npt.NDArray[np.uint64]:
+) -> npt.NDArray[np.int64]:
     """Return the HEALPix RING cell containing each Cartesian direction.
 
     ``vectors_xyz`` accepts one ``(3,)`` vector or a ``(vectors, 3)`` batch.
@@ -621,17 +788,17 @@ def cell_at(
         vectors = vectors.reshape(1, 3)
     elif vectors.ndim != 2 or vectors.shape[1] != 3:
         raise ValueError("vectors_xyz must have shape (3,) or (vectors, 3).")
-    return _cell_at(vectors, resolved)
+    return _signed_view(_cell_at(vectors, resolved))
 
 
-def corners(
+def cell_corners(
     cells: int | Sequence[int] | npt.NDArray[np.integer[Any]],
     resolution: int,
 ) -> npt.NDArray[np.float64]:
     """Return four unit-vector corners for HEALPix RING indices.
 
     The result has shape ``(cells, 4, 3)`` in boundary traversal order.
-    Validation follows :func:`centers`.
+    Validation follows :func:`cell_centers`.
     """
     resolved = _as_resolution(resolution)
     ring = _as_uint64_vector(cells, "cells")
@@ -640,14 +807,17 @@ def corners(
 
 __all__ = [
     "Coverage",
-    "OccupancySummary",
+    "OccupancyRuns",
     "__version__",
     "cell_at",
-    "corners",
-    "centers",
+    "cell_centers",
+    "cell_corners",
+    "cell_count",
     "count_caps_per_cell",
+    "count_coverage_per_cell",
     "cover_cap",
-    "cover_footprint",
+    "cover_convex_polygon",
     "cover_sweep",
-    "summarize_occupancy",
+    "occupancy_runs",
+    "sum_coverage_per_cell",
 ]

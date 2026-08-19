@@ -1377,7 +1377,7 @@ fn strip_parallel_work(
     threads: Option<usize>,
 ) -> usize {
     accumulated_scan_work(segment_count, threads, |index| {
-        estimated_cap_cells(&strip_quad(left, right, index), resolution)
+        estimated_cap_cells(&sweep_quad(left, right, index), resolution)
     })
 }
 
@@ -1956,7 +1956,7 @@ pub(crate) fn count_caps_per_cell(
     )?
 }
 
-fn strip_quad(left: &[f64], right: &[f64], index: usize) -> [f64; 12] {
+fn sweep_quad(left: &[f64], right: &[f64], index: usize) -> [f64; 12] {
     let current = index * 3;
     let next = (index + 1) * 3;
     [
@@ -1975,7 +1975,7 @@ fn strip_quad(left: &[f64], right: &[f64], index: usize) -> [f64; 12] {
     ]
 }
 
-fn prepare_strip_footprint(
+fn prepare_sweep_footprint(
     left: &[Vec3],
     right: &[Vec3],
     index: usize,
@@ -1985,10 +1985,10 @@ fn prepare_strip_footprint(
         true,
     )
     .map(PreparedFootprint::Quad)
-    .map_err(|error| format!("strip segment {index}: {error}"))
+    .map_err(|error| format!("sweep segment {index}: {error}"))
 }
 
-fn compute_strip_chunk(
+fn compute_sweep_chunk(
     left: &[Vec3],
     right: &[Vec3],
     range: Range<usize>,
@@ -2014,7 +2014,7 @@ fn compute_strip_chunk(
     let mut coverage = Coverage { cells, offsets };
     coverage.offsets.push(0);
     for index in range {
-        let footprint = prepare_strip_footprint(left, right, index)?;
+        let footprint = prepare_sweep_footprint(left, right, index)?;
         footprint.cover(resolution, &mut coverage.cells)?;
         coverage.offsets.push(coverage.cells.len() as u64);
     }
@@ -2033,8 +2033,6 @@ pub(crate) fn cover_sweep(
     debug_assert!(right.len().is_multiple_of(3));
     debug_assert_eq!(left.len(), right.len());
     let sample_count = left.len() / 3;
-    debug_assert!(sample_count >= 2);
-    let segment_count = sample_count - 1;
     let candidates = candidate_cells(raw_candidates, resolution)?;
     let normalize_samples = |values: &[f64], name: &str| {
         values
@@ -2048,13 +2046,20 @@ pub(crate) fn cover_sweep(
     };
     let normalized_left = normalize_samples(left, "left_edge_xyz")?;
     let normalized_right = normalize_samples(right, "right_edge_xyz")?;
+    if sample_count < 2 {
+        return Ok(Coverage {
+            cells: Vec::new(),
+            offsets: vec![0],
+        });
+    }
+    let segment_count = sample_count - 1;
     if let Some(candidates) = candidates.as_deref() {
         return compute_candidate_coverage(
             segment_count,
             candidates,
             resolution,
             threads,
-            |index| prepare_strip_footprint(&normalized_left, &normalized_right, index),
+            |index| prepare_sweep_footprint(&normalized_left, &normalized_right, index),
         );
     }
     let parallel_work = strip_parallel_work(left, right, segment_count, resolution, threads);
@@ -2062,7 +2067,7 @@ pub(crate) fn cover_sweep(
         segment_count,
         parallel_work >= SCAN_PARALLEL_MIN_WORK,
         threads,
-        |range| compute_strip_chunk(&normalized_left, &normalized_right, range, resolution),
+        |range| compute_sweep_chunk(&normalized_left, &normalized_right, range, resolution),
     )
 }
 

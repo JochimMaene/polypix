@@ -17,7 +17,7 @@ Four common geometry operations cover most uses:
 | You have | Call | You get back |
 | --- | --- | --- |
 | Visibility circles, elevation-mask footprints, instantaneous fields of view | `cover_cap()` | the cells inside each circle |
-| Scenes, frames, convex sensor footprints | `cover_footprint()` | the cells inside each polygon |
+| Scenes, frames, convex sensor footprints | `cover_convex_polygon()` | the cells inside each polygon |
 | The swath a sensor paints as it moves | `cover_sweep()` | the cells under each interval of the swath |
 | Individual pointings, ground tracks, sample points | `cell_at()` | the one cell each direction falls in |
 
@@ -76,7 +76,7 @@ Here are two caps of different sizes, given in degrees and converted:
 >>> cap_coverage = px.cover_cap(
 ...     unit_vector(cap_lon, cap_lat), np.radians(cap_radius_deg), resolution=4
 ... )
->>> cap_coverage.counts
+>>> cap_coverage.segment_sizes
 array([9, 4])
 ```
 
@@ -85,7 +85,7 @@ region:
 
 ```{doctest}
 >>> cap_coverage[0]
-array([1374, 1375, 1438, 1439, 1502, 1503, 1566, 1567, 1631], dtype=uint64)
+array([1374, 1375, 1438, 1439, 1502, 1503, 1566, 1567, 1631])
 ```
 
 Every region operation follows the same rule: a cell is selected when its center
@@ -109,18 +109,18 @@ adjacent vertices are joined by the shorter great-circle arc:
 >>> scene_lon = [-9.0, 7.0, 11.0, -2.0]
 >>> scene_lat = [-6.0, -8.0, 4.0, 8.0]
 
->>> scene_coverage = px.cover_footprint(
+>>> scene_coverage = px.cover_convex_polygon(
 ...     unit_vector(scene_lon, scene_lat), resolution=4
 ... )
->>> scene_coverage.counts
+>>> scene_coverage.segment_sizes
 array([16])
 >>> scene_coverage[0][:6]
-array([1312, 1376, 1377, 1439, 1440, 1441], dtype=uint64)
+array([1312, 1376, 1377, 1439, 1440, 1441])
 ```
 
-One footprint produces one segment in the result.
+One polygon produces one segment in the result.
 
-```{figure} assets/generated/cover-footprint.svg
+```{figure} assets/generated/cover-convex-polygon.svg
 :alt: A convex polygon and the grid cells it covers.
 :width: 100%
 :align: center
@@ -148,7 +148,7 @@ edges 3.2° either side of it:
 >>> swath_coverage = px.cover_sweep(left_edge, right_edge, resolution=4)
 >>> len(swath_coverage)
 6
->>> swath_coverage.counts
+>>> swath_coverage.segment_sizes
 array([2, 2, 2, 4, 2, 2])
 ```
 
@@ -156,7 +156,7 @@ Seven samples give six intervals, with one result segment per interval:
 
 ```{doctest}
 >>> swath_coverage[3]
-array([1376, 1440, 1504, 1568], dtype=uint64)
+array([1376, 1440, 1504, 1568])
 ```
 
 ```{figure} assets/generated/cover-sweep.svg
@@ -181,14 +181,14 @@ coordinates, individual pointings — use `cell_at()`:
 
 >>> point_cells = px.cell_at(unit_vector(point_lon, point_lat), resolution=4)
 >>> point_cells
-array([1374, 1695, 1441, 1762], dtype=uint64)
+array([1374, 1695, 1441, 1762])
 ```
 
-`centers()` goes back the other way, but watch what "back" means. These are the
+`cell_centers()` goes back the other way, but watch what "back" means. These are the
 cells' own centers, not the directions you started with:
 
 ```{doctest}
->>> point_centers = px.centers(point_cells, resolution=4)
+>>> point_centers = px.cell_centers(point_cells, resolution=4)
 >>> np.round(to_lonlat(point_centers), 2)
 array([[-11.25,   7.18],
        [ -2.81,  -4.78],
@@ -200,7 +200,7 @@ Only cell centers round-trip exactly:
 
 ```{doctest}
 >>> px.cell_at(point_centers, resolution=4)
-array([1374, 1695, 1441, 1762], dtype=uint64)
+array([1374, 1695, 1441, 1762])
 ```
 
 ```{figure} assets/generated/cell-at.svg
@@ -208,21 +208,19 @@ array([1374, 1695, 1441, 1762], dtype=uint64)
 :width: 100%
 :align: center
 
-`cell_at()` gives you the cell a direction falls in. `centers()` then gives that cell's center, which is the arrow head, not where you started.
+`cell_at()` gives you the cell a direction falls in. `cell_centers()` then gives that cell's center, which is the arrow head, not where you started.
 ```
 
 ## Turn cells into a map
 
-Cell IDs are integers in `[0, 12 * 4 ** resolution)`, so a global coverage map
-can be built with `bincount`:
+Cell IDs are integers in `[0, cell_count(resolution))`. Reduce the segmented
+membership from any geometry into a global map with one operation:
 
 ```{doctest}
 >>> resolution = 4
 >>> coverage = cap_coverage
->>> cell_count = 12 * 4**resolution
->>> hits = np.bincount(
-...     coverage.cells.astype(np.intp, copy=False), minlength=cell_count
-... )
+>>> cell_count = px.cell_count(resolution)
+>>> hits = px.count_coverage_per_cell(coverage)
 >>> hits.shape
 (3072,)
 ```
@@ -232,7 +230,7 @@ cell centers to longitude and latitude before plotting:
 
 ```{doctest}
 >>> occupied = np.flatnonzero(hits)
->>> lonlat = to_lonlat(px.centers(occupied, resolution))
+>>> lonlat = to_lonlat(px.cell_centers(occupied, resolution))
 >>> lonlat.shape == (occupied.size, 2)
 True
 ```
@@ -249,6 +247,32 @@ end.
 ```
 
 Equal-area cells make these counts directly comparable without area weighting.
+
+Use `sum_coverage_per_cell()` when each segment contributes an exposure,
+duration, probability, or capacity instead of one count. The native reducer
+reads `Coverage.offsets` directly rather than repeating one value per hit.
+
+## Preserve occupied-bin runs
+
+For revisit analysis, keep complete ordinal runs and apply time afterward:
+
+```{doctest}
+>>> runs = px.occupancy_runs(swath_coverage)
+>>> bool(np.all(runs.starts < runs.stops))
+True
+>>> time_edges_s = np.arange(swath_coverage.segment_count + 1) * 60
+>>> run_starts_s = time_edges_s[runs.starts]
+>>> run_stops_s = time_edges_s[runs.stops]
+```
+
+With multiple aligned source coverages, pass the sequence together. Matching
+segment indices must have identical time boundaries, and consecutive bins must
+be temporally adjacent. Set `minimum_sources=2` for simultaneous two-entry
+occupancy; source uniqueness is your responsibility. Polypix leaves maximum,
+percentile, leading/trailing, and cyclic gap definitions to the analysis layer
+because they are policy choices, not geometry. For sweeps, the result is an
+occupied-bin approximation whose physical boundary precision is limited by the
+sampling cadence.
 
 ## Count overlaps without building membership
 
@@ -290,7 +314,7 @@ includes and excludes.
 ## Where to go next
 
 - [How it works](concepts.md) explains resolution, center sampling, segmented
-  results, occupancy summaries, and handing cell IDs to other HEALPix libraries.
+  results, occupancy runs, and handing cell IDs to other HEALPix libraries.
 - [Performance and memory](performance.md) covers sizing results, sparse
   queries, batching, and threads.
 - [API reference](api.md) is the complete call contract.
