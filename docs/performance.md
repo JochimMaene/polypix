@@ -22,6 +22,7 @@ Public output storage, ignoring temporary native chunks:
 | `cell_corners()` | 96 bytes per cell |
 | Dense cap counts | `8 * cell_count` bytes |
 | Sparse `OccupancyRuns` | `8 * (2 * represented_cell_count + 2 * run_count + 1)` bytes |
+| `OccupancyStats` | `48 * represented_cell_count` bytes |
 
 Parallel coverage builds ordered worker chunks and merges them, so peak native
 memory can reach roughly twice the final `cells` array. If allocation fails you
@@ -42,15 +43,30 @@ Concatenating all chunks recreates the original memory requirement.
 | What you need | Use | What you avoid |
 | --- | --- | --- |
 | Membership per region | `cover_cap()`, `cover_convex_polygon()`, `cover_sweep()` | nothing; membership is the point |
-| Counts from existing membership | `count_coverage_per_cell()` | sorting or Python accumulation |
-| Weighted values from existing membership | `sum_coverage_per_cell()` | one repeated value per hit |
-| Caps per cell | `count_caps_per_cell()` | one cell ID per cap-cell hit, plus a `bincount()` |
-| Complete occupied-bin runs | `occupancy_runs()` | expanding and sorting every hit as an event |
+| Counts or weighted values per cell | `into=Count()`, `into=Sum(values)` | sorting, Python accumulation, one repeated value per hit |
+| Caps per cell | `cover_cap(..., into=Count())` | one cell ID per cap-cell hit, plus a `bincount()` |
+| Complete occupied-bin runs | `occupancy()` | expanding and sorting every hit as an event |
+| Per-cell counts and internal gaps | `occupancy(..., into=Stats())` | materializing every run to reduce it away |
 
-Generic reductions and occupancy runs still consume a `Coverage`, so geometry
-membership is materialized. They fuse downstream accumulation, not geometry.
-The cap counter remains a separate fast path because it skips that materialized
-membership entirely. The
+## Choosing a dense or selected reduction
+
+`Count()` and `Sum(values)` return a dense fixed-grid array when their
+`cells` is `None`. That array is the requested result, so
+its cost follows the resolution rather than the coverage: 384 KiB at resolution
+6, 96 MiB at resolution 10, and 1.5 GiB at resolution 12. Passing `cells`
+returns one value per requested ID instead and never allocates the full grid.
+
+Sparse coverage above resolution 8 should pass `cells`. At or below that the
+dense grid is small, so a `cells` query is served from a dense scratch grid and
+costs about the same as the dense result; above it the query accumulates
+through a hash table instead and keeps memory flat.
+
+A reducer names the result, not the algorithm. Polypix fuses the accumulation
+into the geometry kernel where that is faster and materializes membership
+otherwise, returning the same array either way. Today
+`cover_cap(..., into=Count())` is the case that fuses, because the cap kernel
+accumulates private RING spans and never allocates cap-cell membership; polygon
+and sweep reducers materialize first. The
 [architecture decisions](decisions.md) carry the benchmark evidence.
 
 `OccupancyRuns` is lossless, so it is not guaranteed to be smaller than its
@@ -59,18 +75,26 @@ use bounded dense state and write the exact cell-major result directly; sparse
 high-resolution grids use a map-backed path rather than allocating by global
 cell count. Size the unavoidable output with the table above.
 
+This is the common case for a scanning constellation: a cell is observed
+briefly and revisited hours later, so the run count approaches the hit count and
+runs compress nothing. When the runs only feed per-cell counts and complete
+internal gaps, `occupancy(..., into=Stats())` accumulates them in one pass and
+allocates by represented cell instead, which is smaller by orders of magnitude
+on that shape of workload. Reach for the default `Runs()` when the boundaries
+themselves are the answer.
+
 ## Dense counts versus selected cells
 
-Dense `count_caps_per_cell()` consumes analytic RING spans and is often faster
-than evaluating individual query cells:
+A dense `cover_cap(..., into=Count())` consumes analytic RING spans and is
+often faster than evaluating individual query cells:
 
 ```python
-dense = px.count_caps_per_cell(centers_xyz, radii_rad, resolution=8)
-sparse = px.count_caps_per_cell(
+dense = px.cover_cap(centers_xyz, radii_rad, resolution=8, into=px.Count())
+sparse = px.cover_cap(
     centers_xyz,
     radii_rad,
     resolution=20,
-    cells=small_site_cell_list,
+    into=px.Count(cells=small_site_cell_list),
 )
 ```
 

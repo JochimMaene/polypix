@@ -106,30 +106,27 @@ def reduce_coverage(
     if any(coverage.offsets.size - 1 != interval_count for coverage in coverages):
         raise ValueError("all satellite strips must have the same interval count")
 
-    # Preserve every merged occupied-bin run. Physical time and the choice of which gaps
-    # to summarize remain downstream of the ordinal occupancy operation.
+    # Runs are only an intermediate here, so fuse the per-cell statistics and
+    # never materialize run boundaries. Physical time and the choice of which
+    # gaps to summarize remain downstream of the ordinal occupancy operation.
     # --8<-- [start:eo-reduce]
-    runs = px.occupancy_runs(coverages)
+    stats = px.occupancy(coverages, into=px.Stats())
     observations = np.zeros(cell_count, dtype=np.int64)
     gap_counts = np.zeros(cell_count, dtype=np.int64)
     mean_internal_gap_s = np.full(cell_count, np.nan, dtype=np.float64)
     max_internal_gap_s = np.full(cell_count, np.nan, dtype=np.float64)
-    observations[runs.cells] = runs.run_counts
-    observed_gap_counts = runs.run_counts - 1
-    gap_counts[runs.cells] = observed_gap_counts
-    if runs.starts.size:
-        # Adjacent flattened runs belonging to different cells are not gaps.
-        # Pad one zero so reduceat also handles a final cell with one run.
-        gap_steps = np.zeros(runs.starts.size, dtype=np.int64)
-        gap_steps[:-1] = runs.starts[1:] - runs.stops[:-1]
-        gap_steps[runs.offsets[1:-1] - 1] = 0
-        gap_steps_sum = np.add.reduceat(gap_steps, runs.offsets[:-1])
-        max_gap_steps = np.maximum.reduceat(gap_steps, runs.offsets[:-1])
-        measured = observed_gap_counts > 0
-        mean_internal_gap_s[runs.cells[measured]] = (
-            gap_steps_sum[measured] / observed_gap_counts[measured] * cadence_s
-        )
-        max_internal_gap_s[runs.cells[measured]] = max_gap_steps[measured] * cadence_s
+    observations[stats.cells] = stats.run_counts
+    observed_gap_counts = stats.internal_gap_counts
+    gap_counts[stats.cells] = observed_gap_counts
+    measured = observed_gap_counts > 0
+    mean_internal_gap_s[stats.cells[measured]] = (
+        stats.internal_gap_steps_sum[measured]
+        / observed_gap_counts[measured]
+        * cadence_s
+    )
+    max_internal_gap_s[stats.cells[measured]] = (
+        stats.maximum_internal_gap_steps[measured] * cadence_s
+    )
     # --8<-- [end:eo-reduce]
     return observations, mean_internal_gap_s, max_internal_gap_s, gap_counts
 

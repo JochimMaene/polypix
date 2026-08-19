@@ -22,6 +22,7 @@ fn validate_run_sources(
     offset_arrays: &[&[u64]],
     resolution: u8,
     minimum_sources: usize,
+    trusted: bool,
 ) -> Result<usize, String> {
     if minimum_sources == 0 {
         return Err("minimum_sources must be at least 1.".to_owned());
@@ -43,8 +44,19 @@ fn validate_run_sources(
 
     let mut segment_count = None;
     for (source, (&cells, &offsets)) in cell_arrays.iter().zip(offset_arrays).enumerate() {
-        ring::validate_coverage_arrays(cells, offsets, resolution)
-            .map_err(|message| format!("sources[{source}]: {message}"))?;
+        // A `Coverage` validates its arrays once at construction and exposes
+        // them read-only, so its invariants cannot be broken afterwards. Only
+        // caller-supplied raw arrays need the two full per-hit scans here.
+        if trusted {
+            if offsets.is_empty() {
+                return Err(format!(
+                    "sources[{source}]: offsets must contain at least the initial zero."
+                ));
+            }
+        } else {
+            ring::validate_coverage_arrays(cells, offsets, resolution)
+                .map_err(|message| format!("sources[{source}]: {message}"))?;
+        }
         let source_segment_count = offsets.len() - 1;
         if segment_count.is_some_and(|expected| expected != source_segment_count) {
             return Err(
@@ -405,9 +417,15 @@ pub(crate) fn occupancy_runs(
     offset_arrays: &[&[u64]],
     resolution: u8,
     minimum_sources: usize,
+    trusted: bool,
 ) -> NativeResult<OccupancyRuns> {
-    let segment_count =
-        validate_run_sources(cell_arrays, offset_arrays, resolution, minimum_sources)?;
+    let segment_count = validate_run_sources(
+        cell_arrays,
+        offset_arrays,
+        resolution,
+        minimum_sources,
+        trusted,
+    )?;
     if minimum_sources > cell_arrays.len() || segment_count == 0 {
         return Ok(empty_runs());
     }
@@ -463,7 +481,7 @@ mod tests {
         resolution: u8,
         minimum_sources: usize,
     ) -> String {
-        match occupancy_runs(cell_arrays, offset_arrays, resolution, minimum_sources) {
+        match occupancy_runs(cell_arrays, offset_arrays, resolution, minimum_sources, false) {
             Ok(_) => panic!("expected occupancy_runs() to reject the input"),
             Err(error) => error.to_string(),
         }
@@ -559,7 +577,7 @@ mod tests {
         let offsets_b = [0, 0, 1, 2, 4, 5, 6, 6];
 
         let actual =
-            occupancy_runs(&[&cells_a, &cells_b], &[&offsets_a, &offsets_b], 0, 1).unwrap();
+            occupancy_runs(&[&cells_a, &cells_b], &[&offsets_a, &offsets_b], 0, 1, false).unwrap();
 
         assert_runs(actual, &[1, 3], &[0, 1, 3], &[0, 0, 5], &[7, 4, 7]);
     }
@@ -572,7 +590,7 @@ mod tests {
         let offsets_b = [0, 0, 1, 2, 4, 5, 6, 6];
 
         let actual =
-            occupancy_runs(&[&cells_a, &cells_b], &[&offsets_a, &offsets_b], 0, 2).unwrap();
+            occupancy_runs(&[&cells_a, &cells_b], &[&offsets_a, &offsets_b], 0, 2, false).unwrap();
 
         assert_runs(actual, &[1, 3], &[0, 1, 2], &[5, 2], &[6, 4]);
     }
@@ -590,7 +608,7 @@ mod tests {
             let state_length =
                 dense_state_length(6, segment_count, minimum_sources, total_hits).unwrap();
             let implementations = [
-                occupancy_runs(&cell_slices, &offset_slices, 6, minimum_sources).unwrap(),
+                occupancy_runs(&cell_slices, &offset_slices, 6, minimum_sources, false).unwrap(),
                 occupancy_runs_dense(
                     &cell_slices,
                     &offset_slices,
@@ -621,7 +639,7 @@ mod tests {
         let offsets = [0, 1, 2, 3];
 
         assert!(dense_state_length(ring::MAX_RESOLUTION, 3, 1, cells.len()).is_none());
-        let actual = occupancy_runs(&[&cells], &[&offsets], ring::MAX_RESOLUTION, 1).unwrap();
+        let actual = occupancy_runs(&[&cells], &[&offsets], ring::MAX_RESOLUTION, 1, false).unwrap();
 
         assert_runs(actual, &[0, final_cell], &[0, 1, 3], &[1, 0, 2], &[2, 1, 3]);
     }
@@ -631,7 +649,7 @@ mod tests {
         let cells = [1];
         let offsets = [0, 1];
 
-        let actual = occupancy_runs(&[&cells], &[&offsets], 0, 2).unwrap();
+        let actual = occupancy_runs(&[&cells], &[&offsets], 0, 2, false).unwrap();
 
         assert_runs(actual, &[], &[0], &[], &[]);
     }
@@ -667,4 +685,180 @@ mod tests {
                 .contains("resolution must be between")
         );
     }
+}
+
+pub(crate) struct OccupancyStats {
+    pub(crate) cells: Vec<u64>,
+    pub(crate) run_counts: Vec<u64>,
+    pub(crate) internal_gap_steps_sum: Vec<u64>,
+    pub(crate) maximum_internal_gap_steps: Vec<u64>,
+    pub(crate) first_start: Vec<u64>,
+    pub(crate) last_stop: Vec<u64>,
+}
+
+/// Per-cell accumulator for one streaming pass over the segment axis.
+///
+/// `last_segment + 1` is the current run's stop, so no separate stop field is
+/// needed. `run_count == 0` marks a cell that has not qualified yet.
+#[derive(Clone, Copy)]
+struct StatsState {
+    interval_count: u32,
+    last_segment: u32,
+    run_count: u64,
+    first_start: u32,
+    gap_sum: u64,
+    max_gap: u32,
+}
+
+impl StatsState {
+    const EMPTY: Self = Self {
+        interval_count: 0,
+        last_segment: NEVER_SEGMENT,
+        run_count: 0,
+        first_start: 0,
+        gap_sum: 0,
+        max_gap: 0,
+    };
+
+    /// Fold one qualifying segment into the cell, opening or extending a run.
+    fn observe(&mut self, segment: u32) {
+        if self.last_segment == NEVER_SEGMENT || self.last_segment + 1 != segment {
+            if self.run_count == 0 {
+                self.first_start = segment;
+            } else {
+                let gap = segment - (self.last_segment + 1);
+                self.gap_sum += u64::from(gap);
+                self.max_gap = self.max_gap.max(gap);
+            }
+            self.run_count += 1;
+        }
+        self.last_segment = segment;
+    }
+}
+
+fn stats_materialization_error() -> NativeError {
+    NativeError::materialization("Occupancy statistics are too large to materialize.")
+}
+
+fn push_stats(out: &mut OccupancyStats, cell: u64, state: &StatsState) {
+    out.cells.push(cell);
+    out.run_counts.push(state.run_count);
+    out.internal_gap_steps_sum.push(state.gap_sum);
+    out.maximum_internal_gap_steps
+        .push(u64::from(state.max_gap));
+    out.first_start.push(u64::from(state.first_start));
+    out.last_stop.push(u64::from(state.last_segment) + 1);
+}
+
+fn empty_stats() -> OccupancyStats {
+    OccupancyStats {
+        cells: Vec::new(),
+        run_counts: Vec::new(),
+        internal_gap_steps_sum: Vec::new(),
+        maximum_internal_gap_steps: Vec::new(),
+        first_start: Vec::new(),
+        last_stop: Vec::new(),
+    }
+}
+
+pub(crate) fn occupancy_stats(
+    cell_arrays: &[&[u64]],
+    offset_arrays: &[&[u64]],
+    resolution: u8,
+    minimum_sources: usize,
+    trusted: bool,
+) -> NativeResult<OccupancyStats> {
+    let segment_count = validate_run_sources(
+        cell_arrays,
+        offset_arrays,
+        resolution,
+        minimum_sources,
+        trusted,
+    )?;
+    if minimum_sources > cell_arrays.len() || segment_count == 0 {
+        return Ok(empty_stats());
+    }
+    let total_hits = cell_arrays
+        .iter()
+        .fold(0usize, |total, cells| total.saturating_add(cells.len()));
+    if total_hits == 0 {
+        return Ok(empty_stats());
+    }
+    let minimum_sources = minimum_sources as u32;
+    let mut out = empty_stats();
+
+    // Dense state is a flat grid; sparse state is keyed by observed cell. Both
+    // hold one accumulator per cell, never one per run.
+    if let Some(cell_count) = dense_state_length(resolution, segment_count, 1, total_hits)
+        .filter(|count| count.checked_mul(size_of::<StatsState>()).is_some())
+    {
+        let mut states = Vec::new();
+        if states.try_reserve_exact(cell_count).is_ok() {
+            states.resize(cell_count, StatsState::EMPTY);
+            let mut touched: Vec<usize> = Vec::new();
+            for segment in 0..segment_count {
+                for (&cells, &offsets) in cell_arrays.iter().zip(offset_arrays) {
+                    for &cell in &cells[offsets[segment] as usize..offsets[segment + 1] as usize] {
+                        let state = &mut states[cell as usize];
+                        if state.interval_count == 0 {
+                            touched.try_reserve(1).map_err(|_| {
+                                stats_materialization_error()
+                            })?;
+                            touched.push(cell as usize);
+                        }
+                        if state.interval_count < minimum_sources {
+                            state.interval_count += 1;
+                        }
+                    }
+                }
+                let segment = segment as u32;
+                for &cell in &touched {
+                    let state = &mut states[cell];
+                    if state.interval_count >= minimum_sources {
+                        state.observe(segment);
+                    }
+                    state.interval_count = 0;
+                }
+                touched.clear();
+            }
+            for (cell, state) in states.iter().enumerate() {
+                if state.run_count != 0 {
+                    push_stats(&mut out, cell as u64, state);
+                }
+            }
+            return Ok(out);
+        }
+    }
+
+    let mut interval_counts: HashMap<u64, u32> = HashMap::new();
+    let mut states: HashMap<u64, StatsState> = HashMap::new();
+    for segment in 0..segment_count {
+        for (&cells, &offsets) in cell_arrays.iter().zip(offset_arrays) {
+            for &cell in &cells[offsets[segment] as usize..offsets[segment + 1] as usize] {
+                interval_counts
+                    .try_reserve(1)
+                    .map_err(|_| stats_materialization_error())?;
+                *interval_counts.entry(cell).or_insert(0) += 1;
+            }
+        }
+        let segment = segment as u32;
+        for (cell, count) in interval_counts.drain() {
+            if count < minimum_sources {
+                continue;
+            }
+            states
+                .try_reserve(1)
+                .map_err(|_| stats_materialization_error())?;
+            states
+                .entry(cell)
+                .or_insert(StatsState::EMPTY)
+                .observe(segment);
+        }
+    }
+    let mut observed: Vec<(u64, StatsState)> = states.into_iter().collect();
+    observed.sort_unstable_by_key(|(cell, _)| *cell);
+    for (cell, state) in &observed {
+        push_stats(&mut out, *cell, state);
+    }
+    Ok(out)
 }

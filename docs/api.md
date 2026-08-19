@@ -14,16 +14,16 @@ HEALPix and NumPy handoff conventions see
 | [`cover_convex_polygon`](#cover_convex_polygon) | Cover convex spherical polygons |
 | [`cover_cap`](#cover_cap) | Cover exact spherical caps |
 | [`cover_sweep`](#cover_sweep) | Cover the quadrilaterals between two sampled edges |
-| [`count_coverage_per_cell`](#count_coverage_per_cell) | Count segmented memberships per cell |
-| [`sum_coverage_per_cell`](#sum_coverage_per_cell) | Accumulate one value per segment into covered cells |
-| [`count_caps_per_cell`](#count_caps_per_cell) | Fused cap-count accelerator |
-| [`occupancy_runs`](#occupancy_runs) | Extract complete ordinal occupied-bin runs |
+| [`occupancy`](#occupancy) | Read aligned coverage as ordered occupancy bins |
+| [`Count`](#reducers), [`Sum`](#reducers) | Reducers accepted by the covering calls |
+| [`Runs`](#reducers), [`Stats`](#reducers) | Reducers accepted by `occupancy()` |
 | [`cell_at`](#cell_at) | Direction vectors to RING cell IDs |
 | [`cell_centers`](#cell_centers) | Cell center vectors |
 | [`cell_corners`](#cell_corners) | Cell corner vectors |
 | [`cell_count`](#cell_count) | Number of cells at a resolution |
 | [`Coverage`](#coverage) | Segmented result of the coverage calls |
 | [`OccupancyRuns`](#occupancyruns) | Sparse cell-major ordinal windows |
+| [`OccupancyStats`](#occupancystats) | Per-cell occupancy statistics on one axis |
 
 ## cover_convex_polygon
 
@@ -35,6 +35,7 @@ cover_convex_polygon(
     vertex_offsets=None,
     candidate_cells=None,
     threads=None,
+    into=None,
 )
 ```
 
@@ -67,9 +68,15 @@ Cover convex spherical polygons by HEALPix cell-center inclusion.
   and larger values set the reusable worker-pool maximum, capped by the
   host.
 
+`into`
+: *[`Count`](#reducers), [`Sum`](#reducers), or None, default None*. `None`
+  returns the segmented `Coverage`. A reducer returns its accumulated array
+  instead and lets Polypix skip materializing membership where it can. See
+  [Choosing a reducer](#choosing-a-reducer).
+
 **Returns**
 
-`Coverage`
+`Coverage` or `ndarray`
 : Flat RING indices with offsets delimiting one segment per input polygon.
 
 **Raises**
@@ -110,7 +117,10 @@ for the performance trade-offs.
 ## cover_cap
 
 ```python
-cover_cap(centers_xyz, radii_rad, resolution, *, candidate_cells=None, threads=None)
+cover_cap(
+    centers_xyz, radii_rad, resolution, *,
+    candidate_cells=None, threads=None, into=None,
+)
 ```
 
 Cover exact spherical caps by HEALPix cell-center inclusion.
@@ -146,7 +156,7 @@ Cover exact spherical caps by HEALPix cell-center inclusion.
 
 `MemoryError`
 : The explicit segmented result cannot be materialized; use
-  `count_caps_per_cell()` if counts are the intended result.
+  `into=Count()` if counts are the intended result.
 
 **Notes**
 
@@ -161,133 +171,16 @@ thread before the call returns.
 
 Use this function instead of approximating a circular field of view with a
 many-sided polygon. When only the number of caps covering each cell matters,
-[`count_caps_per_cell`](#count_caps_per_cell) avoids materializing repeated
+[`into=Count()`](#reducers) avoids materializing repeated
 cap-cell IDs.
-
-## count_coverage_per_cell
-
-```python
-count_coverage_per_cell(coverage, *, cells=None)
-```
-
-Count how many segments of an existing `Coverage` contain each cell. Because a
-validated segment contains each cell at most once, the result counts segment
-membership rather than duplicate IDs.
-
-`coverage`
-: *Coverage*. Segmented membership from any geometry or an imported result.
-
-`cells`
-: *int or array_like of int, optional*. Positional RING IDs to query. Order and
-  duplicates are preserved. With `None`, return the complete dense grid.
-
-**Returns**
-
-`ndarray`
-: `int64`, with length `cell_count(coverage.resolution)` in dense mode or the
-  requested-cell count in positional mode.
-
-The native reducer scans the flat membership array directly. Selected-cell mode
-indexes the requested IDs and does not allocate a dense global grid, making it
-safe for sparse high-resolution analysis.
-
-## sum_coverage_per_cell
-
-```python
-sum_coverage_per_cell(coverage, values, *, cells=None)
-```
-
-Add one constant value for every segment to every cell in that segment. This is
-the generic exposure, dwell, probability, and capacity primitive.
-
-`coverage`
-: *Coverage*. Segmented membership from any geometry.
-
-`values`
-: *float or array_like*. One finite scalar shared by every segment, or one
-  finite value per segment.
-
-`cells`
-: As in [`count_coverage_per_cell`](#count_coverage_per_cell).
-
-**Returns**
-
-`ndarray`
-: `float64`, dense or positional according to `cells`.
-
-The native implementation reads the segment offsets directly and never expands
-`values` into one temporary value per hit.
-
-## count_caps_per_cell
-
-```python
-count_caps_per_cell(centers_xyz, radii_rad, resolution, *, cells=None, threads=None)
-```
-
-Count the input caps containing each HEALPix cell center. Center and radius
-inputs follow [`cover_cap`](#cover_cap).
-
-**Parameters**
-
-`centers_xyz`, `radii_rad`, `resolution`, `threads`
-: As in [`cover_cap`](#cover_cap).
-
-`cells`
-: *int or array_like of int, optional*. Positional RING IDs to query. A
-  scalar returns shape `(1,)`; an empty input returns shape `(0,)`. Order
-  and duplicates are preserved.
-
-**Returns**
-
-`ndarray`
-: C-contiguous `int64` counts. With `cells=None`, its length is `12 *
-  4**resolution`; otherwise it matches the positional query length.
-
-**Raises**
-
-`TypeError`
-: Inputs have incompatible numeric types.
-
-`ValueError`
-: Shapes, vectors, radii, resolution, or cell IDs are invalid.
-
-`MemoryError`
-: A requested dense result cannot be materialized; pass `cells=` to use
-  positional query mode instead.
-
-With `cells=None`, the result is a dense `int64` array of length
-`12 * 4**resolution`, indexed by RING cell ID. Internally, contiguous RING spans
-are accumulated directly, so cap-cell pairs are never materialized.
-
-With `cells` supplied, the result has one value per requested RING ID in the
-original order. Unlike `candidate_cells`, this is positional query input:
-duplicates are retained and produce repeated equal values. Query mode is the
-memory-safe choice at high resolutions, but its work grows with both the cap
-count and requested-cell count; it is intended for genuinely sparse queries.
-A dense resolution-12 result alone is about 1.5 GiB.
-
-The predicate is evaluated at each requested HEALPix center. If the IDs came
-from `cell_at(site_directions, resolution)`, this does not test the original
-site directions.
-
-An empty cap batch returns zeros in either mode. Compatible contiguous inputs
-are borrowed while the native kernel runs without the GIL; do not mutate them
-concurrently.
-
-The operation is exactly equivalent to the following, without its potentially
-large intermediate `Coverage`:
-
-```python
-import numpy as np
-
-coverage = px.cover_cap(centers_xyz, radii_rad, resolution)
-expected = px.count_coverage_per_cell(coverage)
-```
 
 ## cover_sweep
 
 ```python
-cover_sweep(left_edge_xyz, right_edge_xyz, resolution, *, candidate_cells=None, threads=None)
+cover_sweep(
+    left_edge_xyz, right_edge_xyz, resolution, *,
+    candidate_cells=None, threads=None, into=None,
+)
 ```
 
 Cover the quadrilateral segments between two sampled spherical edges by
@@ -339,48 +232,48 @@ Consecutive samples are joined by minor great-circle arcs, so sampling density
 is part of the input contract. See
 [Batches and segments](concepts.md#batches-and-segments).
 
-## occupancy_runs
+## occupancy
 
 ```python
-occupancy_runs(sources, *, minimum_sources=1)
+occupancy(sources, *, minimum_sources=1, into=None)
 ```
 
-Extract complete, maximal ordinal occupied-bin runs from one `Coverage`, or from
-aligned coverage belonging to multiple sources. A cell qualifies in a segment
-when at least `minimum_sources` sequence entries contain it.
+Read one `Coverage`, or aligned coverage belonging to multiple sources, as
+ordered occupancy bins. A cell qualifies in a segment when at least
+`minimum_sources` sequence entries contain it.
 
 All sources must share a resolution and segment count. The caller must also
 ensure that matching segment indices have identical bin boundaries and that
 consecutive indices are temporally adjacent. Polypix cannot infer either fact
 from `Coverage`; split the analysis at a discontinuity or insert an explicitly
-empty separator bin. The result retains half-open
-`[start, stop)` windows rather than choosing a particular revisit statistic.
-Callers can therefore calculate end-to-start or start-to-start gaps, maximum or
-percentile gaps, finite-horizon edge gaps, or cyclic gaps without information
-having already been discarded.
+empty separator bin.
 
 **Parameters**
 
 `sources`
-: *Coverage or nonempty sequence of Coverage*. One segmented result per
-  source entry, all with the same resolution and segment count. Sequence
-  positions are counted independently, so source uniqueness is a caller
-  responsibility.
+: *Coverage or nonempty sequence of Coverage*. One segmented result per source
+  entry, all with the same resolution and segment count. Sequence positions are
+  counted independently, so source uniqueness is a caller responsibility.
 
 `minimum_sources`
-: *int, default 1*. Positive number of simultaneous source entries required
-  for a cell to qualify. A threshold larger than the source count returns an
-  empty result.
+: *int, default 1*. Positive number of simultaneous source entries required for
+  a cell to qualify. A threshold larger than the source count returns an empty
+  result.
+
+`into`
+: *[`Runs`](#reducers) or [`Stats`](#reducers), default `Runs()`*. Selects the
+  result. See [Choosing a reducer](#choosing-a-reducer).
 
 **Returns**
 
-`OccupancyRuns`
-: Sparse ascending cells with chronological half-open runs grouped by cell.
+`OccupancyRuns` or `OccupancyStats`
+: Ascending qualifying cells, with either every half-open run grouped by cell,
+  or one statistic per cell.
 
 **Raises**
 
 `TypeError`
-: `sources` contains another type or an invalid resolution.
+: `sources` or `into` contains another type, or the resolution is invalid.
 
 `ValueError`
 : The sequence is empty, the threshold is not positive, or source grids or
@@ -389,10 +282,57 @@ having already been discarded.
 **Notes**
 
 Coverage arrays are read-only and borrowed while the native reducer runs
-without the GIL. To retain observer attribution, call `occupancy_runs()` once
-per source; the multi-source form intentionally returns thresholded occupancy.
-For sampled sweeps these are occupied-bin runs, not exact continuous access
-events; boundary times are uncertain at the input sampling scale.
+without the GIL. To retain observer attribution, call `occupancy()` once per
+source; the multi-source form intentionally returns thresholded occupancy. For
+sampled sweeps these are occupied bins, not exact continuous access events;
+boundary times are uncertain at the input sampling scale.
+
+## Reducers
+
+A reducer names the result you want, and the covering calls and `occupancy()`
+accept one through `into=`. Passing `into=None` returns the materialized
+`Coverage` or `OccupancyRuns` instead, which is the default.
+
+```python
+Count(cells=None)
+Sum(values, cells=None)
+Runs()
+Stats()
+```
+
+`Count` and `Sum` are accepted by `cover_convex_polygon()`, `cover_cap()`,
+`cover_sweep()`, and [`Coverage.reduce()`](#coverage). `Runs` and `Stats` are
+accepted by `occupancy()`.
+
+`cells`
+: *int, sequence of int, ndarray, or None*. With `None` the result is a dense
+  array indexed by RING cell ID and of length `cell_count(resolution)`.
+  Supplying `cells` returns one value per requested ID, in query order and
+  including duplicates, without allocating the fixed grid.
+
+`values`
+: *float or sequence of float*. A scalar shared by every segment, or one finite
+  value per segment. Floating addition is deterministic in segment and hit
+  order.
+
+### Choosing a reducer
+
+A reducer is a request, not a promise about the algorithm. Polypix fuses the
+accumulation into the geometry kernel where that is faster and materializes
+membership otherwise; the result is identical either way.
+
+`cover_cap(..., into=Count())` is the case where fusing currently wins by a
+wide margin, because the cap kernel accumulates private RING spans and never
+allocates cap-cell membership. Pass `candidate_cells` and it falls back to
+materializing.
+
+For `occupancy()`, `Runs()` keeps every boundary and so costs memory
+proportional to the run count, which approaches the hit count when cells are
+occupied briefly and repeatedly. `Stats()` accumulates per-cell counts and
+complete internal gaps in one pass and allocates by represented cell instead.
+Choose `Runs()` when the boundaries themselves are the answer: percentiles,
+minimum-duration filtering, short-gap merging, or arbitrary per-run timestamps.
+
 
 ## cell_at
 
@@ -531,6 +471,19 @@ coverage = px.Coverage.from_arrays(
 )
 ```
 
+**Methods**
+
+`reduce(reducer)`
+: Accumulate this coverage with a [`Count`](#reducers) or [`Sum`](#reducers),
+  returning the same array a fused `into=` call would have produced. Use it to
+  take several reductions from one materialized coverage.
+
+`segment_indices()`
+: Return the segment index aligned with every flat cell hit.
+
+`filter_hits(mask)`
+: Return coverage containing only the flat hits selected by a boolean mask.
+
 **Attributes**
 
 `cells`
@@ -585,7 +538,7 @@ caller's inputs cannot change a `Coverage`.
 
 ## OccupancyRuns
 
-`OccupancyRuns` values are produced only by `occupancy_runs()`; manual
+`OccupancyRuns` values are produced only by `occupancy()`; manual
 construction is intentionally disabled.
 
 **Attributes**
@@ -613,6 +566,40 @@ construction is intentionally disabled.
 `OccupancyRuns` uses identity equality for the same reason as `Coverage`. Its
 arrays follow the same read-only contract, and `len(runs)` is the number of
 represented cells.
+
+## OccupancyStats
+
+`OccupancyStats` values are produced only by `occupancy(..., into=Stats())`;
+manual
+construction is intentionally disabled.
+
+**Attributes**
+
+`cells`
+: *ndarray*. Ascending qualifying RING IDs, dtype `int64`.
+
+`run_counts`
+: *ndarray*. `int64` number of maximal qualifying runs per cell, at least one.
+
+`internal_gap_steps_sum`, `maximum_internal_gap_steps`
+: *ndarray*. `int64` total and largest complete internal gap per cell, measured
+  in segments. Both are zero for a cell with a single run.
+
+`first_start`, `last_stop`
+: *ndarray*. `int64` half-open bounds of the observed window per cell.
+
+`internal_gap_counts`
+: *ndarray*. Derived `int64` gap count per cell, equal to `run_counts - 1`.
+
+`resolution`, `segment_count`
+: *int*. Common grid resolution and number of ordered input segments.
+
+`minimum_sources`, `source_count`
+: *int*. Threshold used and number of source entries supplied.
+
+`OccupancyStats` follows the same identity-equality and read-only array
+contracts as `OccupancyRuns`, and `len(stats)` is the number of represented
+cells.
 
 ## Geometry contract
 

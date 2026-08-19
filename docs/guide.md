@@ -219,8 +219,7 @@ membership from any geometry into a global map with one operation:
 ```{doctest}
 >>> resolution = 4
 >>> coverage = cap_coverage
->>> cell_count = px.cell_count(resolution)
->>> hits = px.count_coverage_per_cell(coverage)
+>>> hits = coverage.reduce(px.Count())
 >>> hits.shape
 (3072,)
 ```
@@ -248,16 +247,17 @@ end.
 
 Equal-area cells make these counts directly comparable without area weighting.
 
-Use `sum_coverage_per_cell()` when each segment contributes an exposure,
-duration, probability, or capacity instead of one count. The native reducer
-reads `Coverage.offsets` directly rather than repeating one value per hit.
+Use `coverage.reduce(px.Sum(values))` when each segment contributes an
+exposure, duration, probability, or capacity instead of one count. The native
+reducer reads `Coverage.offsets` directly rather than repeating one value per
+hit.
 
 ## Preserve occupied-bin runs
 
 For revisit analysis, keep complete ordinal runs and apply time afterward:
 
 ```{doctest}
->>> runs = px.occupancy_runs(swath_coverage)
+>>> runs = px.occupancy(swath_coverage)
 >>> bool(np.all(runs.starts < runs.stops))
 True
 >>> time_edges_s = np.arange(swath_coverage.segment_count + 1) * 60
@@ -274,15 +274,34 @@ because they are policy choices, not geometry. For sweeps, the result is an
 occupied-bin approximation whose physical boundary precision is limited by the
 sampling cadence.
 
-## Count overlaps without building membership
-
-If you only need cap counts per cell, avoid building the region–cell pairs:
+When runs are only a step on the way to per-cell revisit numbers, skip
+materializing them:
 
 ```{doctest}
->>> counts = px.count_caps_per_cell(
+>>> stats = px.occupancy(swath_coverage, into=px.Stats())
+>>> observed_once = stats.run_counts == 1
+>>> bool(np.all(stats.maximum_internal_gap_steps[observed_once] == 0))
+True
+>>> worst_gap_s = stats.maximum_internal_gap_steps * 60
+>>> bool(np.all(stats.first_start < stats.last_stop))
+True
+```
+
+Every field describes the same thresholded axis, so `run_counts`,
+`internal_gap_steps_sum`, and `maximum_internal_gap_steps` can be combined
+directly. `first_start` and `last_stop` let you add horizon-edge gaps yourself.
+
+## Count overlaps without building membership
+
+If you only need cap counts per cell, ask for them directly and Polypix never
+builds the region–cell pairs:
+
+```{doctest}
+>>> counts = px.cover_cap(
 ...     unit_vector(cap_lon, cap_lat),
 ...     np.radians(cap_radius_deg),
 ...     resolution=4,
+...     into=px.Count(),
 ... )
 >>> counts.shape
 (3072,)
@@ -292,11 +311,11 @@ At high resolution, query only the cells you need:
 
 ```{doctest}
 >>> site_cells = point_cells[:2]
->>> site_counts = px.count_caps_per_cell(
+>>> site_counts = px.cover_cap(
 ...     unit_vector(cap_lon, cap_lat),
 ...     np.radians(cap_radius_deg),
 ...     resolution=4,
-...     cells=site_cells,
+...     into=px.Count(cells=site_cells),
 ... )
 >>> site_counts.shape
 (2,)

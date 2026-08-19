@@ -13,6 +13,19 @@ fn raw_cell_count(resolution: u8) -> NativeResult<u64> {
     Ok(12_u64 << (2 * resolution))
 }
 
+// A dense scratch grid beats one hash probe per hit while the grid stays
+// small. Above this the hash path keeps memory flat for the sparse
+// high-resolution queries `cells` exists to serve. The bound admits
+// resolutions up to 8.
+const DENSE_SCRATCH_MAX_BYTES: usize = 8 * 1024 * 1024;
+
+fn dense_scratch_fits(cell_count: u64, element_bytes: usize) -> bool {
+    usize::try_from(cell_count)
+        .ok()
+        .and_then(|count| count.checked_mul(element_bytes))
+        .is_some_and(|bytes| bytes <= DENSE_SCRATCH_MAX_BYTES)
+}
+
 fn invalid_cell(argument_name: &str, resolution: u8) -> NativeError {
     format!("{argument_name} must contain valid RING indices at resolution {resolution}.").into()
 }
@@ -41,12 +54,53 @@ fn dense_sum_buffer(cell_count: u64) -> NativeResult<Vec<f64>> {
     Ok(sums)
 }
 
+fn dense_counts(cells: &[u64], cell_count: u64, resolution: u8) -> NativeResult<Vec<i64>> {
+    let mut counts = dense_count_buffer(cell_count)?;
+    for &cell in cells {
+        if cell >= cell_count {
+            return Err(invalid_cell("cells", resolution));
+        }
+        counts[cell as usize] += 1;
+    }
+    Ok(counts)
+}
+
+fn gathered<T: Copy>(
+    scratch: &[T],
+    requested_cells: &[u64],
+    cell_count: u64,
+    resolution: u8,
+    too_large: &'static str,
+) -> NativeResult<Vec<T>> {
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(requested_cells.len())
+        .map_err(|_| NativeError::materialization(too_large))?;
+    for &cell in requested_cells {
+        if cell >= cell_count {
+            return Err(invalid_cell("requested_cells", resolution));
+        }
+        output.push(scratch[cell as usize]);
+    }
+    Ok(output)
+}
+
 fn selected_counts(
     cells: &[u64],
     requested_cells: &[u64],
     cell_count: u64,
     resolution: u8,
 ) -> NativeResult<Vec<i64>> {
+    if dense_scratch_fits(cell_count, size_of::<i64>()) {
+        let scratch = dense_counts(cells, cell_count, resolution)?;
+        return gathered(
+            &scratch,
+            requested_cells,
+            cell_count,
+            resolution,
+            "Selected coverage-count result is too large to materialize.",
+        );
+    }
     let mut counts = HashMap::new();
     counts.try_reserve(requested_cells.len()).map_err(|_| {
         NativeError::materialization("Selected coverage-count result is too large to materialize.")
@@ -92,14 +146,7 @@ pub(crate) fn count_coverage_per_cell(
         return selected_counts(cells, requested_cells, cell_count, resolution);
     }
 
-    let mut counts = dense_count_buffer(cell_count)?;
-    for &cell in cells {
-        if cell >= cell_count {
-            return Err(invalid_cell("cells", resolution));
-        }
-        counts[cell as usize] += 1;
-    }
-    Ok(counts)
+    dense_counts(cells, cell_count, resolution)
 }
 
 fn validate_weighted_coverage(
@@ -138,6 +185,37 @@ fn validate_weighted_coverage(
     Ok(cell_count)
 }
 
+/// Accumulate per-cell sums into a dense grid without per-hit overflow checks.
+///
+/// A non-finite partial sum stays non-finite under further finite addition, so
+/// callers detect overflow by testing only the values they return.
+fn dense_sums(
+    cells: &[u64],
+    offsets: &[u64],
+    values: &[f64],
+    cell_count: u64,
+    resolution: u8,
+) -> NativeResult<Vec<f64>> {
+    let mut sums = dense_sum_buffer(cell_count)?;
+    for (segment_index, pair) in offsets.windows(2).enumerate() {
+        let value = values[segment_index];
+        for &cell in &cells[pair[0] as usize..pair[1] as usize] {
+            if cell >= cell_count {
+                return Err(invalid_cell("cells", resolution));
+            }
+            sums[cell as usize] += value;
+        }
+    }
+    Ok(sums)
+}
+
+fn reject_overflow(sums: Vec<f64>) -> NativeResult<Vec<f64>> {
+    if sums.iter().any(|sum| !sum.is_finite()) {
+        return Err(SUM_OVERFLOW.to_owned().into());
+    }
+    Ok(sums)
+}
+
 fn selected_sums(
     cells: &[u64],
     offsets: &[u64],
@@ -146,6 +224,18 @@ fn selected_sums(
     cell_count: u64,
     resolution: u8,
 ) -> NativeResult<Vec<f64>> {
+    if dense_scratch_fits(cell_count, size_of::<f64>()) {
+        // Only the requested cells are returned, so overflow in a cell the
+        // caller did not ask for stays invisible, exactly as below.
+        let scratch = dense_sums(cells, offsets, values, cell_count, resolution)?;
+        return reject_overflow(gathered(
+            &scratch,
+            requested_cells,
+            cell_count,
+            resolution,
+            "Selected coverage-sum result is too large to materialize.",
+        )?);
+    }
     let mut sums = HashMap::new();
     sums.try_reserve(requested_cells.len()).map_err(|_| {
         NativeError::materialization("Selected coverage-sum result is too large to materialize.")
@@ -203,22 +293,7 @@ pub(crate) fn sum_coverage_per_cell(
         );
     }
 
-    let mut sums = dense_sum_buffer(cell_count)?;
-    for (segment_index, pair) in offsets.windows(2).enumerate() {
-        let value = values[segment_index];
-        for &cell in &cells[pair[0] as usize..pair[1] as usize] {
-            if cell >= cell_count {
-                return Err(invalid_cell("cells", resolution));
-            }
-            let sum = &mut sums[cell as usize];
-            let updated = *sum + value;
-            if !updated.is_finite() {
-                return Err(SUM_OVERFLOW.to_owned().into());
-            }
-            *sum = updated;
-        }
-    }
-    Ok(sums)
+    reject_overflow(dense_sums(cells, offsets, values, cell_count, resolution)?)
 }
 
 #[cfg(test)]
@@ -233,6 +308,35 @@ mod tests {
         assert_eq!(actual.len(), 12);
         assert_eq!(&actual[..8], &[1, 0, 2, 0, 0, 0, 0, 1]);
         assert!(actual[8..].iter().all(|&count| count == 0));
+    }
+
+    #[test]
+    fn dense_scratch_and_hash_selection_agree() {
+        // Resolution 0 takes the dense-scratch path; MAX_RESOLUTION cannot.
+        let cells = [0_u64, 2, 2, 7, 11, 2];
+        let offsets = [0_u64, 3, 6];
+        let values = [0.5_f64, 2.0];
+        let requested = [7_u64, 2, 11, 2, 0];
+
+        let dense = count_coverage_per_cell(&cells, 0, Some(&requested)).unwrap();
+        assert_eq!(dense, vec![1, 3, 1, 3, 1]);
+
+        let dense_sums = sum_coverage_per_cell(&cells, &offsets, &values, 0, Some(&requested))
+            .unwrap();
+        assert_eq!(dense_sums, vec![2.0, 3.0, 2.0, 3.0, 0.5]);
+    }
+
+    #[test]
+    fn selected_sums_report_overflow_only_for_requested_cells() {
+        // Cell 1 overflows, cell 0 does not. Requesting only cell 0 must succeed.
+        let cells = [0_u64, 1, 1];
+        let offsets = [0_u64, 3];
+        let values = [f64::MAX];
+        let sums = sum_coverage_per_cell(&cells, &offsets, &values, 0, Some(&[0])).unwrap();
+        assert_eq!(sums, vec![f64::MAX]);
+
+        let error = sum_coverage_per_cell(&cells, &offsets, &values, 0, Some(&[1])).unwrap_err();
+        assert!(error.to_string().contains("overflowed"), "{error}");
     }
 
     #[test]

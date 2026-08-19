@@ -20,6 +20,15 @@ type PyCoverage<'py> = (
     Bound<'py, numpy::PyArray1<u64>>,
 );
 
+type PyOccupancyStats<'py> = (
+    Bound<'py, PyArray1<u64>>,
+    Bound<'py, PyArray1<u64>>,
+    Bound<'py, PyArray1<u64>>,
+    Bound<'py, PyArray1<u64>>,
+    Bound<'py, PyArray1<u64>>,
+    Bound<'py, PyArray1<u64>>,
+);
+
 type PyOccupancyRuns<'py> = (
     Bound<'py, numpy::PyArray1<u64>>,
     Bound<'py, numpy::PyArray1<u64>>,
@@ -229,13 +238,14 @@ fn _sum_coverage_per_cell<'py>(
     Ok(sums.into_pyarray(py))
 }
 
-#[pyfunction]
+#[pyfunction(signature = (cell_arrays, offset_arrays, resolution, minimum_sources, trusted=false))]
 fn _occupancy_runs<'py>(
     py: Python<'py>,
     cell_arrays: Vec<PyReadonlyArray1<'py, u64>>,
     offset_arrays: Vec<PyReadonlyArray1<'py, u64>>,
     resolution: u8,
     minimum_sources: usize,
+    trusted: bool,
 ) -> PyResult<PyOccupancyRuns<'py>> {
     validate_resolution(resolution)?;
     let cells = cell_arrays
@@ -255,13 +265,52 @@ fn _occupancy_runs<'py>(
         })
         .collect::<PyResult<Vec<_>>>()?;
     let runs = py
-        .detach(|| access::occupancy_runs(&cells, &offsets, resolution, minimum_sources))
+        .detach(|| access::occupancy_runs(&cells, &offsets, resolution, minimum_sources, trusted))
         .map_err(native_error)?;
     Ok((
         readonly_vec(runs.cells, py),
         readonly_vec(runs.cell_offsets, py),
         readonly_vec(runs.run_starts, py),
         readonly_vec(runs.run_stops, py),
+    ))
+}
+
+#[pyfunction(signature = (cell_arrays, offset_arrays, resolution, minimum_sources, trusted=false))]
+fn _occupancy_stats<'py>(
+    py: Python<'py>,
+    cell_arrays: Vec<PyReadonlyArray1<'py, u64>>,
+    offset_arrays: Vec<PyReadonlyArray1<'py, u64>>,
+    resolution: u8,
+    minimum_sources: usize,
+    trusted: bool,
+) -> PyResult<PyOccupancyStats<'py>> {
+    validate_resolution(resolution)?;
+    let cells = cell_arrays
+        .iter()
+        .map(|array| {
+            array
+                .as_slice()
+                .map_err(|_| PyValueError::new_err("Coverage cells must be C-contiguous."))
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+    let offsets = offset_arrays
+        .iter()
+        .map(|array| {
+            array
+                .as_slice()
+                .map_err(|_| PyValueError::new_err("Coverage offsets must be C-contiguous."))
+        })
+        .collect::<PyResult<Vec<_>>>()?;
+    let stats = py
+        .detach(|| access::occupancy_stats(&cells, &offsets, resolution, minimum_sources, trusted))
+        .map_err(native_error)?;
+    Ok((
+        readonly_vec(stats.cells, py),
+        readonly_vec(stats.run_counts, py),
+        readonly_vec(stats.internal_gap_steps_sum, py),
+        readonly_vec(stats.maximum_internal_gap_steps, py),
+        readonly_vec(stats.first_start, py),
+        readonly_vec(stats.last_stop, py),
     ))
 }
 
@@ -396,6 +445,7 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_count_caps_per_cell, module)?)?;
     module.add_function(wrap_pyfunction!(_count_coverage_per_cell, module)?)?;
     module.add_function(wrap_pyfunction!(_occupancy_runs, module)?)?;
+    module.add_function(wrap_pyfunction!(_occupancy_stats, module)?)?;
     module.add_function(wrap_pyfunction!(_sum_coverage_per_cell, module)?)?;
     module.add_function(wrap_pyfunction!(_validate_coverage, module)?)?;
     module.add_function(wrap_pyfunction!(_cell_at, module)?)?;

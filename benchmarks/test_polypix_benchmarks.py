@@ -481,7 +481,7 @@ def test_count_caps_per_cell_constellation_batch(
     threads: int | None,
 ) -> None:
     centers, radii = constellation_caps
-    counts = benchmark(px.count_caps_per_cell, centers, radii, 6, threads=threads)
+    counts = benchmark(px.cover_cap, centers, radii, 6, into=px.Count(), threads=threads)
 
     assert counts.shape == (12 * 4**6,)
     assert counts.dtype == np.int64
@@ -509,7 +509,7 @@ def test_count_coverage_per_cell_eo_shape(
     benchmark,
     eo_shaped_coverage: px.Coverage,
 ) -> None:
-    counts = benchmark(px.count_coverage_per_cell, eo_shaped_coverage)
+    counts = benchmark(eo_shaped_coverage.reduce, px.Count())
 
     assert counts.shape == (12 * 4**6,)
     assert counts.dtype == np.int64
@@ -521,7 +521,7 @@ def test_sum_coverage_per_cell_eo_shape(
     eo_shaped_coverage: px.Coverage,
 ) -> None:
     values = np.linspace(0.25, 1.25, eo_shaped_coverage.segment_count)
-    sums = benchmark(px.sum_coverage_per_cell, eo_shaped_coverage, values)
+    sums = benchmark(eo_shaped_coverage.reduce, px.Sum(values))
 
     assert sums.shape == (12 * 4**6,)
     assert sums.dtype == np.float64
@@ -533,7 +533,7 @@ def test_count_coverage_selected_sparse_high_resolution(
     sparse_high_resolution_reduction: tuple[px.Coverage, np.ndarray],
 ) -> None:
     coverage, queried = sparse_high_resolution_reduction
-    counts = benchmark(px.count_coverage_per_cell, coverage, cells=queried)
+    counts = benchmark(coverage.reduce, px.Count(cells=queried))
 
     assert counts.shape == queried.shape
     assert counts.dtype == np.int64
@@ -544,7 +544,7 @@ def test_occupancy_runs_many_sources_eo_shape(
     benchmark,
     eo_shaped_coverage: px.Coverage,
 ) -> None:
-    runs = benchmark(px.occupancy_runs, [eo_shaped_coverage] * 10)
+    runs = benchmark(px.occupancy, [eo_shaped_coverage] * 10)
 
     assert runs.segment_count == 14_400
     assert runs.cells.dtype == np.int64
@@ -558,7 +558,7 @@ def test_occupancy_runs_output_heavy_eo_shape(
     benchmark,
     eo_shaped_coverage: px.Coverage,
 ) -> None:
-    runs = benchmark(px.occupancy_runs, eo_shaped_coverage)
+    runs = benchmark(px.occupancy, eo_shaped_coverage)
 
     assert runs.cells.size == 49_152
     assert runs.starts.size == 921_600
@@ -569,7 +569,7 @@ def test_occupancy_runs_many_sparse_sources(
     benchmark,
     many_sparse_sources: list[px.Coverage],
 ) -> None:
-    runs = benchmark(px.occupancy_runs, many_sparse_sources)
+    runs = benchmark(px.occupancy, many_sparse_sources)
 
     np.testing.assert_array_equal(runs.cells, [123])
     np.testing.assert_array_equal(runs.starts, [0])

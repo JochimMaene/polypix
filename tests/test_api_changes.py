@@ -94,36 +94,36 @@ def test_generic_coverage_reductions_match_membership_semantics() -> None:
         resolution=1,
     )
 
-    dense_counts = px.count_coverage_per_cell(coverage)
+    dense_counts = (coverage).reduce(px.Count())
     assert dense_counts.dtype == np.int64
     assert dense_counts.shape == (48,)
     np.testing.assert_array_equal(dense_counts[[1, 2, 4, 7]], [2, 1, 2, 0])
 
     requested = np.asarray([4, 1, 4, 7, 2], dtype=np.int64)
     np.testing.assert_array_equal(
-        px.count_coverage_per_cell(coverage, cells=requested),
+        (coverage).reduce(px.Count(cells=requested)),
         [2, 2, 2, 0, 1],
     )
 
     values = np.asarray([0.5, 2.0, 100.0, -0.25])
-    dense_sums = px.sum_coverage_per_cell(coverage, values)
+    dense_sums = (coverage).reduce(px.Sum(values))
     np.testing.assert_allclose(dense_sums[[1, 2, 4, 7]], [0.25, -0.25, 2.5, 0.0])
     np.testing.assert_allclose(
-        px.sum_coverage_per_cell(coverage, values, cells=requested),
+        (coverage).reduce(px.Sum(values, cells=requested)),
         [2.5, 0.25, 2.5, 0.0, -0.25],
     )
 
     with pytest.raises(ValueError, match="one value per coverage segment"):
-        px.sum_coverage_per_cell(coverage, [1.0])
+        (coverage).reduce(px.Sum([1.0]))
 
     empty = px.Coverage.from_arrays([], [0], resolution=29)
     for invalid in (np.nan, np.inf, -np.inf):
         with pytest.raises(ValueError, match="finite"):
-            px.sum_coverage_per_cell(empty, invalid, cells=[])
+            (empty).reduce(px.Sum(invalid, cells=[]))
     with pytest.raises(ValueError, match="finite"):
-        px.sum_coverage_per_cell(coverage, [np.nan, 2.0, 3.0, 4.0], cells=[])
-    assert px.count_coverage_per_cell(empty, cells=[]).dtype == np.int64
-    assert px.sum_coverage_per_cell(empty, 1.0, cells=[]).dtype == np.float64
+        (coverage).reduce(px.Sum([np.nan, 2.0, 3.0, 4.0], cells=[]))
+    assert (empty).reduce(px.Count(cells=[])).dtype == np.int64
+    assert (empty).reduce(px.Sum(1.0, cells=[])).dtype == np.float64
 
 
 def test_empty_cap_batches_still_validate_scalar_radii() -> None:
@@ -132,7 +132,7 @@ def test_empty_cap_batches_still_validate_scalar_radii() -> None:
         with pytest.raises(ValueError, match="radii_rad"):
             px.cover_cap(empty, invalid, resolution=1)
         with pytest.raises(ValueError, match="radii_rad"):
-            px.count_caps_per_cell(empty, invalid, resolution=1)
+            px.cover_cap(empty, invalid, resolution=1, into=px.Count())
 
 
 def test_fused_cap_counts_match_generic_reduction() -> None:
@@ -141,19 +141,13 @@ def test_fused_cap_counts_match_generic_reduction() -> None:
     coverage = px.cover_cap(centers, radii, resolution=5, threads=1)
 
     np.testing.assert_array_equal(
-        px.count_caps_per_cell(centers, radii, resolution=5, threads=1),
-        px.count_coverage_per_cell(coverage),
+        px.cover_cap(centers, radii, resolution=5, into=px.Count(), threads=1),
+        (coverage).reduce(px.Count()),
     )
     requested = np.asarray([0, 8, 8, 100, 3000], dtype=np.int64)
     np.testing.assert_array_equal(
-        px.count_caps_per_cell(
-            centers,
-            radii,
-            resolution=5,
-            cells=requested,
-            threads=1,
-        ),
-        px.count_coverage_per_cell(coverage, cells=requested),
+        px.cover_cap(centers, radii, resolution=5, into=px.Count(cells=requested), threads=1),
+        (coverage).reduce(px.Count(cells=requested)),
     )
 
 
@@ -169,7 +163,7 @@ def test_occupancy_runs_preserve_complete_ordinal_windows() -> None:
         resolution=1,
     )
 
-    union = px.occupancy_runs([first, second])
+    union = px.occupancy([first, second])
     assert union.cells.dtype == np.int64
     assert union.offsets.dtype == np.int64
     assert union.starts.dtype == np.int64
@@ -184,13 +178,13 @@ def test_occupancy_runs_preserve_complete_ordinal_windows() -> None:
     np.testing.assert_array_equal(union.stops, [3, 5, 4])
     np.testing.assert_array_equal(union.run_counts, [2, 1])
 
-    coincident = px.occupancy_runs([first, second], minimum_sources=2)
+    coincident = px.occupancy([first, second], minimum_sources=2)
     np.testing.assert_array_equal(coincident.cells, [1, 2])
     np.testing.assert_array_equal(coincident.offsets, [0, 2, 3])
     np.testing.assert_array_equal(coincident.starts, [1, 4, 2])
     np.testing.assert_array_equal(coincident.stops, [2, 5, 3])
 
-    impossible = px.occupancy_runs([first, second], minimum_sources=3)
+    impossible = px.occupancy([first, second], minimum_sources=3)
     np.testing.assert_array_equal(impossible.cells, [])
     np.testing.assert_array_equal(impossible.offsets, [0])
     np.testing.assert_array_equal(impossible.starts, [])
@@ -198,13 +192,13 @@ def test_occupancy_runs_preserve_complete_ordinal_windows() -> None:
     assert impossible.minimum_sources == 3
     assert impossible.source_count == 2
 
-    enormous = px.occupancy_runs([first, second], minimum_sources=10**100)
+    enormous = px.occupancy([first, second], minimum_sources=10**100)
     np.testing.assert_array_equal(enormous.cells, [])
     np.testing.assert_array_equal(enormous.offsets, [0])
     assert enormous.minimum_sources == 10**100
 
     # Sequence positions are source entries; callers own source uniqueness.
-    repeated = px.occupancy_runs([first, first], minimum_sources=2)
+    repeated = px.occupancy([first, first], minimum_sources=2)
     np.testing.assert_array_equal(repeated.cells, [1, 2])
     assert repeated.source_count == 2
 
@@ -215,15 +209,15 @@ def test_occupancy_runs_validates_alignment_and_threshold() -> None:
     other_resolution = px.Coverage.from_arrays([1], [0, 1], resolution=2)
 
     with pytest.raises(ValueError, match="at least one"):
-        px.occupancy_runs([])
+        px.occupancy([])
     with pytest.raises(ValueError, match="same number of segments"):
-        px.occupancy_runs([one, two_segments])
+        px.occupancy([one, two_segments])
     with pytest.raises(ValueError, match="same resolution"):
-        px.occupancy_runs([one, other_resolution])
+        px.occupancy([one, other_resolution])
     with pytest.raises(ValueError, match="positive integer"):
-        px.occupancy_runs(one, minimum_sources=0)
+        px.occupancy(one, minimum_sources=0)
     with pytest.raises(TypeError, match="positive integer"):
-        px.occupancy_runs(one, minimum_sources=True)
+        px.occupancy(one, minimum_sources=True)
 
 
 def test_occupancy_runs_matches_random_boolean_oracle() -> None:
@@ -247,7 +241,7 @@ def test_occupancy_runs_matches_random_boolean_oracle() -> None:
             sources.append(px.Coverage.from_arrays(cells, offsets, resolution=0))
 
         threshold = int(random.integers(1, source_count + 2))
-        actual = px.occupancy_runs(sources, minimum_sources=threshold)
+        actual = px.occupancy(sources, minimum_sources=threshold)
         qualifying = occupancy.sum(axis=0) >= threshold
         expected_cells: list[int] = []
         expected_offsets = [0]
@@ -296,14 +290,14 @@ def test_occupancy_runs_accept_unsorted_hits_and_all_empty_segments() -> None:
         offsets=[0, 2, 4],
         resolution=1,
     )
-    runs = px.occupancy_runs(shuffled)
+    runs = px.occupancy(shuffled)
     np.testing.assert_array_equal(runs.cells, [2, 7])
     np.testing.assert_array_equal(runs.offsets, [0, 1, 2])
     np.testing.assert_array_equal(runs.starts, [0, 0])
     np.testing.assert_array_equal(runs.stops, [2, 2])
 
     all_empty = px.Coverage.from_arrays([], [0, 0, 0, 0], resolution=29)
-    empty_runs = px.occupancy_runs(all_empty)
+    empty_runs = px.occupancy(all_empty)
     assert empty_runs.segment_count == 3
     np.testing.assert_array_equal(empty_runs.cells, [])
     np.testing.assert_array_equal(empty_runs.offsets, [0])
@@ -317,9 +311,85 @@ def test_occupancy_runs_preserve_resolution_29_cell_ids() -> None:
         resolution=29,
     )
 
-    runs = px.occupancy_runs(coverage)
+    runs = px.occupancy(coverage)
 
     np.testing.assert_array_equal(runs.cells, [0, final_cell])
     np.testing.assert_array_equal(runs.offsets, [0, 1, 3])
     np.testing.assert_array_equal(runs.starts, [1, 0, 2])
     np.testing.assert_array_equal(runs.stops, [2, 1, 3])
+
+
+def test_queried_reductions_match_the_dense_result_across_paths() -> None:
+    # Resolution 6 is served from a dense scratch grid; resolution 20 is far
+    # above the scratch budget and falls back to the hash path. Both must agree
+    # with the dense reduction, preserving query order and duplicates.
+    cells = np.asarray([0, 3, 17, 3, 400, 400, 401], dtype=np.int64)
+    offsets = np.asarray([0, 3, 5, 7], dtype=np.int64)
+    values = np.asarray([0.5, 2.0, -1.25], dtype=np.float64)
+    queried = np.asarray([400, 3, 1, 3, 0, 17], dtype=np.int64)
+
+    dense_reference = (px.Coverage.from_arrays(cells, offsets, resolution=6)).reduce(px.Count())
+    expected_counts = dense_reference[queried]
+
+    for resolution in (6, 20):
+        coverage = px.Coverage.from_arrays(cells, offsets, resolution=resolution)
+        counts = (coverage).reduce(px.Count(cells=queried))
+        np.testing.assert_array_equal(counts, expected_counts)
+
+        sums = (coverage).reduce(px.Sum(values, cells=queried))
+        assert sums.dtype == np.float64
+        np.testing.assert_allclose(sums, [0.75, 2.5, 0.0, 2.5, 0.5, 0.5])
+
+
+def _stats_from_runs(runs: px.OccupancyRuns) -> dict[str, np.ndarray]:
+    """Derive the fused statistics from lossless runs, the slow way."""
+    counts = runs.run_counts
+    gap_sum = np.zeros(runs.cells.size, dtype=np.int64)
+    gap_max = np.zeros(runs.cells.size, dtype=np.int64)
+    for index in range(runs.cells.size):
+        start, stop = runs.offsets[index], runs.offsets[index + 1]
+        gaps = runs.starts[start + 1 : stop] - runs.stops[start : stop - 1]
+        if gaps.size:
+            gap_sum[index] = gaps.sum()
+            gap_max[index] = gaps.max()
+    return {
+        "run_counts": counts,
+        "internal_gap_steps_sum": gap_sum,
+        "maximum_internal_gap_steps": gap_max,
+        "first_start": runs.starts[runs.offsets[:-1]],
+        "last_stop": runs.stops[runs.offsets[1:] - 1],
+    }
+
+
+@pytest.mark.parametrize("resolution", [0, 2, 29], ids=["r0", "r2", "r29_sparse"])
+def test_occupancy_stats_match_statistics_derived_from_runs(resolution: int) -> None:
+    rng = np.random.default_rng(20260819)
+    cell_count = min(px.cell_count(resolution), 24)
+    for _ in range(40):
+        segments = int(rng.integers(1, 12))
+        source_count = int(rng.integers(1, 4))
+        sources = []
+        for _ in range(source_count):
+            cells, offsets = [], [0]
+            for _ in range(segments):
+                chosen = np.flatnonzero(rng.random(cell_count) < 0.4)
+                cells.extend(int(cell) for cell in chosen)
+                offsets.append(len(cells))
+            sources.append(
+                px.Coverage.from_arrays(
+                    np.asarray(cells, dtype=np.int64),
+                    np.asarray(offsets, dtype=np.int64),
+                    resolution=resolution,
+                )
+            )
+        threshold = int(rng.integers(1, source_count + 2))
+        stats = px.occupancy(sources, minimum_sources=threshold, into=px.Stats())
+        runs = px.occupancy(sources, minimum_sources=threshold)
+
+        np.testing.assert_array_equal(stats.cells, runs.cells)
+        for name, expected in _stats_from_runs(runs).items():
+            np.testing.assert_array_equal(getattr(stats, name), expected, err_msg=name)
+        np.testing.assert_array_equal(stats.internal_gap_counts, runs.run_counts - 1)
+        assert stats.minimum_sources == threshold
+        assert stats.source_count == source_count
+        assert stats.segment_count == segments

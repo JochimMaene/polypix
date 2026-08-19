@@ -116,10 +116,11 @@ def analyze() -> CommunicationsAnalysis:
         cap_geometry_elapsed_s += time.perf_counter() - cap_geometry_started
 
         coverage_started = time.perf_counter()
-        visible = px.count_caps_per_cell(
+        visible = px.cover_cap(
             centers,
             radii_rad,
             resolution=HEALPIX_RESOLUTION,
+            into=px.Count(),
         )
         coverage_elapsed_s += time.perf_counter() - coverage_started
 
@@ -242,7 +243,7 @@ def documentation_html() -> str:
         <td>{m["propagation_ms"]:.0f} ms</td></tr>
     <tr><td>Service-cap geometry</td>
         <td>{m["cap_geometry_ms"]:.0f} ms</td></tr>
-    <tr><td>{m["snapshot_count"]} <code>count_caps_per_cell()</code> calls</td>
+    <tr><td>{m["snapshot_count"]} <code>cover_cap(into=Count())</code> calls</td>
         <td><strong>{m["coverage_ms"]:.0f} ms</strong></td></tr>
     <tr><td>Availability reduction</td>
         <td>{m["reduction_ms"]:.0f} ms</td></tr>

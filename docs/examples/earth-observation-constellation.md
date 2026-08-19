@@ -2,8 +2,8 @@
 
 This case study follows ten idealized satellites for ten days. Each one-minute
 interval becomes a quadrilateral between two sampled swath edges. Polypix first
-rasterizes those intervals, then extracts complete constellation-wide ordinal
-occupied-bin runs and computes internal uncovered-gap statistics downstream.
+rasterizes those intervals, then accumulates constellation-wide per-cell
+occupancy statistics and converts their internal uncovered gaps to time.
 
 The orbit and sensor model is kept deliberately crude: circular orbit,
 spherical rotating Earth, constant 7.5° ground half-width. Real mission analysis
@@ -57,8 +57,9 @@ One `cover_sweep()` call covers all 14,400 intervals for a satellite:
 ```
 
 Consecutive occupied intervals from any satellite form one merged occupied-bin
-run. Polypix retains all ordinal boundaries; the example maps them to seconds
-and derives both mean and maximum complete end-to-start gaps:
+run. Those runs are only an intermediate here, so the example fuses the per-cell
+statistics instead of materializing them, then maps the ordinal gaps to seconds
+to derive both mean and maximum complete end-to-start gaps:
 
 ```{literalinclude} ../../examples/earth_observation_constellation.py
 :language: python
@@ -68,9 +69,13 @@ and derives both mean and maximum complete end-to-start gaps:
 ```
 
 The reducer never expands and sorts the nine million interval–cell hits as an
-event table, and the downstream calculation remains vectorized over the
-compressed runs. A mission workflow can instead include horizon-edge gaps,
-periodic wraparound, percentiles, or completeness rules from the same run data.
+event table, and it never materializes the roughly nine million runs either:
+working state is one accumulator per observed cell. `first_start` and
+`last_stop` carry the observed window, so a mission workflow can add horizon-edge
+gaps or periodic wraparound from this result. Percentiles, completeness rules,
+and per-run timestamps need the boundaries themselves, and
+[`occupancy()`](../api.md#occupancy) returns them from the same
+coverage.
 
 ## Run the example
 

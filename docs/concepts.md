@@ -94,7 +94,8 @@ Caps and footprints use the same rule. The accepted geometry and its numerical
 limits are in the [geometry contract](api.md#geometry-contract).
 
 When you only want to know *how many* caps cover each cell, reach for
-`count_caps_per_cell()` rather than `cover_cap()`. It accumulates counts
+`cover_cap(..., into=px.Count())` rather than the default `Coverage`. It
+accumulates counts
 directly instead of emitting one cell ID per cap–cell pair.
 
 ## Batches and segments
@@ -121,7 +122,7 @@ densely enough that each arc is the boundary you meant.
 
 ## Occupancy runs
 
-`occupancy_runs()` reads the segments of one or more `Coverage` results as
+`occupancy()` reads the segments of one or more `Coverage` results as
 aligned, ordered bins. It returns every maximal half-open `[start, stop)` run,
 grouped by cell, where at least `minimum_sources` source entries cover the cell.
 Matching indices must describe identical bin boundaries, and consecutive bins
@@ -132,6 +133,14 @@ bin so a run cannot bridge them.
 Runs use segment indices, not durations. Polypix has no clock. Map `starts` and
 `stops` through your own array of time edges, then choose whether revisit means
 end-to-start, start-to-start, a finite-horizon edge gap, or a cyclic gap.
+
+Runs are often only an intermediate. If all you need per cell is how many times
+it was occupied, the total and largest complete internal gap, and the bounds of
+its observed window, `occupancy(..., into=px.Stats())` computes exactly that
+in one pass and
+never builds the runs. It reports the same thresholded, source-unioned axis for
+every field, and leaves the leading, trailing, and cyclic policies to you by
+reporting `first_start` and `last_stop` rather than choosing.
 
 The result is sparse and sorted by cell ID, so high resolution does not force a
 dense global allocation. Sequence positions count independently, so callers
