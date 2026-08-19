@@ -152,6 +152,16 @@ def sparse_high_resolution_reduction(
 
 
 @pytest.fixture(scope="module")
+def small_resolution_8_coverage() -> px.Coverage:
+    """A handful of hits on a grid large enough for a dense scratch array."""
+    centers = np.asarray(
+        [_lonlat_to_xyz(lon, 12.0) for lon in (0.0, 90.0, 180.0, 270.0)],
+        dtype=np.float64,
+    )
+    return px.cover_cap(centers, 0.01, 8)
+
+
+@pytest.fixture(scope="module")
 def many_sparse_sources() -> list[px.Coverage]:
     empty = px.Coverage.from_arrays(
         cells=np.empty(0, dtype=np.uint64),
@@ -475,13 +485,15 @@ def test_cover_cap_constellation_batch(
     [1, pytest.param(None, marks=pytest.mark.parallel)],
     ids=["serial", "automatic"],
 )
-def test_count_caps_per_cell_constellation_batch(
+def test_cover_cap_dense_count_constellation_batch(
     benchmark,
     constellation_caps: tuple[np.ndarray, np.ndarray],
     threads: int | None,
 ) -> None:
     centers, radii = constellation_caps
-    counts = benchmark(px.cover_cap, centers, radii, 6, into=px.Count(), threads=threads)
+    counts = benchmark(
+        px.cover_cap, centers, radii, 6, into=px.Count(), threads=threads
+    )
 
     assert counts.shape == (12 * 4**6,)
     assert counts.dtype == np.int64
@@ -528,6 +540,74 @@ def test_sum_coverage_per_cell_eo_shape(
     assert np.isclose(sums.sum(), 64 * values.sum())
 
 
+def test_cover_cap_selected_count_small_request(
+    benchmark,
+    constellation_caps: tuple[np.ndarray, np.ndarray],
+) -> None:
+    """A small request must stay on the fused per-cell cap kernel."""
+    centers, radii = constellation_caps
+    requested = np.arange(64, dtype=np.int64)
+    counts = benchmark(
+        px.cover_cap, centers, radii, 6, into=px.Count(cells=requested), threads=1
+    )
+
+    assert counts.shape == requested.shape
+    np.testing.assert_array_equal(
+        counts,
+        px.cover_cap(centers, radii, 6).reduce(px.Count(cells=requested)),
+    )
+
+
+def test_cover_cap_selected_count_large_request(
+    benchmark,
+    constellation_caps: tuple[np.ndarray, np.ndarray],
+) -> None:
+    """A large request must not degrade to one cap test per requested cell.
+
+    Fusing this shape costs ``cells * caps`` cap tests and was measured at 47x
+    the cost of covering once and reducing, so the reducer has to decline.
+    """
+    centers, radii = constellation_caps
+    requested = np.arange(100_000, dtype=np.int64)
+    counts = benchmark(
+        px.cover_cap, centers, radii, 8, into=px.Count(cells=requested), threads=1
+    )
+
+    assert counts.shape == requested.shape
+    np.testing.assert_array_equal(
+        counts,
+        px.cover_cap(centers, radii, 8).reduce(px.Count(cells=requested)),
+    )
+
+
+def test_count_coverage_selected_small_work(
+    benchmark,
+    small_resolution_8_coverage: px.Coverage,
+) -> None:
+    """A few hits and a tiny query must not zero the whole 6 MiB scratch grid.
+
+    The dense scratch grid fits at resolution 8, but zeroing it for a handful
+    of probes was measured at 18x the cost of the hash path.
+    """
+    requested = np.asarray(small_resolution_8_coverage.cells[:4])
+    counts = benchmark(small_resolution_8_coverage.reduce, px.Count(cells=requested))
+
+    assert counts.shape == requested.shape
+    assert int(counts.sum()) >= 4
+
+
+def test_sum_coverage_selected_sparse_high_resolution(
+    benchmark,
+    sparse_high_resolution_reduction: tuple[px.Coverage, np.ndarray],
+) -> None:
+    coverage, queried = sparse_high_resolution_reduction
+    values = np.linspace(0.25, 1.25, coverage.segment_count)
+    sums = benchmark(coverage.reduce, px.Sum(values, cells=queried))
+
+    assert sums.shape == queried.shape
+    assert sums.dtype == np.float64
+
+
 def test_count_coverage_selected_sparse_high_resolution(
     benchmark,
     sparse_high_resolution_reduction: tuple[px.Coverage, np.ndarray],
@@ -563,6 +643,32 @@ def test_occupancy_runs_output_heavy_eo_shape(
     assert runs.cells.size == 49_152
     assert runs.starts.size == 921_600
     assert int(runs.run_counts.sum()) == 921_600
+
+
+def test_occupancy_stats_many_sources_eo_shape(
+    benchmark,
+    eo_shaped_coverage: px.Coverage,
+) -> None:
+    """The fused statistics pass must not materialize the runs it summarizes."""
+    stats = benchmark(px.occupancy, [eo_shaped_coverage] * 10, into=px.Stats())
+
+    assert stats.cells.size == 49_152
+    assert stats.run_counts.dtype == np.int64
+    assert int(stats.run_counts.sum()) == 921_600
+    np.testing.assert_array_equal(
+        stats.run_counts,
+        px.occupancy([eo_shaped_coverage] * 10).run_counts,
+    )
+
+
+def test_occupancy_stats_sparse_high_resolution(
+    benchmark,
+    many_sparse_sources: list[px.Coverage],
+) -> None:
+    stats = benchmark(px.occupancy, many_sparse_sources, into=px.Stats())
+
+    np.testing.assert_array_equal(stats.cells, [123])
+    np.testing.assert_array_equal(stats.run_counts, [1])
 
 
 def test_occupancy_runs_many_sparse_sources(

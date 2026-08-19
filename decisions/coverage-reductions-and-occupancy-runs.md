@@ -28,10 +28,12 @@ fusing an additional pair later is an invisible optimization rather than an API
 change.
 
 Reductions remain native. With `cells=None` they return a dense fixed-grid
-array. With `cells=` they preserve query order and duplicates and do not
-allocate by global cell count. `values` is a scalar or one finite `float64`
-value per coverage segment. Floating addition is deterministic in segment and
-hit order; non-finite inputs and overflow are rejected.
+array. With `cells=` they preserve query order and duplicates and return a
+result sized by the request rather than by the grid; a small grid may still use
+a bounded dense scratch array internally when the call touches enough of it.
+`values` is a scalar or one finite `float64` value per coverage segment.
+Floating addition is deterministic in segment and hit order; non-finite inputs
+and overflow are rejected.
 
 The fused cap kernel remains, but it is no longer a separate public verb.
 `cover_cap(..., into=Count())` accumulates private RING spans without ever
@@ -182,6 +184,13 @@ Earth-observation example, the same workload end to end:
 | `occupancy()` runs, reduced in NumPy | 311 ms | 476 ms | 413 MiB |
 | `occupancy(into=Stats())` | 52 ms | 208 ms | 132 MiB |
 
+Those figures are the dense-state path, which covers resolutions up to 9.
+Above that both reducers fall back to hash-keyed state, and there `Stats()` is
+about 35 percent *slower* than `Runs()` — 111 ms against 84 ms for 725,000 runs
+at resolution 11 — while still avoiding the run allocation. The sparse fallback
+also still collects runs into one global vector and sorts it, which the dense
+path was rewritten to avoid. Both remain open.
+
 The middle row is not an implementation defect. A cell here is observed briefly
 and revisited hours later, so 9.28 million hits yield 9.20 million runs: the
 representation compresses nothing on this shape of workload, and 147 MiB of run
@@ -196,14 +205,48 @@ against about 12.5 ms and 14 MiB, and about 127 ms and 212 MiB, for covering
 then reducing. The advantage compounds with resolution, which is why the kernel
 survives even though its public verb does not.
 
+That advantage does not extend to a selected query, and the first version of
+this decision routed one there anyway. A fused selected count decodes each
+requested cell's centre and tests it against every cap, so its cost is
+`cells * caps` rather than the hit count. For 10,771 caps at resolution 8 it
+took about 457 ms for 100,000 requested cells against about 9.7 ms for covering
+once and reducing, and about 810 ms against 25 ms at 200,000 — 47x and 32x for
+the only spelling the API offers. `cover_cap()` therefore estimates both costs
+and picks the cheaper. The estimate uses measured native throughput: about
+10 ns to emit a coverage hit, about 10 ns to gather a requested cell, and about
+43 ns per requested cell plus 0.48 ns per cap test to fuse. Across 240 shapes
+spanning resolutions 5 to 10, one to 10,771 caps, three radii, and requests
+from 10 to 100,000 cells, the worst remaining mis-pick costs about 1.3x.
+
+The fused selected path is kept rather than deleted because it is the only one
+that answers a query the coverage cannot express: a whole-sphere cap at
+resolution 29 covers 1.4e19 cells, so covering first is impossible while four
+requested cells resolve in about 150 microseconds. The estimate selects it there
+automatically, since the covering cost it is compared against is astronomical.
+
+The dense scratch grid for selected reductions had the same shape of defect.
+Choosing it on grid size alone meant a four-cell query at resolution 8 zeroed
+6 MiB for 79 probes, taking about 161 microseconds against about 11
+microseconds for the hash path one resolution higher — where the grid is four
+times larger. Requiring the coverage and query together to touch at least a
+thirty-second of the grid, as `access.rs` already required of its dense
+occupancy state, brought that case to about 9 microseconds while leaving large
+queries on the dense path.
+
 The native generic reducers avoid per-hit segment-index and weight temporaries.
-The queried path uses storage proportional to the requested cells rather than
-the resolution-sized grid, including at resolution 29. None of these additions
+The queried *result* is proportional to the requested cells rather than the
+resolution-sized grid, including at resolution 29; its working storage is the
+bounded dense scratch grid or a hash table, whichever the work estimate above
+selects. None of these additions
 changes the cap traversal or explicit coverage hot paths.
 
 These values are regression-design evidence from one machine, not public
-cross-machine performance claims. Repository benchmarks guard both the fused
-cap path and the generic reducers.
+cross-machine performance claims, and the cost constants above are calibration
+rather than contract: a mis-estimate costs a constant factor, never a wrong
+result. Repository benchmarks guard the dense and selected fused cap paths on
+both sides of the work estimate, the generic reducers including a small-work
+selected query, and both occupancy reducers. Tests assert that the two sides of
+each estimate agree exactly.
 
 ## Correctness evidence
 

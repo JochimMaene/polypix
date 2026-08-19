@@ -54,19 +54,25 @@ Concatenating all chunks recreates the original memory requirement.
 `cells` is `None`. That array is the requested result, so
 its cost follows the resolution rather than the coverage: 384 KiB at resolution
 6, 96 MiB at resolution 10, and 1.5 GiB at resolution 12. Passing `cells`
-returns one value per requested ID instead and never allocates the full grid.
+returns one value per requested ID instead, so the result never scales with the
+grid.
 
-Sparse coverage above resolution 8 should pass `cells`. At or below that the
-dense grid is small, so a `cells` query is served from a dense scratch grid and
-costs about the same as the dense result; above it the query accumulates
-through a hash table instead and keeps memory flat.
+Sparse coverage above resolution 8 should pass `cells`. At or below that a
+`cells` query may still be served from a dense scratch grid, which costs about
+the same as the dense result — but only when the query and coverage together
+touch a reasonable share of that grid. A small query against a large grid, and
+every query above resolution 8, accumulates through a hash table instead and
+keeps memory flat.
 
 A reducer names the result, not the algorithm. Polypix fuses the accumulation
 into the geometry kernel where that is faster and materializes membership
 otherwise, returning the same array either way. Today
 `cover_cap(..., into=Count())` is the case that fuses, because the cap kernel
 accumulates private RING spans and never allocates cap-cell membership; polygon
-and sweep reducers materialize first. The
+and sweep reducers materialize first. With `cells` supplied, `cover_cap()`
+compares the two before choosing: a fused selected count tests every cap
+against every requested cell, so it is kept for small requests and for caps too
+large to materialize, and covering once then reducing is used otherwise. The
 [architecture decisions](decisions.md) carry the benchmark evidence.
 
 `OccupancyRuns` is lossless, so it is not guaranteed to be smaller than its

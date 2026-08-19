@@ -720,7 +720,7 @@ fn cap_interval_range(
 fn visit_cap_ranges(cap: &Cap, resolution: u8, mut visit: impl FnMut(Range<u64>)) {
     let nside = 1_u64 << resolution;
     if cap.full_sphere {
-        visit(0..(12_u64 << (2 * resolution)));
+        visit(0..raw_cell_count(resolution));
         return;
     }
     let (first_ring, last_ring) = ring_range(nside, cap.minimum_z, cap.maximum_z);
@@ -1008,12 +1008,18 @@ impl PreparedFootprint {
     }
 }
 
+/// Number of fixed-resolution HEALPix RING cells.
+pub(crate) fn raw_cell_count(resolution: u8) -> u64 {
+    debug_assert!(resolution <= MAX_RESOLUTION);
+    12_u64 << (2 * resolution)
+}
+
 pub(crate) fn validate_cell_range(
     cells: &[u64],
     resolution: u8,
     argument_name: &str,
 ) -> Result<(), String> {
-    let cell_count = 12_u64 << (2 * resolution);
+    let cell_count = raw_cell_count(resolution);
     if cells.iter().any(|&cell| cell >= cell_count) {
         return Err(format!(
             "{argument_name} must contain valid RING indices at resolution {resolution}."
@@ -1334,7 +1340,7 @@ fn estimated_cap_cells(raw: &[f64], resolution: u8) -> usize {
         minimum_cosine = minimum_cosine.min(dot(center, vertex));
     }
     let sphere_fraction = 0.5 * (1.0 - minimum_cosine).clamp(0.0, 2.0);
-    let cell_count = (12_u64 << (2 * resolution)) as f64;
+    let cell_count = raw_cell_count(resolution) as f64;
     (sphere_fraction * cell_count) as usize
 }
 
@@ -1660,7 +1666,7 @@ pub(crate) fn cover(
 
 fn expected_cells_for_cap(cap: &Cap, resolution: u8) -> usize {
     let sphere_fraction = 0.5 * (1.0 - cap.cosine_radius).clamp(0.0, 2.0);
-    let cell_count = (12_u64 << (2 * resolution)) as f64;
+    let cell_count = raw_cell_count(resolution) as f64;
     (sphere_fraction * cell_count).min(usize::MAX as f64).ceil() as usize
 }
 
@@ -1844,8 +1850,8 @@ pub(crate) fn count_caps_per_cell(
 ) -> NativeResult<Vec<i64>> {
     debug_assert!(resolution <= MAX_RESOLUTION);
     let caps = prepare_caps(centers, radii)?;
-    let raw_cell_count = 12_u64 << (2 * resolution);
-    let cell_count = usize::try_from(raw_cell_count).map_err(|_| {
+    let raw_cells_total = raw_cell_count(resolution);
+    let cell_count = usize::try_from(raw_cells_total).map_err(|_| {
         NativeError::materialization("Dense cap-overlap result is too large to materialize.")
     })?;
     if caps.len() > i64::MAX as usize {
@@ -2074,7 +2080,8 @@ pub(crate) fn cover_sweep(
 #[cfg(test)]
 mod tests {
     use super::{
-        accumulated_scan_work, candidate_cache_range, cells_at, center, integer_sqrt, ring_info,
+        accumulated_scan_work, candidate_cache_range, cells_at, center, integer_sqrt,
+        raw_cell_count, ring_info,
         ring_of_cell, ring_start, ring_to_face_xy, CandidatePlan, CANDIDATE_CENTER_CACHE_MAX_BYTES,
         CANDIDATE_CENTER_CACHE_REUSE, CELL_AT_PARALLEL_MIN_VECTORS, MAX_RESOLUTION,
         ROTATION_RESYNC_STEPS, SCAN_PREPARATION_WORK, SCAN_WORK_SAMPLE_SIZE, TAU,
@@ -2108,7 +2115,7 @@ mod tests {
     #[test]
     fn direction_index_round_trips_every_low_resolution_center() {
         for resolution in 0..=6 {
-            let cell_count = 12_u64 << (2 * resolution);
+            let cell_count = raw_cell_count(resolution);
             let vectors = (0..cell_count)
                 .flat_map(|cell| center(cell, resolution))
                 .collect::<Vec<_>>();

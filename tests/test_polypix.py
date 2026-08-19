@@ -312,7 +312,12 @@ class PolypixTests(unittest.TestCase):
                     np.zeros(12 * 4**resolution, dtype=np.int64),
                 )
                 np.testing.assert_array_equal(
-                    px.cover_cap(empty, radii, resolution=resolution, into=px.Count(cells=[7, 1, 7])),
+                    px.cover_cap(
+                        empty,
+                        radii,
+                        resolution=resolution,
+                        into=px.Count(cells=[7, 1, 7]),
+                    ),
                     [0, 0, 0],
                 )
 
@@ -357,14 +362,24 @@ class PolypixTests(unittest.TestCase):
             minlength=12 * 4**resolution,
         ).astype(np.int64, copy=False)
 
-        serial = px.cover_cap(centers, radii, resolution=resolution, into=px.Count(), threads=1)
-        parallel = px.cover_cap(centers, radii, resolution=resolution, into=px.Count(), threads=4)
+        serial = px.cover_cap(
+            centers, radii, resolution=resolution, into=px.Count(), threads=1
+        )
+        parallel = px.cover_cap(
+            centers, radii, resolution=resolution, into=px.Count(), threads=4
+        )
 
         self.assertEqual(serial.dtype, np.dtype("int64"))
         np.testing.assert_array_equal(serial, expected)
         np.testing.assert_array_equal(parallel, expected)
         requested = np.asarray([7, 1, 7, 100, 0], dtype=np.uint64)
-        queried = px.cover_cap(centers, radii, resolution=resolution, into=px.Count(cells=requested), threads=1)
+        queried = px.cover_cap(
+            centers,
+            radii,
+            resolution=resolution,
+            into=px.Count(cells=requested),
+            threads=1,
+        )
         np.testing.assert_array_equal(
             queried, expected[requested.astype(np.int64, copy=False)]
         )
@@ -383,7 +398,9 @@ class PolypixTests(unittest.TestCase):
             minlength=12 * 4**resolution,
         ).astype(np.int64, copy=False)
         np.testing.assert_array_equal(
-            px.cover_cap(centers, radii, resolution=resolution, into=px.Count(), threads=1),
+            px.cover_cap(
+                centers, radii, resolution=resolution, into=px.Count(), threads=1
+            ),
             expected,
         )
         self.assertTrue(np.all(expected >= 1))
@@ -391,14 +408,23 @@ class PolypixTests(unittest.TestCase):
         high_resolution = 29
         high_cells = np.asarray([12 * 4**29 - 1, 0, 6 * 4**29, 0], dtype=np.uint64)
         np.testing.assert_array_equal(
-            px.cover_cap([-1.0, 0.0, 0.0], math.pi, resolution=high_resolution, into=px.Count(cells=high_cells)),
+            px.cover_cap(
+                [-1.0, 0.0, 0.0],
+                math.pi,
+                resolution=high_resolution,
+                into=px.Count(cells=high_cells),
+            ),
             np.ones(high_cells.size, dtype=np.int64),
         )
-        queried_empty = px.cover_cap([1.0, 0.0, 0.0], 0.1, resolution=high_resolution, into=px.Count(cells=[]))
+        queried_empty = px.cover_cap(
+            [1.0, 0.0, 0.0], 0.1, resolution=high_resolution, into=px.Count(cells=[])
+        )
         self.assertEqual(queried_empty.shape, (0,))
         self.assertEqual(queried_empty.dtype, np.dtype("int64"))
         with self.assertRaisesRegex(MemoryError, "too large"):
-            px.cover_cap([1.0, 0.0, 0.0], 0.1, resolution=high_resolution, into=px.Count())
+            px.cover_cap(
+                [1.0, 0.0, 0.0], 0.1, resolution=high_resolution, into=px.Count()
+            )
         with self.assertRaisesRegex(MemoryError, "too large"):
             px.cover_cap([1.0, 0.0, 0.0], math.pi, high_resolution)
 
@@ -429,17 +455,29 @@ class PolypixTests(unittest.TestCase):
                 np.testing.assert_array_equal(actual.cells, serial.cells)
                 np.testing.assert_array_equal(actual.offsets, serial.offsets)
 
-        serial_counts = px.cover_cap(centers, radii, resolution=5, into=px.Count(), threads=1)
+        serial_counts = px.cover_cap(
+            centers, radii, resolution=5, into=px.Count(), threads=1
+        )
         query_cells = np.arange(300, dtype=np.uint64)
-        serial_query = px.cover_cap(centers, radii, resolution=5, into=px.Count(cells=query_cells), threads=1)
+        serial_query = px.cover_cap(
+            centers, radii, resolution=5, into=px.Count(cells=query_cells), threads=1
+        )
         for threads in (4, None):
             with self.subTest(count_threads=threads):
                 np.testing.assert_array_equal(
-                    px.cover_cap(centers, radii, resolution=5, into=px.Count(), threads=threads),
+                    px.cover_cap(
+                        centers, radii, resolution=5, into=px.Count(), threads=threads
+                    ),
                     serial_counts,
                 )
                 np.testing.assert_array_equal(
-                    px.cover_cap(centers, radii, resolution=5, into=px.Count(cells=query_cells), threads=threads),
+                    px.cover_cap(
+                        centers,
+                        radii,
+                        resolution=5,
+                        into=px.Count(cells=query_cells),
+                        threads=threads,
+                    ),
                     serial_query,
                 )
 

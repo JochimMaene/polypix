@@ -138,13 +138,19 @@ Cover exact spherical caps by HEALPix cell-center inclusion.
   center. A length-one array is not broadcast. Radii are in radians and must
   lie in the closed interval `[0, pi]`.
 
-`resolution`, `candidate_cells`, `threads`
+`resolution`, `candidate_cells`, `threads`, `into`
 : As in [`cover_convex_polygon`](#cover_convex_polygon).
 
 **Returns**
 
 `Coverage`
-: One segment per input cap. A single `(3,)` center retains one segment.
+: With `into=None`, one segment per input cap. A single `(3,)` center retains
+  one segment.
+
+`ndarray`
+: With `into=Count()` or `into=Sum(values)`, the accumulated array described
+  under [reducers](#reducers). `into=Count()` accumulates private RING spans
+  without materializing cap-cell membership.
 
 **Raises**
 
@@ -194,14 +200,20 @@ called a HEALPix "strip".
 `left_edge_xyz`, `right_edge_xyz`
 : *array_like*. `(samples, 3)` vector arrays of equal length.
 
-`resolution`, `candidate_cells`, `threads`
+`resolution`, `candidate_cells`, `threads`, `into`
 : As in [`cover_convex_polygon`](#cover_convex_polygon).
 
 **Returns**
 
 `Coverage`
-: For `N` paired samples, `N - 1` segments, where segment `i` covers the
-  quadrilateral `[left[i], right[i], right[i+1], left[i+1]]`.
+: With `into=None`, `max(N - 1, 0)` segments for `N` paired samples, where
+  segment `i` covers the quadrilateral
+  `[left[i], right[i], right[i+1], left[i+1]]`. Zero or one paired sample
+  yields zero segments.
+
+`ndarray`
+: With `into=Count()` or `into=Sum(values)`, the accumulated array described
+  under [reducers](#reducers).
 
 **Raises**
 
@@ -308,7 +320,8 @@ accepted by `occupancy()`.
 : *int, sequence of int, ndarray, or None*. With `None` the result is a dense
   array indexed by RING cell ID and of length `cell_count(resolution)`.
   Supplying `cells` returns one value per requested ID, in query order and
-  including duplicates, without allocating the fixed grid.
+  including duplicates, without a grid-sized result. Small grids still use a
+  dense scratch array internally; large ones accumulate through a hash table.
 
 `values`
 : *float or sequence of float*. A scalar shared by every segment, or one finite

@@ -146,9 +146,76 @@ def test_fused_cap_counts_match_generic_reduction() -> None:
     )
     requested = np.asarray([0, 8, 8, 100, 3000], dtype=np.int64)
     np.testing.assert_array_equal(
-        px.cover_cap(centers, radii, resolution=5, into=px.Count(cells=requested), threads=1),
+        px.cover_cap(
+            centers, radii, resolution=5, into=px.Count(cells=requested), threads=1
+        ),
         (coverage).reduce(px.Count(cells=requested)),
     )
+
+
+def test_fused_cap_counts_agree_across_the_selected_work_heuristic() -> None:
+    """Both sides of the fuse/cover decision must return the same counts.
+
+    ``cover_cap(into=Count(cells=...))`` fuses a small request and covers first
+    for a large one, because fusing costs one cap test per requested cell.
+    """
+    rng = np.random.default_rng(20240819)
+    centers = rng.normal(size=(400, 3))
+    centers /= np.linalg.norm(centers, axis=1, keepdims=True)
+    radii = np.full(400, 0.05)
+    resolution = 7
+    coverage = px.cover_cap(centers, radii, resolution, threads=1)
+
+    total = px.cell_count(resolution)
+    for requested in (
+        np.asarray([], dtype=np.int64),
+        np.asarray([0, 5, 5, total - 1], dtype=np.int64),
+        rng.integers(0, total, size=40_000),
+    ):
+        np.testing.assert_array_equal(
+            px.cover_cap(
+                centers, radii, resolution, into=px.Count(cells=requested), threads=1
+            ),
+            coverage.reduce(px.Count(cells=requested)),
+        )
+
+
+def test_fused_cap_counts_stay_available_for_unmaterializable_caps() -> None:
+    """A whole-sphere cap at resolution 29 can only be answered by fusing."""
+    requested = np.asarray([12 * 4**29 - 1, 0, 6 * 4**29, 0], dtype=np.uint64)
+    np.testing.assert_array_equal(
+        px.cover_cap([-1.0, 0.0, 0.0], math.pi, 29, into=px.Count(cells=requested)),
+        np.ones(requested.size, dtype=np.int64),
+    )
+
+
+def test_selected_reductions_agree_across_the_scratch_grid_heuristic() -> None:
+    """Dense-scratch and hash accumulation must return identical results.
+
+    A few hits with a tiny query take the hash path even where the dense grid
+    would fit, so both paths have to be exercised at the same resolution.
+    """
+    rng = np.random.default_rng(20240820)
+    resolution = 8
+    total = px.cell_count(resolution)
+    sparse = px.Coverage.from_arrays(
+        cells=np.asarray([3, 700_000, total - 1, 3], dtype=np.int64),
+        offsets=np.asarray([0, 2, 3, 4], dtype=np.int64),
+        resolution=resolution,
+    )
+    values = np.asarray([1.5, -0.25, 2.0])
+    for requested in (
+        np.asarray([3, 3, total - 1, 0], dtype=np.int64),
+        rng.integers(0, total, size=50_000),
+    ):
+        dense_counts = sparse.reduce(px.Count())
+        dense_sums = sparse.reduce(px.Sum(values))
+        np.testing.assert_array_equal(
+            sparse.reduce(px.Count(cells=requested)), dense_counts[requested]
+        )
+        np.testing.assert_allclose(
+            sparse.reduce(px.Sum(values, cells=requested)), dense_sums[requested]
+        )
 
 
 def test_occupancy_runs_preserve_complete_ordinal_windows() -> None:
@@ -328,7 +395,9 @@ def test_queried_reductions_match_the_dense_result_across_paths() -> None:
     values = np.asarray([0.5, 2.0, -1.25], dtype=np.float64)
     queried = np.asarray([400, 3, 1, 3, 0, 17], dtype=np.int64)
 
-    dense_reference = (px.Coverage.from_arrays(cells, offsets, resolution=6)).reduce(px.Count())
+    dense_reference = (px.Coverage.from_arrays(cells, offsets, resolution=6)).reduce(
+        px.Count()
+    )
     expected_counts = dense_reference[queried]
 
     for resolution in (6, 20):

@@ -36,6 +36,13 @@ fn validate_run_sources(
     if cell_arrays.is_empty() {
         return Err("occupancy_runs() requires at least one coverage source.".to_owned());
     }
+    // Both the dense and sparse accumulators track segments and source counts
+    // in `u32`, so reject anything that would truncate rather than returning a
+    // silently wrong result. Reaching either bound needs tens of gigabytes of
+    // offsets, so no admissible input is refused here.
+    if minimum_sources > u32::MAX as usize {
+        return Err("minimum_sources must fit in 32 bits.".to_owned());
+    }
     if cell_arrays.len() != offset_arrays.len() {
         return Err(
             "cell_arrays and offset_arrays must contain the same number of sources.".to_owned(),
@@ -65,7 +72,11 @@ fn validate_run_sources(
         }
         segment_count = Some(source_segment_count);
     }
-    Ok(segment_count.expect("at least one source was validated"))
+    let segment_count = segment_count.expect("at least one source was validated");
+    if segment_count > u32::MAX as usize {
+        return Err("coverage sources must contain fewer than 2^32 segments.".to_owned());
+    }
+    Ok(segment_count)
 }
 
 fn push_run(runs: &mut Vec<(u64, u64, u64)>, cell: u64, start: u64, stop: u64) -> NativeResult<()> {
@@ -86,9 +97,11 @@ fn empty_runs() -> OccupancyRuns {
     }
 }
 
-// This cap covers the fixed state array. Because HEALPix cell counts quadruple,
-// the largest admitted grid is resolution 9: 48 MiB of state on 64-bit hosts,
-// leaving ample headroom for the touched-cell indices (at most one per cell).
+// This cap covers the fixed state array, measured against the accumulator the
+// caller actually allocates. Because HEALPix cell counts quadruple, the largest
+// admitted grid is resolution 9 for both accumulators: 48 MiB of 16-byte run
+// state or 96 MiB of 32-byte statistics state, leaving headroom for the
+// touched-cell indices (at most one per cell).
 const DENSE_STATE_MAX_BYTES: usize = 128 * 1024 * 1024;
 const DENSE_STATE_ALWAYS_BYTES: usize = 8 * 1024 * 1024;
 const DENSE_MINIMUM_WORK_DIVISOR: usize = 8;
@@ -111,15 +124,11 @@ impl DenseCellState {
 
 fn dense_state_length(
     resolution: u8,
-    segment_count: usize,
-    minimum_sources: usize,
     total_hits: usize,
+    element_bytes: usize,
 ) -> Option<usize> {
-    if segment_count > u32::MAX as usize || minimum_sources > u32::MAX as usize {
-        return None;
-    }
-    let cell_count = usize::try_from(12_u64 << (2 * resolution)).ok()?;
-    let state_bytes = cell_count.checked_mul(size_of::<DenseCellState>())?;
+    let cell_count = usize::try_from(ring::raw_cell_count(resolution)).ok()?;
+    let state_bytes = cell_count.checked_mul(element_bytes)?;
     if state_bytes > DENSE_STATE_MAX_BYTES {
         return None;
     }
@@ -437,7 +446,7 @@ pub(crate) fn occupancy_runs(
     }
 
     if let Some(cell_count) =
-        dense_state_length(resolution, segment_count, minimum_sources, total_hits)
+        dense_state_length(resolution, total_hits, size_of::<DenseCellState>())
     {
         if let Some(states) = try_dense_states(cell_count) {
             return occupancy_runs_dense(
@@ -458,7 +467,7 @@ mod tests {
 
     use super::{
         dense_state_length, occupancy_runs, occupancy_runs_dense, occupancy_runs_sparse,
-        try_dense_states, OccupancyRuns,
+        try_dense_states, DenseCellState, OccupancyRuns,
     };
     use crate::ring;
 
@@ -606,7 +615,7 @@ mod tests {
         for minimum_sources in [1, 2] {
             let expected = reference_runs(&cell_slices, &offset_slices, minimum_sources);
             let state_length =
-                dense_state_length(6, segment_count, minimum_sources, total_hits).unwrap();
+                dense_state_length(6, total_hits, size_of::<DenseCellState>()).unwrap();
             let implementations = [
                 occupancy_runs(&cell_slices, &offset_slices, 6, minimum_sources, false).unwrap(),
                 occupancy_runs_dense(
@@ -638,7 +647,10 @@ mod tests {
         let cells = [final_cell, 0, final_cell];
         let offsets = [0, 1, 2, 3];
 
-        assert!(dense_state_length(ring::MAX_RESOLUTION, 3, 1, cells.len()).is_none());
+        assert!(
+            dense_state_length(ring::MAX_RESOLUTION, cells.len(), size_of::<DenseCellState>())
+                .is_none()
+        );
         let actual = occupancy_runs(&[&cells], &[&offsets], ring::MAX_RESOLUTION, 1, false).unwrap();
 
         assert_runs(actual, &[0, final_cell], &[0, 1, 3], &[1, 0, 2], &[2, 1, 3]);
@@ -789,8 +801,7 @@ pub(crate) fn occupancy_stats(
 
     // Dense state is a flat grid; sparse state is keyed by observed cell. Both
     // hold one accumulator per cell, never one per run.
-    if let Some(cell_count) = dense_state_length(resolution, segment_count, 1, total_hits)
-        .filter(|count| count.checked_mul(size_of::<StatsState>()).is_some())
+    if let Some(cell_count) = dense_state_length(resolution, total_hits, size_of::<StatsState>())
     {
         let mut states = Vec::new();
         if states.try_reserve_exact(cell_count).is_ok() {

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::error::{NativeError, NativeResult};
-use crate::ring::MAX_RESOLUTION;
+use crate::ring::{self, MAX_RESOLUTION};
 
 const COUNT_OVERFLOW: &str = "Too many coverage hits to represent counts as int64.";
 const SUM_OVERFLOW: &str = "Coverage values overflowed float64 during summation.";
@@ -10,7 +10,7 @@ fn raw_cell_count(resolution: u8) -> NativeResult<u64> {
     if resolution > MAX_RESOLUTION {
         return Err(format!("resolution must be between 0 and {MAX_RESOLUTION}.").into());
     }
-    Ok(12_u64 << (2 * resolution))
+    Ok(ring::raw_cell_count(resolution))
 }
 
 // A dense scratch grid beats one hash probe per hit while the grid stays
@@ -18,44 +18,45 @@ fn raw_cell_count(resolution: u8) -> NativeResult<u64> {
 // high-resolution queries `cells` exists to serve. The bound admits
 // resolutions up to 8.
 const DENSE_SCRATCH_MAX_BYTES: usize = 8 * 1024 * 1024;
+// Zero-initializing the scratch grid costs a fraction of a nanosecond per cell
+// while a hash probe costs tens of nanoseconds per item, so the grid only pays
+// for itself once the call touches a reasonable share of it. Without this a
+// four-cell query at resolution 8 zeroes 6 MiB and loses to the hash path by an
+// order of magnitude. Mirrors `DENSE_MINIMUM_WORK_DIVISOR` in `access.rs`.
+const DENSE_SCRATCH_MINIMUM_WORK_DIVISOR: u64 = 32;
 
-fn dense_scratch_fits(cell_count: u64, element_bytes: usize) -> bool {
-    usize::try_from(cell_count)
+fn dense_scratch_fits(cell_count: u64, element_bytes: usize, work: usize) -> bool {
+    let fits = usize::try_from(cell_count)
         .ok()
         .and_then(|count| count.checked_mul(element_bytes))
-        .is_some_and(|bytes| bytes <= DENSE_SCRATCH_MAX_BYTES)
+        .is_some_and(|bytes| bytes <= DENSE_SCRATCH_MAX_BYTES);
+    fits && work as u64 >= cell_count / DENSE_SCRATCH_MINIMUM_WORK_DIVISOR
 }
 
 fn invalid_cell(argument_name: &str, resolution: u8) -> NativeError {
     format!("{argument_name} must contain valid RING indices at resolution {resolution}.").into()
 }
 
-fn dense_count_buffer(cell_count: u64) -> NativeResult<Vec<i64>> {
-    let length = usize::try_from(cell_count).map_err(|_| {
-        NativeError::materialization("Dense coverage-count result is too large to materialize.")
-    })?;
-    let mut counts = Vec::new();
-    counts.try_reserve_exact(length).map_err(|_| {
-        NativeError::materialization("Dense coverage-count result is too large to materialize.")
-    })?;
-    counts.resize(length, 0_i64);
-    Ok(counts)
-}
+const DENSE_COUNT_TOO_LARGE: &str = "Dense coverage-count result is too large to materialize.";
+const DENSE_SUM_TOO_LARGE: &str = "Dense coverage-sum result is too large to materialize.";
 
-fn dense_sum_buffer(cell_count: u64) -> NativeResult<Vec<f64>> {
-    let length = usize::try_from(cell_count).map_err(|_| {
-        NativeError::materialization("Dense coverage-sum result is too large to materialize.")
-    })?;
-    let mut sums = Vec::new();
-    sums.try_reserve_exact(length).map_err(|_| {
-        NativeError::materialization("Dense coverage-sum result is too large to materialize.")
-    })?;
-    sums.resize(length, 0.0_f64);
-    Ok(sums)
+fn dense_buffer<T: Clone>(
+    cell_count: u64,
+    zero: T,
+    too_large: &'static str,
+) -> NativeResult<Vec<T>> {
+    let length = usize::try_from(cell_count)
+        .map_err(|_| NativeError::materialization(too_large))?;
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(length)
+        .map_err(|_| NativeError::materialization(too_large))?;
+    values.resize(length, zero);
+    Ok(values)
 }
 
 fn dense_counts(cells: &[u64], cell_count: u64, resolution: u8) -> NativeResult<Vec<i64>> {
-    let mut counts = dense_count_buffer(cell_count)?;
+    let mut counts = dense_buffer(cell_count, 0_i64, DENSE_COUNT_TOO_LARGE)?;
     for &cell in cells {
         if cell >= cell_count {
             return Err(invalid_cell("cells", resolution));
@@ -91,7 +92,7 @@ fn selected_counts(
     cell_count: u64,
     resolution: u8,
 ) -> NativeResult<Vec<i64>> {
-    if dense_scratch_fits(cell_count, size_of::<i64>()) {
+    if dense_scratch_fits(cell_count, size_of::<i64>(), cells.len() + requested_cells.len()) {
         let scratch = dense_counts(cells, cell_count, resolution)?;
         return gathered(
             &scratch,
@@ -196,7 +197,7 @@ fn dense_sums(
     cell_count: u64,
     resolution: u8,
 ) -> NativeResult<Vec<f64>> {
-    let mut sums = dense_sum_buffer(cell_count)?;
+    let mut sums = dense_buffer(cell_count, 0.0_f64, DENSE_SUM_TOO_LARGE)?;
     for (segment_index, pair) in offsets.windows(2).enumerate() {
         let value = values[segment_index];
         for &cell in &cells[pair[0] as usize..pair[1] as usize] {
@@ -224,7 +225,7 @@ fn selected_sums(
     cell_count: u64,
     resolution: u8,
 ) -> NativeResult<Vec<f64>> {
-    if dense_scratch_fits(cell_count, size_of::<f64>()) {
+    if dense_scratch_fits(cell_count, size_of::<f64>(), cells.len() + requested_cells.len()) {
         // Only the requested cells are returned, so overflow in a cell the
         // caller did not ask for stays invisible, exactly as below.
         let scratch = dense_sums(cells, offsets, values, cell_count, resolution)?;
@@ -300,7 +301,7 @@ pub(crate) fn sum_coverage_per_cell(
 mod tests {
     use super::{count_coverage_per_cell, sum_coverage_per_cell};
     use crate::error::NativeError;
-    use crate::ring::MAX_RESOLUTION;
+    use crate::ring::{self, MAX_RESOLUTION};
 
     #[test]
     fn counts_dense_coverage_hits() {

@@ -26,13 +26,27 @@
   the `into=` reducer form, removing the geometry-specific reducer asymmetry
   and the two-verb occupancy split. The fused cap kernel is retained behind
   `cover_cap(..., into=Count())`.
+- Chose between the fused cap kernel and covering-then-reducing for
+  `cover_cap(..., into=Count(cells=...))` by comparing their estimated costs.
+  A fused selected count tests every cap against every requested cell, so it is
+  kept for small requests and for caps too large to materialize; large requests
+  now cover once and reduce. Always fusing was measured at up to 47x the cost.
+- Added typed `@overload` signatures to `cover_convex_polygon()`,
+  `cover_cap()`, `cover_sweep()`, and `occupancy()`, so an `into=` call site
+  resolves to `Coverage`, `OccupancyRuns`, `OccupancyStats`, or the accumulated
+  array under `mypy --strict` instead of `Any`.
+- Budgeted the dense occupancy state array against the accumulator actually
+  allocated, so `into=Stats()` no longer admits a grid sized for the smaller
+  run accumulator, and rejected segment and source counts that would truncate
+  through `u32` rather than returning a silently wrong result.
 - Skipped the redundant per-hit revalidation of an already-validated,
   read-only `Coverage` inside `occupancy_runs()` and the reductions, cutting
   two of four full passes over the hits.
-- Served queried `count_coverage_per_cell()` and `sum_coverage_per_cell()`
-  results from a dense scratch grid up to resolution 8, instead of one hash
-  probe per hit. Sparse higher-resolution queries keep the hash path and its
-  flat memory profile.
+- Served queried `Count` and `Sum` reductions from a dense scratch grid up to
+  resolution 8, instead of one hash probe per hit, but only when the coverage
+  and query together touch enough of that grid to amortize zeroing it. Sparse
+  higher-resolution queries, and small queries against a large grid, keep the
+  hash path and its flat memory profile.
 - Made `Coverage` a validated, read-only segmented interchange type with
   `from_arrays()`, segment indexing, `len()`, and zero-copy native results.
 - Standardized public cell IDs, offsets, segment indices, and occupancy-run
