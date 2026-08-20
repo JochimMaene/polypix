@@ -372,15 +372,19 @@ def _as_uint64_vector(
     if np.issubdtype(array.dtype, np.bool_):
         raise TypeError(f"{name} must contain integers, not bool.")
     if np.issubdtype(array.dtype, np.unsignedinteger):
-        return np.ascontiguousarray(array.astype(np.uint64, copy=False))
+        return _aligned(np.ascontiguousarray(array.astype(np.uint64, copy=False)))
     if np.issubdtype(array.dtype, np.signedinteger):
         # A reduction reads the array once and allocates nothing, where
         # ``any(array < 0)`` also materializes a full boolean temporary.
         if not native_range_checked and array.min() < 0:
             raise ValueError(f"{name} must contain non-negative integers.")
-        if array.dtype == np.dtype(np.int64) and array.flags.c_contiguous:
+        if (
+            array.dtype == np.dtype(np.int64)
+            and array.flags.c_contiguous
+            and array.flags.aligned
+        ):
             return array.view(np.uint64)
-        return np.ascontiguousarray(array.astype(np.uint64, copy=False))
+        return _aligned(np.ascontiguousarray(array.astype(np.uint64, copy=False)))
     if array.dtype == np.dtype("O"):
         integers = [_as_uint64_scalar(value, name) for value in array.tolist()]
         return np.ascontiguousarray(np.asarray(integers, dtype=np.uint64))
@@ -423,6 +427,21 @@ def _trusted_uint64(values: npt.NDArray[np.int64]) -> npt.NDArray[np.uint64]:
     return values.view(np.uint64)
 
 
+def _aligned(array: np.ndarray) -> np.ndarray:
+    """Return an array the kernel can borrow as a slice.
+
+    A contiguous array of the right dtype may still sit on an unaligned
+    address, which happens whenever one is viewed out of a packed byte buffer.
+    ``asarray`` and ``ascontiguousarray`` both return such an array unchanged,
+    because contiguity and dtype already match, so the copy has to be forced.
+    Native code cannot borrow it: a slice over a misaligned pointer is
+    undefined behaviour, and rust-numpy refuses to build one.
+    """
+    if array.flags.aligned:
+        return array
+    return np.array(array, dtype=array.dtype, order="C", copy=True)
+
+
 def _freeze_array(array: np.ndarray) -> None:
     """Make an owned result buffer read-only through the public array view."""
     array.flags.writeable = False
@@ -433,6 +452,7 @@ def _as_float_array(values: object, name: str) -> np.ndarray:
         isinstance(values, np.ndarray)
         and values.dtype == np.float64
         and values.flags.c_contiguous
+        and values.flags.aligned
     ):
         return values
     array = np.asarray(values)
@@ -445,7 +465,7 @@ def _as_float_array(values: object, name: str) -> np.ndarray:
     # ``ascontiguousarray`` promotes scalar inputs to shape ``(1,)``. Preserve
     # their rank so scalar cap radii remain distinguishable from length-one
     # arrays while still copying non-contiguous inputs exactly once.
-    return np.asarray(array, dtype=np.float64, order="C")
+    return _aligned(np.asarray(array, dtype=np.float64, order="C"))
 
 
 def _as_float_matrix(values: object, width: int, name: str) -> np.ndarray:

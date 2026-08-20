@@ -69,9 +69,11 @@ fn slice<'a, T: Element, D: Dimension>(
     array: &'a PyReadonlyArray<'_, T, D>,
     name: &str,
 ) -> PyResult<&'a [T]> {
-    array
-        .as_slice()
-        .map_err(|_| PyValueError::new_err(format!("{name} must be C-contiguous.")))
+    array.as_slice().map_err(|_| {
+        PyValueError::new_err(format!(
+            "{name} must be C-contiguous and correctly aligned."
+        ))
+    })
 }
 
 /// Borrow an optional array as a slice.

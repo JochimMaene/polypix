@@ -299,6 +299,24 @@ both sides of the work estimate, the generic reducers including a small-work
 selected query, and both occupancy reducers. Tests assert that the two sides of
 each estimate agree exactly.
 
+## Trusting a validated Coverage
+
+The reductions do not rescan the hits a `Coverage` already validated, which is
+where two of their four passes went. That trust needs one qualification: a
+result array owns its data, so Python can reset the read-only flag and write to
+it afterwards, and rust-numpy documents the same limit on its own
+`make_nonwriteable`. A mutated source must therefore still fail cleanly.
+
+It costs nothing to make it. The dense accumulators index a grid-sized state
+array, so the bound is already enforced on every hit; taking it as an `Option`
+rather than a panic changes only where the failure goes. The map-keyed
+accumulators have no such bound and compare against the grid explicitly, which
+is negligible beside the hash probe that follows and replaces a silently wrong
+result with an error. Measured across resolutions 6, 9, and 12 on both
+reducers, the difference stays inside run-to-run noise. Revalidating the hits
+would have cost the passes this decision removed; enforcing the bound that was
+already there costs nothing.
+
 ## Correctness evidence
 
 Generic reducers are checked against independent NumPy oracles for dense and

@@ -202,6 +202,17 @@ impl<'a> SegmentedSources<'a> {
     }
 }
 
+/// Reject a cell that no grid at `resolution` can contain.
+///
+/// `Coverage` validates its cells once and exposes them read-only, so these
+/// reductions do not rescan the hits. That read-only flag is not a guarantee:
+/// the arrays own their data, so Python can reset it and mutate them
+/// afterwards. The bound below is therefore the one the accumulators would
+/// enforce anyway, reported as invalid input rather than as a panic.
+fn invalid_source_cell(cell: u64, resolution: u8) -> NativeError {
+    ring::invalid_cell_message(cell, resolution, "sources").into()
+}
+
 /// Fold one segment of every source into the dense interval counters, listing
 /// every cell the segment touched.
 ///
@@ -217,12 +228,19 @@ fn accumulate_dense_segment<S: IntervalCounted>(
     minimum_sources: u32,
     states: &mut [S],
     touched: &mut Vec<usize>,
+    resolution: u8,
     out_of_memory: fn() -> NativeError,
 ) -> NativeResult<()> {
     for cells in sources.segment_slices(segment) {
         for &cell in cells {
-            let cell = cell as usize;
-            let state = &mut states[cell];
+            let index = cell as usize;
+            // `states` spans the whole grid, so this is the bounds check the
+            // slice index would run regardless; taking it as an `Option` only
+            // changes where the failure goes.
+            let Some(state) = states.get_mut(index) else {
+                return Err(invalid_source_cell(cell, resolution));
+            };
+            let cell = index;
             let count = state.interval_count();
             if count == 0 {
                 if touched.len() == touched.capacity() {
@@ -244,14 +262,25 @@ fn accumulate_dense_segment<S: IntervalCounted>(
 /// enlarges it. Each source contributes a cell at most once per segment, so a
 /// count cannot exceed the number of sources; saturating keeps the counter
 /// inside `u32` without a bound that any admissible input could reach.
+///
+/// A map-keyed accumulator has no bound of its own to lean on, so unlike the
+/// dense path it must compare against the grid explicitly. One comparison per
+/// hit is negligible beside the hash probe that follows it, and without it a
+/// mutated `Coverage` would produce a silently wrong result rather than an
+/// error.
 fn count_sparse_segment(
     sources: SegmentedSources<'_>,
     segment: usize,
     interval_counts: &mut HashMap<u64, u32>,
+    cell_count: u64,
+    resolution: u8,
     out_of_memory: fn() -> NativeError,
 ) -> NativeResult<()> {
     for cells in sources.segment_slices(segment) {
         for &cell in cells {
+            if cell >= cell_count {
+                return Err(invalid_source_cell(cell, resolution));
+            }
             if interval_counts.len() == interval_counts.capacity()
                 && !interval_counts.contains_key(&cell)
             {
@@ -271,6 +300,7 @@ fn occupancy_runs_dense(
     offset_arrays: &[&[u64]],
     segment_count: usize,
     minimum_sources: usize,
+    resolution: u8,
     mut states: Vec<DenseCellState>,
 ) -> NativeResult<OccupancyRuns> {
     let minimum_sources = minimum_sources as u32;
@@ -286,6 +316,7 @@ fn occupancy_runs_dense(
             minimum_sources,
             &mut states,
             &mut touched,
+            resolution,
             runs_out_of_memory_error,
         )?;
         let segment = segment as u32;
@@ -362,6 +393,7 @@ fn occupancy_runs_dense(
             minimum_sources,
             &mut states,
             &mut touched,
+            resolution,
             runs_out_of_memory_error,
         )?;
         let segment = segment as u32;
@@ -401,10 +433,12 @@ fn occupancy_runs_sparse(
     offset_arrays: &[&[u64]],
     segment_count: usize,
     minimum_sources: usize,
+    resolution: u8,
 ) -> NativeResult<OccupancyRuns> {
     // Each source-entry segment is unique by validation, so an interval count
     // is exactly the number of source entries containing the cell.
     let minimum_sources = minimum_sources as u32;
+    let grid_cell_count = ring::raw_cell_count(resolution);
     let sources = SegmentedSources::new(cell_arrays, offset_arrays);
     let mut interval_counts: HashMap<u64, u32> = HashMap::new();
     let mut open_runs: HashMap<u64, (u64, u64)> = HashMap::new();
@@ -414,6 +448,8 @@ fn occupancy_runs_sparse(
             sources,
             segment,
             &mut interval_counts,
+            grid_cell_count,
+            resolution,
             runs_out_of_memory_error,
         )?;
 
@@ -524,11 +560,18 @@ pub(crate) fn occupancy_runs(
                 offset_arrays,
                 segment_count,
                 minimum_sources,
+                resolution,
                 states,
             );
         }
     }
-    occupancy_runs_sparse(cell_arrays, offset_arrays, segment_count, minimum_sources)
+    occupancy_runs_sparse(
+        cell_arrays,
+        offset_arrays,
+        segment_count,
+        minimum_sources,
+        resolution,
+    )
 }
 
 #[cfg(test)]
@@ -693,11 +736,18 @@ mod tests {
                     &offset_slices,
                     segment_count,
                     minimum_sources,
+                    6,
                     try_dense_states(state_length, DenseCellState::EMPTY).unwrap(),
                 )
                 .unwrap(),
-                occupancy_runs_sparse(&cell_slices, &offset_slices, segment_count, minimum_sources)
-                    .unwrap(),
+                occupancy_runs_sparse(
+                    &cell_slices,
+                    &offset_slices,
+                    segment_count,
+                    minimum_sources,
+                    6,
+                )
+                .unwrap(),
             ];
             for actual in implementations {
                 assert_runs(
@@ -761,6 +811,41 @@ mod tests {
         assert!(
             error_message(&[&empty_cells], &[&[0]], ring::MAX_RESOLUTION + 1, 1)
                 .contains("resolution must be between")
+        );
+    }
+
+    #[test]
+    fn a_mutated_source_is_rejected_rather_than_panicking() {
+        // `Coverage` arrays own their data, so Python can reset the read-only
+        // flag and write a cell that no grid contains. Both accumulators must
+        // report that as invalid input on both memory profiles.
+        for (resolution, label) in [(6_u8, "dense"), (ring::MAX_RESOLUTION, "sparse")] {
+            // The first index the grid cannot hold, for that grid.
+            let out_of_range = ring::raw_cell_count(resolution);
+            let cells: Vec<u64> = vec![0, out_of_range];
+            let offsets: Vec<u64> = vec![0, 2];
+            let cell_slices: Vec<&[u64]> = vec![cells.as_slice()];
+            let offset_slices: Vec<&[u64]> = vec![offsets.as_slice()];
+
+            let runs = error_message(&cell_slices, &offset_slices, resolution, 1);
+            let stats = match super::occupancy_stats(&cell_slices, &offset_slices, resolution, 1) {
+                Ok(_) => panic!("{label}: expected occupancy statistics to reject the input"),
+                Err(error) => error.to_string(),
+            };
+            for error in [runs, stats] {
+                assert!(
+                    error.starts_with("sources must contain"),
+                    "{label}: {error}"
+                );
+            }
+        }
+
+        // A negative public index arrives as a u64 above 1 << 63 and is named.
+        let negative = vec![u64::MAX];
+        let offsets = vec![0_u64, 1];
+        assert_eq!(
+            error_message(&[negative.as_slice()], &[offsets.as_slice()], 6, 1),
+            "sources must contain non-negative integers."
         );
     }
 
@@ -922,6 +1007,7 @@ pub(crate) fn occupancy_stats(
                     minimum_sources,
                     &mut states,
                     &mut touched,
+                    resolution,
                     stats_out_of_memory_error,
                 )?;
                 let segment = segment as u32;
@@ -945,6 +1031,7 @@ pub(crate) fn occupancy_stats(
         }
     }
 
+    let grid_cell_count = ring::raw_cell_count(resolution);
     let mut interval_counts: HashMap<u64, u32> = HashMap::new();
     let mut states: HashMap<u64, StatsState> = HashMap::new();
     for segment in 0..segment_count {
@@ -952,6 +1039,8 @@ pub(crate) fn occupancy_stats(
             sources,
             segment,
             &mut interval_counts,
+            grid_cell_count,
+            resolution,
             stats_out_of_memory_error,
         )?;
         let segment = segment as u32;

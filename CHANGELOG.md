@@ -22,6 +22,20 @@
 
 ### Changed
 
+- Rejected a `Coverage` whose cells were mutated after construction with a
+  `ValueError` instead of a Rust panic. The reductions do not rescan validated
+  hits, but a result array owns its data, so Python can reset its read-only
+  flag and write to it. The dense accumulators now take the bounds check they
+  already performed as a result rather than a panic, and the map-keyed ones,
+  which have no such bound, compare against the grid explicitly.
+- Upgraded to `pyo3` 0.29.2 and `numpy` 0.29.0. The new `as_slice()` requires
+  correct alignment as well as contiguity, which fixes a slice taken over a
+  misaligned pointer. A contiguous array can still be misaligned, and neither
+  `asarray()` nor `ascontiguousarray()` repairs that, so the conversion helpers
+  force the copy and such inputs keep working; the native message now names
+  alignment. The declared `rust-version` stays 1.87, which the crate needs for
+  `is_multiple_of`, and is above the 1.83 both dependencies require.
+
 - Replaced `count_caps_per_cell()`, `count_coverage_per_cell()`,
   `sum_coverage_per_cell()`, `occupancy_runs()`, and `occupancy_stats()` with
   the `into=` reducer form, removing the geometry-specific reducer asymmetry

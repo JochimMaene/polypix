@@ -100,9 +100,9 @@ Contiguous NumPy arrays are borrowed for the duration of the call. Because the
 native kernel releases the GIL, do not mutate an input or candidate array from
 another thread before the call returns.
 
-A C-contiguous `float64` dense batch is the lowest-overhead input form.
-Non-contiguous or other real numeric arrays are converted once; ragged
-sequences are validated and concatenated before the native call.
+An aligned, C-contiguous `float64` dense batch is the lowest-overhead input
+form. Non-contiguous, unaligned, or other real numeric arrays are converted
+once; ragged sequences are validated and concatenated before the native call.
 
 Strictly increasing candidate arrays use a borrowed fast path; other inputs are
 sorted and deduplicated internally.

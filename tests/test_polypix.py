@@ -1368,6 +1368,57 @@ class PolypixTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "valid RING indices"):
                     call()
 
+    def test_misaligned_contiguous_inputs_are_accepted(self) -> None:
+        """A contiguous array can still sit on an unaligned address.
+
+        Viewing one out of a packed byte buffer produces exactly that, and
+        neither ``asarray`` nor ``ascontiguousarray`` repairs it, because dtype
+        and contiguity already match. Native code cannot borrow such an array
+        as a slice, so the conversion helpers have to force the copy.
+        """
+
+        def misaligned(dtype: object, count: int, shape: object = None) -> np.ndarray:
+            itemsize = np.dtype(dtype).itemsize
+            buffer = np.zeros(itemsize * count + 1, dtype=np.uint8)
+            array = np.frombuffer(buffer.data, dtype=dtype, offset=1, count=count)
+            return array.reshape(shape) if shape is not None else array
+
+        polygon = misaligned(np.float64, 12, (4, 3))
+        polygon[:] = vectors([(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)])
+        self.assertFalse(polygon.flags.aligned)
+        self.assertTrue(polygon.flags.c_contiguous)
+
+        coverage = px.cover_convex_polygon(polygon, resolution=5)
+        self.assertEqual(coverage.cells.size, coverage.offsets[-1])
+        self.assertGreater(coverage.cells.size, 0)
+
+        center = misaligned(np.float64, 3, (1, 3))
+        center[:] = vectors([(0.0, 0.0)])
+        radii = misaligned(np.float64, 1)
+        radii[:] = 0.2
+        capped = px.cover_cap(center, radii, 5)
+        self.assertGreater(capped.cells.size, 0)
+        np.testing.assert_array_equal(
+            px.cover_cap(center, radii, 5, into=px.Count()),
+            capped.reduce(px.Count()),
+        )
+
+        cells = misaligned(np.int64, 2)
+        cells[:] = [1, 2]
+        offsets = misaligned(np.int64, 2)
+        offsets[:] = [0, 2]
+        imported = px.Coverage.from_arrays(cells, offsets, resolution=2)
+        np.testing.assert_array_equal(imported.cells, [1, 2])
+        np.testing.assert_array_equal(px.cell_centers(cells, 2).shape, (2, 3))
+        np.testing.assert_array_equal(px.cell_corners(cells, 2).shape, (2, 4, 3))
+        np.testing.assert_array_equal(px.cell_at(px.cell_centers(cells, 2), 2), [1, 2])
+
+        values = misaligned(np.float64, capped.segment_count)
+        values[:] = 1.5
+        self.assertAlmostEqual(
+            float(capped.reduce(px.Sum(values)).sum()), 1.5 * capped.cells.size
+        )
+
     def test_cover_rejects_invalid_array_shape(self) -> None:
         polygon = vectors([(-5.0, -5.0), (12.0, -4.0), (10.0, 9.0), (-6.0, 7.0)])
         for invalid in (polygon[:, :2], polygon[:, :2].tolist()):
