@@ -95,6 +95,47 @@ def strip_edges() -> tuple[np.ndarray, np.ndarray]:
     return left, right
 
 
+def _diagonal_edges(samples: int) -> tuple[np.ndarray, np.ndarray]:
+    """A 4-degree-wide swath crossing longitude as fast as latitude."""
+    latitudes = np.linspace(-60.0, 60.0, samples)
+    longitudes = np.linspace(-120.0, 120.0, samples)
+    return tuple(
+        np.asarray(
+            [
+                _lonlat_to_xyz(float(lon) + across, float(lat))
+                for lon, lat in zip(longitudes, latitudes, strict=True)
+            ],
+            dtype=np.float64,
+        )
+        for across in (-2.0, 2.0)
+    )
+
+
+@pytest.fixture(scope="module")
+def coarse_diagonal_strip_edges() -> tuple[np.ndarray, np.ndarray]:
+    """A diagonal swath sampled coarsely enough that segments span longitude.
+
+    Every other strip fixture here runs along a meridian, where a segment spans
+    almost no longitude and the per-footprint longitude envelope is already
+    tight. The envelope only becomes loose when one footprint covers a wide
+    longitude range, which needs a diagonal track *and* coarse sampling: at 20
+    samples this costs about 2.7x the meridian's time per emitted cell, at 5
+    samples about 9x, and by 100 samples the penalty is gone. This is the
+    fixture that moves if the scan stops testing every centre in the envelope.
+    """
+    return _diagonal_edges(20)
+
+
+@pytest.fixture(scope="module")
+def diagonal_strip_edges() -> tuple[np.ndarray, np.ndarray]:
+    """The same track sampled densely: a control that must not regress.
+
+    Segments here are small enough that their envelopes are already tight, so
+    this pays no envelope penalty today and must not start paying one.
+    """
+    return _diagonal_edges(501)
+
+
 @pytest.fixture(scope="module")
 def large_strip_edges() -> tuple[np.ndarray, np.ndarray]:
     latitudes = np.linspace(-60.0, 60.0, 4097)
@@ -439,6 +480,33 @@ def test_cover_sweep_automatic_parallel(
 ) -> None:
     left, right = large_strip_edges
     coverage = benchmark(px.cover_sweep, left, right, 9)
+
+    assert coverage.offsets.shape == (left.shape[0],)
+
+
+def test_cover_sweep_coarse_diagonal(
+    benchmark, coarse_diagonal_strip_edges: tuple[np.ndarray, np.ndarray]
+) -> None:
+    left, right = coarse_diagonal_strip_edges
+    coverage = benchmark(px.cover_sweep, left, right, 9, threads=1)
+
+    assert coverage.offsets.shape == (left.shape[0],)
+
+
+def test_cover_sweep_coarse_diagonal_count(
+    benchmark, coarse_diagonal_strip_edges: tuple[np.ndarray, np.ndarray]
+) -> None:
+    left, right = coarse_diagonal_strip_edges
+    counts = benchmark(px.cover_sweep, left, right, 9, threads=1, into=px.Count())
+
+    assert counts.shape == (px.cell_count(9),)
+
+
+def test_cover_sweep_dense_diagonal(
+    benchmark, diagonal_strip_edges: tuple[np.ndarray, np.ndarray]
+) -> None:
+    left, right = diagonal_strip_edges
+    coverage = benchmark(px.cover_sweep, left, right, 9, threads=1)
 
     assert coverage.offsets.shape == (left.shape[0],)
 

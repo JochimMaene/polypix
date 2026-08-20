@@ -136,10 +136,17 @@ pub(super) fn longitude_bounds(
         }
     }
 
-    if end <= TAU {
+    // `end` reaches TAU exactly whenever the span's far edge sits on the prime
+    // meridian, which a footprint with a vertex there produces routinely. One
+    // interval ending at TAU cannot reach the cell at longitude zero: that is
+    // offset 0 of every unshifted ring, and its index is below `start`. Round
+    // outward and emit the wrapped pair instead. The widened interval costs the
+    // authoritative centre test one extra cell per ring, which it discards;
+    // treating the same case as unwrapped drops covered cells silently.
+    if end < TAU - LONGITUDE_BOUNDS_EPSILON {
         ([(start, end), (0.0, 0.0)], 1)
     } else {
-        ([(0.0, end - TAU), (start, TAU)], 2)
+        ([(0.0, (end - TAU).max(0.0)), (start, TAU)], 2)
     }
 }
 

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+
+- Covered the cells a footprint's longitude span ends on. `cover_sweep()` and
+  `cover_convex_polygon()` derive one longitude interval per footprint; when
+  that span ended exactly on the prime meridian the interval was treated as
+  unwrapped, so the cells at longitude zero - offset 0 of every unshifted ring -
+  were never scanned. A footprint with a vertex on the meridian silently lost up
+  to one cell per ring it crossed. Selecting `candidate_cells` was unaffected,
+  because that path tests each cell directly.
+
 ### Added
 
 - Added scale-invariant batch direction-to-RING indexing through `cell_at()`,

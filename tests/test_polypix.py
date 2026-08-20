@@ -627,9 +627,13 @@ class PolypixTests(unittest.TestCase):
                 np.asarray([lonlat_to_vec(0.0, 5.0), lonlat_to_vec(step, 5.0)]),
             )
 
+        # Both counts are the mirror image of each other, because both quads
+        # are the same shape reflected across the prime meridian. The minor-arc
+        # case used to report 352: its span ended exactly on the meridian, and
+        # the longitude bounds then dropped the two cells sitting on it.
         for step, expected_count, expected_y_sign in (
             (179.0, 354, 1.0),
-            (181.0, 352, -1.0),
+            (181.0, 354, -1.0),
         ):
             with self.subTest(step=step):
                 left, right = edges(step)
