@@ -72,7 +72,7 @@ fn normalized_edge(left: Vec3, right: Vec3) -> Result<Vec3, String> {
     let edge_normal = cross(left, right);
     let edge_length = norm(edge_normal);
     if edge_length <= ZERO_NORM_EPSILON {
-        return Err("Footprint contains degenerate or antipodal edges.".to_owned());
+        return Err("Polygon contains degenerate or antipodal edges.".to_owned());
     }
     Ok([
         edge_normal[0] / edge_length,
@@ -91,9 +91,9 @@ pub(crate) fn validate_polygon(
             if nearly_equal(vertices[left], vertices[other]) {
                 let consecutive = other == left + 1 || (left == 0 && other + 1 == vertices.len());
                 return Err(if consecutive {
-                    "Footprint contains duplicate consecutive vertices.".to_owned()
+                    "Polygon contains duplicate consecutive vertices.".to_owned()
                 } else {
-                    "Footprint contains duplicate vertices.".to_owned()
+                    "Polygon contains duplicate vertices.".to_owned()
                 });
             }
         }
@@ -111,7 +111,7 @@ pub(crate) fn validate_polygon(
             .zip(vertices.iter().cycle().skip(1))
             .map(|(&left, &right)| cross(left, right))
             .find(|&candidate| norm(candidate) > ZERO_NORM_EPSILON)
-            .ok_or_else(|| "Footprint is degenerate.".to_owned())?;
+            .ok_or_else(|| "Polygon is degenerate.".to_owned())?;
     }
     let interior_length = norm(interior);
     debug_assert!(interior_length > ZERO_NORM_EPSILON);
@@ -128,7 +128,7 @@ pub(crate) fn validate_polygon(
         orientation += dot(edge_normal, interior);
     }
     if orientation.abs() <= CONTAINMENT_EPSILON {
-        return Err("Footprint is degenerate or numerically ambiguous.".to_owned());
+        return Err("Polygon is degenerate or numerically ambiguous.".to_owned());
     }
     if orientation < 0.0 {
         vertices.reverse();
@@ -147,12 +147,12 @@ pub(crate) fn validate_polygon(
             }
             let side = dot(raw_edge_normal, vertex);
             if side < -VALIDATION_TRIPLE_EPSILON {
-                return Err("Footprint must be convex and non-self-intersecting.".to_owned());
+                return Err("Polygon must be convex and non-self-intersecting.".to_owned());
             }
             found_strict_interior |= side > VALIDATION_TRIPLE_EPSILON;
         }
         if !found_strict_interior {
-            return Err("Footprint is degenerate.".to_owned());
+            return Err("Polygon is degenerate.".to_owned());
         }
     }
     Ok(())
@@ -160,7 +160,7 @@ pub(crate) fn validate_polygon(
 
 pub(crate) fn prepare_polygon(raw_vertices: &[[f64; 3]]) -> Result<Polygon, String> {
     if raw_vertices.len() < 3 {
-        return Err("Each footprint needs at least three vertices.".to_owned());
+        return Err("Each polygon needs at least three vertices.".to_owned());
     }
 
     let mut vertices = raw_vertices
@@ -172,7 +172,7 @@ pub(crate) fn prepare_polygon(raw_vertices: &[[f64; 3]]) -> Result<Polygon, Stri
         vertices.pop();
     }
     if vertices.len() < 3 {
-        return Err("Each footprint needs at least three unique vertices.".to_owned());
+        return Err("Each polygon needs at least three unique vertices.".to_owned());
     }
 
     let mut edge_normals = vec![[0.0; 3]; vertices.len()];

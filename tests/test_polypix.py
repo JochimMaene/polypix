@@ -1150,7 +1150,7 @@ class PolypixTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     px.cover_convex_polygon(vectors(polygon), resolution=1)
 
-    def test_batch_geometry_errors_name_the_offending_footprint(self) -> None:
+    def test_batch_geometry_errors_name_the_offending_polygon(self) -> None:
         valid = vectors([(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)])
         invalid = valid.copy()
         invalid[2] = invalid[1]
@@ -1159,10 +1159,12 @@ class PolypixTests(unittest.TestCase):
 
         for threads in (1, 4, None):
             with self.subTest(threads=threads):
-                with self.assertRaisesRegex(ValueError, r"footprints_xyz\[3000\]"):
+                with self.assertRaisesRegex(
+                    ValueError, r"polygons_xyz\[3000\]: Polygon"
+                ):
                     px.cover_convex_polygon(batch, resolution=3, threads=threads)
 
-    def test_parallel_batch_reports_the_first_invalid_footprint(self) -> None:
+    def test_parallel_batch_reports_the_first_invalid_polygon(self) -> None:
         valid = vectors([(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)])
         invalid = valid.copy()
         invalid[2] = invalid[1]
@@ -1172,7 +1174,7 @@ class PolypixTests(unittest.TestCase):
 
         for threads in (4, None):
             with self.subTest(threads=threads):
-                with self.assertRaisesRegex(ValueError, r"footprints_xyz\[10\]"):
+                with self.assertRaisesRegex(ValueError, r"polygons_xyz\[10\]"):
                     px.cover_convex_polygon(batch, resolution=3, threads=threads)
 
     def test_cover_accepts_empty_batches(self) -> None:

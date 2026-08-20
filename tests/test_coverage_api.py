@@ -52,6 +52,16 @@ def test_polygon_api_accepts_packed_and_ragged_vertices() -> None:
             )
 
 
+def test_malformed_ragged_polygon_uses_the_public_validation_error() -> None:
+    quad = np.asarray(
+        [_xyz(-8, -5), _xyz(6, -5), _xyz(6, 7), _xyz(-8, 7)],
+        dtype=np.float64,
+    )
+
+    with pytest.raises(ValueError, match=r"polygons_xyz\[1\].*shape"):
+        px.cover_convex_polygon([quad, 1], resolution=4)
+
+
 def test_grid_names_and_cell_count() -> None:
     assert px.cell_count(0) == 12
     assert px.cell_count(6) == 12 * 4**6
@@ -61,6 +71,15 @@ def test_grid_names_and_cell_count() -> None:
     cells = np.asarray([0, 7, 31], dtype=np.int64)
     assert px.cell_centers(cells, 1).shape == (3, 3)
     assert px.cell_corners(cells, 1).shape == (3, 4, 3)
+
+
+@pytest.mark.parametrize("dtype", [np.float64, "<U3"])
+def test_typed_empty_cell_arrays_require_an_integer_dtype(dtype: object) -> None:
+    with pytest.raises(TypeError, match="integers"):
+        px.cell_centers(np.empty(0, dtype=dtype), resolution=4)
+
+    with pytest.raises(TypeError, match="integers"):
+        px.Coverage.from_arrays(np.empty(0, dtype=dtype), [0], resolution=4)
 
 
 def test_coverage_helpers_preserve_segment_alignment() -> None:
@@ -96,6 +115,16 @@ def test_empty_cap_batches_validate_scalar_radii() -> None:
             px.cover_cap(empty, invalid, resolution=1)
         with pytest.raises(ValueError, match="radii_rad"):
             px.cover_cap(empty, invalid, resolution=1, into=px.Count())
+
+
+def test_reducer_tokens_use_identity_equality() -> None:
+    for first, second in (
+        (px.Count(np.asarray([1, 2])), px.Count(np.asarray([1, 2]))),
+        (px.Sum(np.asarray([1.0, 2.0])), px.Sum(np.asarray([1.0, 2.0]))),
+        (px.Stats(), px.Stats()),
+    ):
+        assert first == first
+        assert first != second
 
 
 def test_sweep_accepts_an_empty_interval_axis() -> None:

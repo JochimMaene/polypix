@@ -564,7 +564,7 @@ pub(super) fn prepare_normalized_quad(
         len -= 1;
     }
     if len < 3 {
-        return Err("Each footprint needs at least three unique vertices.".to_owned());
+        return Err("Each polygon needs at least three unique vertices.".to_owned());
     }
     let mut edge_normals = [[0.0; 3]; 4];
     validate_polygon(&mut vertices[..len], &mut edge_normals[..len])?;

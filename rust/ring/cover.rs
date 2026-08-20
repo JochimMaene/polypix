@@ -202,7 +202,7 @@ pub(super) fn compute_mixed_chunk(
         let end = offsets[index + 1] as usize;
         let raw = &vertices[start * 3..end * 3];
         let footprint = PreparedFootprint::from_raw(raw)
-            .map_err(|error| NativeError::from(format!("footprints_xyz[{index}]: {error}")))?;
+            .map_err(|error| NativeError::from(format!("polygons_xyz[{index}]: {error}")))?;
         footprint.cover(resolution, &mut coverage.cells)?;
         coverage.offsets.push(coverage.cells.len() as u64);
     }
@@ -234,7 +234,7 @@ pub(super) fn compute_mixed_coverage(
                 let start = offsets[index] as usize;
                 let end = offsets[index + 1] as usize;
                 PreparedFootprint::from_raw(&vertices[start * 3..end * 3])
-                    .map_err(|error| format!("footprints_xyz[{index}]: {error}"))
+                    .map_err(|error| format!("polygons_xyz[{index}]: {error}"))
             },
         );
     }

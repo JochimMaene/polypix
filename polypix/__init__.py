@@ -5,7 +5,7 @@ from __future__ import annotations
 import operator
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, SupportsIndex, cast, overload
+from typing import Any, Never, SupportsIndex, cast, overload
 
 import numpy as np
 import numpy.typing as npt
@@ -47,7 +47,7 @@ class Coverage:
     offsets: npt.NDArray[np.int64]
     resolution: int
 
-    def __init__(self, *_args: object, **_kwargs: object) -> None:
+    def __init__(self, *_args: Never, **_kwargs: Never) -> None:
         raise TypeError(
             "Coverage cannot be constructed directly; use Coverage.from_arrays()."
         )
@@ -196,7 +196,7 @@ class OccupancyRuns:
     minimum_sources: int
     source_count: int
 
-    def __init__(self, *_args: object, **_kwargs: object) -> None:
+    def __init__(self, *_args: Never, **_kwargs: Never) -> None:
         raise TypeError("OccupancyRuns values are constructed by Polypix.")
 
     @classmethod
@@ -256,7 +256,7 @@ class OccupancyStats:
     minimum_sources: int
     source_count: int
 
-    def __init__(self, *_args: object, **_kwargs: object) -> None:
+    def __init__(self, *_args: Never, **_kwargs: Never) -> None:
         raise TypeError("OccupancyStats values are constructed by Polypix.")
 
     @classmethod
@@ -367,10 +367,21 @@ def _as_uint64_vector(
         return np.asarray([_as_uint64_scalar(array.item(), name)], dtype=np.uint64)
     if array.ndim != 1:
         raise ValueError(f"{name} must be a scalar or one-dimensional integer array.")
-    if array.size == 0:
-        return np.empty(0, dtype=np.uint64)
     if np.issubdtype(array.dtype, np.bool_):
         raise TypeError(f"{name} must contain integers, not bool.")
+    integer_dtype = np.issubdtype(array.dtype, np.unsignedinteger) or np.issubdtype(
+        array.dtype, np.signedinteger
+    )
+    if array.size == 0:
+        # An empty ordinary sequence has no values from which NumPy can infer
+        # its intended integer dtype. Explicitly typed arrays do, so enforce
+        # their dtype exactly as for a nonempty input.
+        untyped_sequence = isinstance(values, Sequence) and not isinstance(
+            values, np.ndarray
+        )
+        if not integer_dtype and not untyped_sequence:
+            raise TypeError(f"{name} must contain integers.")
+        return np.empty(0, dtype=np.uint64)
     if np.issubdtype(array.dtype, np.unsignedinteger):
         return _aligned(np.ascontiguousarray(array.astype(np.uint64, copy=False)))
     if np.issubdtype(array.dtype, np.signedinteger):
@@ -402,7 +413,7 @@ def _owned_int64_vector(
     if array.ndim != 1:
         raise ValueError(f"{name} must be a one-dimensional integer array.")
     converted = _as_uint64_vector(
-        array, name, native_range_checked=native_range_checked
+        values, name, native_range_checked=native_range_checked
     )
     # A signed input that survived the non-negative check above is already
     # inside int64, so only unsigned and object inputs can exceed it. Skipping
@@ -542,9 +553,11 @@ def _as_polygons(
         return np.empty((0, 3), dtype=np.float64), np.zeros(1, dtype=np.uint64)
     if np.ndim(values[0]) != 2:
         return _require_dense_polygons(values)
-    # A batch of polygons. Equal vertex counts pack into one dense array; only
-    # differing counts need the per-polygon path.
-    if len({np.shape(polygon)[0] for polygon in values}) == 1:
+    shapes = [np.shape(polygon) for polygon in values]
+    if (
+        all(len(shape) == 2 for shape in shapes)
+        and len({shape[0] for shape in shapes}) == 1
+    ):
         return _require_dense_polygons(values)
     return _ragged_polygons(values)
 
@@ -557,7 +570,7 @@ def _as_packed_polygons(
     raw_offsets = np.asarray(vertex_offsets)
     if raw_offsets.ndim != 1:
         raise ValueError("vertex_offsets must be a one-dimensional integer array.")
-    offsets = _as_uint64_vector(raw_offsets, "vertex_offsets")
+    offsets = _as_uint64_vector(vertex_offsets, "vertex_offsets")
     if offsets.size == 0:
         raise ValueError("vertex_offsets must contain at least the initial zero.")
     if offsets[0] != 0:
@@ -571,7 +584,7 @@ def _as_packed_polygons(
     return vertices, offsets
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, eq=False, slots=True)
 class Count:
     """Count how many segments contain each cell.
 
@@ -584,7 +597,7 @@ class Count:
     cells: int | Sequence[int] | npt.NDArray[np.integer[Any]] | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, eq=False, slots=True)
 class Sum:
     """Accumulate one finite value per segment into the cells it covers.
 
@@ -596,7 +609,7 @@ class Sum:
     cells: int | Sequence[int] | npt.NDArray[np.integer[Any]] | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, eq=False, slots=True)
 class Stats:
     """Accumulate per-cell occupancy statistics without building the runs."""
 

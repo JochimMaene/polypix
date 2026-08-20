@@ -593,10 +593,10 @@ def test_edge_lying_exactly_on_a_cell_center_is_covered(resolution: int) -> None
 def test_cell_corner_footprints_match_brute_force_centers(
     source_resolution: int,
 ) -> None:
-    """Footprints whose edges are exactly cell boundaries.
+    """Great-circle quads whose vertices are exact HEALPix cell corners.
 
-    Every edge runs along a boundary between centres, so this is the densest
-    supply of near-zero containment margins that ordinary geometry produces.
+    The arcs between those vertices are not the cells' curved boundaries. They
+    still provide a dense deterministic supply of near-zero containment margins.
     """
     corners = px.cell_corners(
         np.arange(px.cell_count(source_resolution)), source_resolution

@@ -1,7 +1,7 @@
 use numpy::ndarray::{Array2, Array3, Dimension};
 use numpy::{
-    npyffi::NPY_ARRAY_WRITEABLE, Element, IntoPyArray, PyArray1, PyArray2, PyArray3,
-    PyReadonlyArray, PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods,
+    Element, IntoPyArray, PyArray1, PyArray2, PyArray3, PyArrayMethods, PyReadonlyArray,
+    PyReadonlyArray1, PyReadonlyArray2, PyUntypedArrayMethods,
 };
 use pyo3::exceptions::{PyMemoryError, PyValueError};
 use pyo3::prelude::*;
@@ -56,11 +56,7 @@ fn native_error(error: NativeError) -> PyErr {
 
 fn readonly_vec<'py, T: Element>(values: Vec<T>, py: Python<'py>) -> Bound<'py, PyArray1<T>> {
     let array = values.into_pyarray(py);
-    // SAFETY: `into_pyarray` has just created this array from an owned Vec, so
-    // no mutable Python or Rust borrow exists while the flag is cleared.
-    unsafe {
-        (*array.as_array_ptr()).flags &= !NPY_ARRAY_WRITEABLE;
-    }
+    let _ = array.readwrite().make_nonwriteable();
     array
 }
 
