@@ -422,12 +422,27 @@ pub(super) fn visit_cap_ranges(cap: &Cap, resolution: u8, mut visit: impl FnMut(
     }
 }
 
+/// Push a scanned cell onto a materialized result, growing in batches.
+///
+/// A batch of 1024 amortizes the reserve check across many cheap pushes. Split
+/// out so `cover_centers` can take it as a closure rather than owning the
+/// `Vec` it grows.
+fn push_scanned_cell(cells: &mut Vec<u64>, cell: u64) -> NativeResult<()> {
+    if cells.len() == cells.capacity() {
+        cells.try_reserve(1024).map_err(|_| {
+            NativeError::out_of_memory("Coverage result is too large to fit in memory.")
+        })?;
+    }
+    cells.push(cell);
+    Ok(())
+}
+
 pub(super) fn cover_centers(
     vertices: &[Vec3],
     edge_normals: &[Vec3],
     resolution: u8,
-    cells: &mut Vec<u64>,
     contains: impl Fn(f64, f64, f64) -> bool,
+    mut visit: impl FnMut(u64) -> NativeResult<()>,
 ) -> NativeResult<()> {
     let nside = 1_u64 << resolution;
     let (minimum_z, maximum_z) = polygon_z_bounds(vertices, edge_normals);
@@ -492,14 +507,7 @@ pub(super) fn cover_centers(
             let mut y = ring.radial * sine;
             for offset in first..=last as u64 {
                 if contains(x, y, ring.z) {
-                    if cells.len() == cells.capacity() {
-                        cells.try_reserve(1024).map_err(|_| {
-                            NativeError::out_of_memory(
-                                "Coverage result is too large to fit in memory.",
-                            )
-                        })?;
-                    }
-                    cells.push(ring.start + offset);
+                    visit(ring.start + offset)?;
                 }
 
                 // Resynchronize every 64 steps: accumulated rotation drift
@@ -521,20 +529,6 @@ pub(super) fn cover_centers(
         }
     }
     Ok(())
-}
-
-pub(super) fn cover_quad_centers(
-    quad: &Quad,
-    resolution: u8,
-    cells: &mut Vec<u64>,
-) -> NativeResult<()> {
-    cover_centers(
-        &quad.vertices[..quad.len],
-        &quad.edge_normals[..quad.len],
-        resolution,
-        cells,
-        |x, y, z| quad_contains(quad, x, y, z),
-    )
 }
 
 // The fixed-size path mirrors prepare_polygon deliberately: stack storage and
@@ -620,14 +614,21 @@ impl PreparedFootprint {
     }
 
     pub(super) fn cover(&self, resolution: u8, cells: &mut Vec<u64>) -> NativeResult<()> {
+        let visit = |cell| push_scanned_cell(cells, cell);
         match self {
-            Self::Quad(quad) => cover_quad_centers(quad, resolution, cells),
+            Self::Quad(quad) => cover_centers(
+                &quad.vertices[..quad.len],
+                &quad.edge_normals[..quad.len],
+                resolution,
+                |x, y, z| quad_contains(quad, x, y, z),
+                visit,
+            ),
             Self::Polygon(polygon) => cover_centers(
                 &polygon.vertices,
                 &polygon.edge_normals,
                 resolution,
-                cells,
                 |x, y, z| polygon_contains(polygon, [x, y, z]),
+                visit,
             ),
         }
     }
