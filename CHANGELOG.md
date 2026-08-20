@@ -53,8 +53,14 @@
   Polypix result back into the next call. The int64 range check now runs only
   for unsigned and object inputs, where it is not already implied, and the
   non-negative check is a reduction rather than a comparison that also
-  materializes a boolean temporary. `Coverage.from_arrays()` on a 921,600-hit
-  coverage went from 2.80 ms to 2.27 ms.
+  materializes a boolean temporary. The remaining scan is deferred to the
+  native cell-range validation that every cell argument already performs: a
+  reinterpreted negative index exceeds every resolution's cell count, so
+  `validate_cell_range()` now distinguishes it and reports the same message the
+  Python scan did. Offset arrays, which are bounds-checked rather than
+  range-checked, keep their scan. `Coverage.from_arrays()` on a 921,600-hit
+  coverage went from 2.80 ms to 1.56 ms, against 2.29 ms for the equivalent
+  unsigned arrays.
 - Served queried `Count` and `Sum` reductions from a dense scratch grid up to
   resolution 8, instead of one hash probe per hit, but only when the coverage
   and query together touch enough of that grid to amortize zeroing it. Sparse

@@ -1029,16 +1029,25 @@ pub(crate) fn raw_cell_count(resolution: u8) -> u64 {
     12_u64 << (2 * resolution)
 }
 
+/// The public index domain is non-negative signed `int64`, so a caller who
+/// passes a negative index arrives here as a `u64` at or above `1 << 63`.
+/// Naming that case is what lets the Python layer skip a separate scan for it:
+/// this pass already reads every element.
+pub(crate) fn invalid_cell_message(cell: u64, resolution: u8, argument_name: &str) -> String {
+    if cell >= 1_u64 << 63 {
+        return format!("{argument_name} must contain non-negative integers.");
+    }
+    format!("{argument_name} must contain valid RING indices at resolution {resolution}.")
+}
+
 pub(crate) fn validate_cell_range(
     cells: &[u64],
     resolution: u8,
     argument_name: &str,
 ) -> Result<(), String> {
     let cell_count = raw_cell_count(resolution);
-    if cells.iter().any(|&cell| cell >= cell_count) {
-        return Err(format!(
-            "{argument_name} must contain valid RING indices at resolution {resolution}."
-        ));
+    if let Some(&cell) = cells.iter().find(|&&cell| cell >= cell_count) {
+        return Err(invalid_cell_message(cell, resolution, argument_name));
     }
     Ok(())
 }
@@ -2128,12 +2137,30 @@ pub(crate) fn cover_sweep(
 mod tests {
     use super::{
         accumulated_scan_work, candidate_cache_range, cells_at, center, count_caps_per_cell,
-        expected_total_hits, integer_sqrt, raw_cell_count, ring_info, ring_of_cell, ring_start,
-        ring_to_face_xy, CandidatePlan, CANDIDATE_CENTER_CACHE_MAX_BYTES,
-        CANDIDATE_CENTER_CACHE_REUSE, CELL_AT_PARALLEL_MIN_VECTORS, MAX_RESOLUTION,
-        ROTATION_RESYNC_STEPS, SCAN_PREPARATION_WORK, SCAN_WORK_SAMPLE_SIZE, TAU,
+        expected_total_hits, integer_sqrt, invalid_cell_message, raw_cell_count, ring_info,
+        ring_of_cell, ring_start, ring_to_face_xy, validate_cell_range, CandidatePlan,
+        CANDIDATE_CENTER_CACHE_MAX_BYTES, CANDIDATE_CENTER_CACHE_REUSE,
+        CELL_AT_PARALLEL_MIN_VECTORS, MAX_RESOLUTION, ROTATION_RESYNC_STEPS, SCAN_PREPARATION_WORK,
+        SCAN_WORK_SAMPLE_SIZE, TAU,
     };
     use crate::geometry::CONTAINMENT_EPSILON;
+
+    #[test]
+    fn invalid_cell_message_separates_negative_from_out_of_range() {
+        // A negative public int64 index arrives as a u64 at or above 1 << 63.
+        assert!(invalid_cell_message(u64::MAX, 3, "cells").contains("non-negative"));
+        assert!(invalid_cell_message(1 << 63, 3, "cells").contains("non-negative"));
+        let large = invalid_cell_message((1 << 63) - 1, 3, "candidate_cells");
+        assert!(large.contains("candidate_cells must contain valid RING indices"));
+        assert_eq!(
+            validate_cell_range(&[u64::MAX], 3, "cells").unwrap_err(),
+            "cells must contain non-negative integers."
+        );
+        assert!(validate_cell_range(&[12 * 4 * 4 * 4], 3, "cells")
+            .unwrap_err()
+            .contains("valid RING indices"));
+        assert!(validate_cell_range(&[0, 767], 3, "cells").is_ok());
+    }
 
     #[test]
     fn integer_sqrt_is_exact_around_square_boundaries() {

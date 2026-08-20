@@ -34,8 +34,8 @@ fn dense_scratch_fits(cell_count: u64, element_bytes: usize, work: usize) -> boo
     fits && work as u64 >= cell_count / DENSE_SCRATCH_MINIMUM_WORK_DIVISOR
 }
 
-fn invalid_cell(argument_name: &str, resolution: u8) -> NativeError {
-    format!("{argument_name} must contain valid RING indices at resolution {resolution}.").into()
+fn invalid_cell(cell: u64, argument_name: &str, resolution: u8) -> NativeError {
+    ring::invalid_cell_message(cell, resolution, argument_name).into()
 }
 
 const DENSE_COUNT_TOO_LARGE: &str = "Dense coverage-count result is too large to fit in memory.";
@@ -59,7 +59,7 @@ fn dense_counts(cells: &[u64], cell_count: u64, resolution: u8) -> NativeResult<
     let mut counts = dense_buffer(cell_count, 0_i64, DENSE_COUNT_TOO_LARGE)?;
     for &cell in cells {
         if cell >= cell_count {
-            return Err(invalid_cell("cells", resolution));
+            return Err(invalid_cell(cell, "cells", resolution));
         }
         counts[cell as usize] += 1;
     }
@@ -79,7 +79,7 @@ fn gathered<T: Copy>(
         .map_err(|_| NativeError::out_of_memory(too_large))?;
     for &cell in requested_cells {
         if cell >= cell_count {
-            return Err(invalid_cell("requested_cells", resolution));
+            return Err(invalid_cell(cell, "requested_cells", resolution));
         }
         output.push(scratch[cell as usize]);
     }
@@ -112,13 +112,13 @@ fn selected_counts(
     })?;
     for &cell in requested_cells {
         if cell >= cell_count {
-            return Err(invalid_cell("requested_cells", resolution));
+            return Err(invalid_cell(cell, "requested_cells", resolution));
         }
         counts.insert(cell, 0_i64);
     }
     for &cell in cells {
         if cell >= cell_count {
-            return Err(invalid_cell("cells", resolution));
+            return Err(invalid_cell(cell, "cells", resolution));
         }
         if let Some(count) = counts.get_mut(&cell) {
             *count += 1;
@@ -206,7 +206,7 @@ fn dense_sums(
         let value = values[segment_index];
         for &cell in &cells[pair[0] as usize..pair[1] as usize] {
             if cell >= cell_count {
-                return Err(invalid_cell("cells", resolution));
+                return Err(invalid_cell(cell, "cells", resolution));
             }
             sums[cell as usize] += value;
         }
@@ -251,7 +251,7 @@ fn selected_sums(
     })?;
     for &cell in requested_cells {
         if cell >= cell_count {
-            return Err(invalid_cell("requested_cells", resolution));
+            return Err(invalid_cell(cell, "requested_cells", resolution));
         }
         sums.insert(cell, 0.0_f64);
     }
@@ -259,7 +259,7 @@ fn selected_sums(
         let value = values[segment_index];
         for &cell in &cells[pair[0] as usize..pair[1] as usize] {
             if cell >= cell_count {
-                return Err(invalid_cell("cells", resolution));
+                return Err(invalid_cell(cell, "cells", resolution));
             }
             if let Some(sum) = sums.get_mut(&cell) {
                 let updated = *sum + value;

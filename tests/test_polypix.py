@@ -1307,6 +1307,67 @@ class PolypixTests(unittest.TestCase):
                 self.assertEqual(empty.cells.size, 0)
                 self.assertEqual(empty.cells.dtype, np.int64)
 
+    def test_negative_indices_are_named_wherever_the_kernel_checks_range(
+        self,
+    ) -> None:
+        """Deferring the scan must not degrade the message it used to produce.
+
+        Every entry point that hands a cell array to a native range check skips
+        the separate non-negative scan, so a negative index arrives as a `u64`
+        above every cell count. The kernel has to distinguish that from an index
+        that is merely too large, at each public argument name.
+        """
+        coverage = px.cover_cap(np.asarray([[1.0, 0.0, 0.0]]), 0.3, 4)
+        negative = np.asarray([-1], dtype=np.int64)
+        cases = (
+            ("cells", lambda: px.cell_centers(negative, resolution=7)),
+            ("cells", lambda: px.cell_corners([-1], resolution=3)),
+            ("cells", lambda: px.Coverage.from_arrays(negative, [0, 1], 0)),
+            ("offsets", lambda: px.Coverage.from_arrays([0], [0, -1], 0)),
+            ("cells", lambda: coverage.reduce(px.Count(cells=negative))),
+            ("cells", lambda: coverage.reduce(px.Sum(1.0, cells=negative))),
+            (
+                "cells",
+                lambda: px.cover_cap(
+                    np.asarray([[1.0, 0.0, 0.0]]),
+                    0.1,
+                    4,
+                    into=px.Count(cells=negative),
+                ),
+            ),
+            (
+                "candidate_cells",
+                lambda: px.cover_cap(
+                    np.asarray([[1.0, 0.0, 0.0]]),
+                    0.1,
+                    4,
+                    candidate_cells=negative,
+                ),
+            ),
+            (
+                "vertex_offsets",
+                lambda: px.cover_convex_polygon(
+                    np.zeros((4, 3)), 4, vertex_offsets=[0, -1]
+                ),
+            ),
+        )
+        for name, call in cases:
+            with self.subTest(argument=name):
+                with self.assertRaisesRegex(
+                    ValueError, f"{name} must contain non-negative integers"
+                ):
+                    call()
+
+        # An index that is too large but not negative keeps its own message.
+        for call in (
+            lambda: px.cell_centers([12 * 4**3], resolution=3),
+            lambda: px.Coverage.from_arrays([12], [0, 1], 0),
+            lambda: coverage.reduce(px.Count(cells=[12 * 4**4])),
+        ):
+            with self.subTest(kind="out of range"):
+                with self.assertRaisesRegex(ValueError, "valid RING indices"):
+                    call()
+
     def test_cover_rejects_invalid_array_shape(self) -> None:
         polygon = vectors([(-5.0, -5.0), (12.0, -4.0), (10.0, 9.0), (-6.0, 7.0)])
         for invalid in (polygon[:, :2], polygon[:, :2].tolist()):

@@ -61,7 +61,9 @@ class Coverage:
     ) -> Coverage:
         """Copy and validate imported segmented RING-cell arrays."""
         resolved = _as_resolution(resolution)
-        owned_cells = _owned_int64_vector(cells, "cells")
+        # ``_validate_coverage`` range-checks every cell natively; offsets are
+        # only bounds-checked there, so they keep the signed scan.
+        owned_cells = _owned_int64_vector(cells, "cells", native_range_checked=True)
         owned_offsets = _owned_int64_vector(offsets, "offsets")
         _validate_coverage(
             owned_cells.view(np.uint64),
@@ -321,7 +323,9 @@ def _as_candidates(
 ) -> npt.NDArray[np.uint64] | None:
     if candidate_cells is None:
         return None
-    return _as_uint64_vector(candidate_cells, "candidate_cells")
+    return _as_uint64_vector(
+        candidate_cells, "candidate_cells", native_range_checked=True
+    )
 
 
 def _as_threads(value: int | None) -> int | None:
@@ -345,7 +349,19 @@ def _as_uint64_scalar(value: object, name: str) -> int:
 def _as_uint64_vector(
     values: int | Sequence[int] | np.ndarray,
     name: str,
+    *,
+    native_range_checked: bool = False,
 ) -> np.ndarray:
+    """Reinterpret an integer array as the ``uint64`` the kernel expects.
+
+    Set ``native_range_checked`` only where a native cell-range validation is
+    guaranteed to follow. A negative signed index reinterprets as a ``u64`` at
+    or above ``1 << 63``, which no resolution can contain, so that pass rejects
+    it and names it as negative. Skipping the scan here keeps importing a
+    Polypix result array free of any pass the unsigned kernel does not need.
+    Offset arrays never set it: they are bounds-checked rather than
+    range-checked, and are small enough that the scan does not matter.
+    """
     array = np.asarray(values)
     if array.ndim == 0:
         return np.asarray([_as_uint64_scalar(array.item(), name)], dtype=np.uint64)
@@ -359,10 +375,8 @@ def _as_uint64_vector(
         return np.ascontiguousarray(array.astype(np.uint64, copy=False))
     if np.issubdtype(array.dtype, np.signedinteger):
         # A reduction reads the array once and allocates nothing, where
-        # ``any(array < 0)`` also materializes a full boolean temporary. Every
-        # Polypix result array is signed, so this check runs on the common path
-        # of feeding one result back into the next call.
-        if array.min() < 0:
+        # ``any(array < 0)`` also materializes a full boolean temporary.
+        if not native_range_checked and array.min() < 0:
             raise ValueError(f"{name} must contain non-negative integers.")
         if array.dtype == np.dtype(np.int64) and array.flags.c_contiguous:
             return array.view(np.uint64)
@@ -376,12 +390,16 @@ def _as_uint64_vector(
 def _owned_int64_vector(
     values: Sequence[int] | npt.NDArray[np.integer[Any]],
     name: str,
+    *,
+    native_range_checked: bool = False,
 ) -> npt.NDArray[np.int64]:
     """Return an owned one-dimensional int64 copy for a public result object."""
     array = np.asarray(values)
     if array.ndim != 1:
         raise ValueError(f"{name} must be a one-dimensional integer array.")
-    converted = _as_uint64_vector(array, name)
+    converted = _as_uint64_vector(
+        array, name, native_range_checked=native_range_checked
+    )
     # A signed input that survived the non-negative check above is already
     # inside int64, so only unsigned and object inputs can exceed it. Skipping
     # the pass keeps importing a Polypix-produced array to a single copy.
@@ -741,7 +759,9 @@ def cover_cap(
     requested_threads = _as_threads(threads)
     if isinstance(reducer, Count) and candidate_cells is None:
         selected = (
-            None if reducer.cells is None else _as_uint64_vector(reducer.cells, "cells")
+            None
+            if reducer.cells is None
+            else _as_uint64_vector(reducer.cells, "cells", native_range_checked=True)
         )
         counts = _count_caps_per_cell(
             centers, radii, resolved, selected, requested_threads
@@ -761,11 +781,22 @@ def _coverage_cells(
     values: int | Sequence[int] | npt.NDArray[np.integer[Any]],
     resolution: int,
 ) -> npt.NDArray[np.uint64]:
-    cells = _as_uint64_vector(values, "cells")
-    if np.any(cells >= cell_count(resolution)):
-        raise ValueError(
-            f"cells must contain valid RING indices at resolution {resolution}."
-        )
+    """Validate a positional reduction query, naming the public argument.
+
+    The native reducers range-check this array too, but they know it as
+    ``requested_cells``, so the message is produced here instead. One maximum
+    classifies both failures: a reinterpreted negative index lands at or above
+    ``1 << 63``, above every resolution's cell count.
+    """
+    cells = _as_uint64_vector(values, "cells", native_range_checked=True)
+    if cells.size:
+        largest = int(cells.max())
+        if largest >= cell_count(resolution):
+            if largest >= 1 << 63:
+                raise ValueError("cells must contain non-negative integers.")
+            raise ValueError(
+                f"cells must contain valid RING indices at resolution {resolution}."
+            )
     return cells
 
 
@@ -1024,7 +1055,7 @@ def cell_centers(
     inputs, negative values, and out-of-range indices are rejected.
     """
     resolved = _as_resolution(resolution)
-    ring = _as_uint64_vector(cells, "cells")
+    ring = _as_uint64_vector(cells, "cells", native_range_checked=True)
     return _center(ring, resolved)
 
 
@@ -1058,7 +1089,7 @@ def cell_corners(
     Validation follows :func:`cell_centers`.
     """
     resolved = _as_resolution(resolution)
-    ring = _as_uint64_vector(cells, "cells")
+    ring = _as_uint64_vector(cells, "cells", native_range_checked=True)
     return _corner_many(ring, resolved)
 
 

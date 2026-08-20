@@ -270,11 +270,26 @@ Earth-observation coverage through `Coverage.from_arrays()` went from 2.80 ms to
 count, which weights a streaming compare far more heavily than wall clock does,
 had risen about 29 percent and is recovered.
 
-What remains is one reduction per imported array — about 2.4 microseconds of it
-on a 672-cell `cell_centers()` call whose floor is 17. That check is retained
-rather than deferred to native range validation, which would subsume it for
-`cells` arguments but not for `vertex_offsets`, and which reports out-of-range
-rather than negative indices.
+The last pass is deferred to the kernel rather than kept. Every entry point
+that hands a *cell* array to native code already range-checks it there, and a
+reinterpreted negative index arrives as a `u64` at or above `1 << 63`, which no
+resolution can contain. `validate_cell_range()` therefore names that case
+instead of reporting a generic out-of-range index, and the Python scan is
+skipped wherever such a check is guaranteed to follow. The message a caller sees
+is unchanged at every argument. Offset arrays keep the scan: they are
+bounds-checked rather than range-checked, and they hold one value per segment
+rather than one per hit, so the pass costs nothing worth removing. The
+positional reduction query keeps a Python check for a different reason — the
+kernel knows it as `requested_cells`, not the public `cells` — but classifies
+both failures from a single maximum rather than two scans.
+
+Re-importing the same coverage then took 1.56 ms, against 2.29 ms for the
+unsigned arrays it is measured against, because a signed array views where an
+unsigned one casts. The per-call overhead of a signed argument to
+`cell_centers()` and `cell_corners()` fell from 3.5 and 3.9 microseconds to
+about 0.8 and 0.7. Deferring validation is sound only argument by argument, so
+the flag that enables it is explicit at each call site and defaults to
+scanning.
 
 These values are regression-design evidence from one machine, not public
 cross-machine performance claims, and the cost constants above are calibration
