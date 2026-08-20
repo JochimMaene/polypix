@@ -338,6 +338,14 @@ wide margin, because the cap kernel accumulates private RING spans and never
 allocates cap-cell membership. Pass `candidate_cells` and it falls back to
 building them.
 
+Naming the cells you want is the other large win, and it applies to every
+covering call. `into=Count(cells=...)` and `into=Sum(..., cells=...)` say the
+result depends on those cells and no others, so a small selection is restricted
+to before the scan rather than gathered from a complete result. There is nothing
+to pass: supplying the same set as `candidate_cells` by hand gains nothing, and
+a selection large enough that scanning wins is scanned. A large selection is
+therefore not a mistake, just a different shape of query.
+
 For `occupancy()`, the default keeps every boundary and so costs memory
 proportional to the run count, which approaches the hit count when cells are
 occupied briefly and repeatedly. `Stats()` accumulates per-cell counts and

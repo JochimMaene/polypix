@@ -170,5 +170,11 @@ Candidates are a set: order and duplicates are discarded. Filtering is still
 center sampled, so it does not become a conservative index, and a dense
 candidate set can end up slower than just scanning the rings.
 
+You do not need this to reduce over a sparse set of cells. `into=Count(cells=
+aoi_cells)` already restricts the scan when the selection is small enough to be
+worth it, and keeps the order and duplicates of your query in the result. Reach
+for `candidate_cells` when you want the `Coverage` itself restricted, or when
+you want the restriction regardless of what it costs.
+
 See [Performance and memory](performance.md) for candidate planning, geometry
 shape, chunking, output sizing, and threads.

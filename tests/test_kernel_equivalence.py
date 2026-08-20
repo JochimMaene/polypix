@@ -539,3 +539,137 @@ def test_cell_corner_footprints_match_brute_force_centers(
                 -CONTAINMENT_EPSILON,
                 f"corners of cell {cell} at resolution {target_resolution}",
             )
+
+
+def _grid_quads(rng: np.random.Generator, count: int, half_deg: float) -> np.ndarray:
+    return np.asarray(
+        [
+            [
+                _lonlat(lon - half_deg, lat - half_deg),
+                _lonlat(lon + half_deg, lat - half_deg),
+                _lonlat(lon + half_deg, lat + half_deg),
+                _lonlat(lon - half_deg, lat + half_deg),
+            ]
+            for lat, lon in zip(
+                rng.uniform(-55.0, 55.0, count),
+                rng.uniform(-180.0, 180.0, count),
+                strict=True,
+            )
+        ]
+    )
+
+
+@pytest.mark.parametrize("resolution", [5, 8, 10])
+def test_selected_reducers_ignore_how_the_kernel_reaches_the_cells(
+    resolution: int, subtests
+) -> None:
+    """A cell selection may be answered by testing or by scanning, never both ways.
+
+    At or below an internal size bound the selection is handed to the kernel as
+    its candidate set, so it tests those cells directly rather than scanning
+    every ring the footprints cross. That is a dispatch decision and must be
+    invisible: identical counts, and bitwise-identical sums, whichever side of
+    the bound a selection falls on. The sizes are derived from the bound rather
+    than hard-coded so they keep straddling it if it moves.
+    """
+    rng = np.random.default_rng(20260826 + resolution)
+    quads = _grid_quads(rng, 400, 1.5)
+    values = rng.normal(size=quads.shape[0]) * 1e6
+    grid = px.cell_count(resolution)
+    bound = min(
+        grid // px._SELECTED_CANDIDATE_GRID_DIVISOR, px._SELECTED_CANDIDATE_MAXIMUM
+    )
+    sizes = sorted({0, 1, max(bound, 1), bound + 1, min(grid, 4 * bound + 8)})
+    for size in sizes:
+        selections = {
+            "sorted": np.sort(rng.choice(grid, size=size, replace=False)),
+            "unsorted": rng.permutation(grid)[:size],
+            "duplicated": np.repeat(
+                np.sort(rng.choice(grid, size=size // 2, replace=False)), 2
+            ),
+        }
+        coverage = px.cover_convex_polygon(quads, resolution, threads=1)
+        for name, selected in selections.items():
+            for reducer in (px.Count(cells=selected), px.Sum(values, cells=selected)):
+                with subtests.test(
+                    size=size, selection=name, reducer=type(reducer).__name__
+                ):
+                    np.testing.assert_array_equal(
+                        px.cover_convex_polygon(
+                            quads, resolution, threads=1, into=reducer
+                        ),
+                        coverage.reduce(reducer),
+                    )
+
+
+def test_explicit_candidates_still_bound_a_selected_reduction() -> None:
+    """``candidate_cells`` is a restriction the caller asked for, not a hint.
+
+    A selection outside it must stay zero, so the internal substitution has to
+    leave an explicit candidate set alone.
+    """
+    rng = np.random.default_rng(20260827)
+    resolution = 6
+    quads = _grid_quads(rng, 200, 2.0)
+    dense = px.cover_convex_polygon(quads, resolution, threads=1, into=px.Count())
+    covered = np.flatnonzero(dense)
+    inside, outside = covered[:8], covered[8:16]
+    selected = np.concatenate([inside, outside])
+
+    restricted = px.cover_convex_polygon(
+        quads,
+        resolution,
+        threads=1,
+        candidate_cells=inside,
+        into=px.Count(cells=selected),
+    )
+    np.testing.assert_array_equal(restricted[: inside.size], dense[inside])
+    np.testing.assert_array_equal(
+        restricted[inside.size :], np.zeros(outside.size, dtype=np.int64)
+    )
+
+
+@pytest.mark.parametrize("resolution", [6, 9])
+def test_selected_cap_and_sweep_reductions_match_materialize_then_reduce(
+    resolution: int,
+) -> None:
+    """The substitution applies to every covering call, not only polygons."""
+    rng = np.random.default_rng(20260828 + resolution)
+    caps = np.vstack([_unit(rng.normal(size=3)) for _ in range(300)])
+    radii = rng.uniform(0.02, 0.2, size=300)
+    latitudes = np.linspace(-60.0, 60.0, 40)
+    longitudes = np.linspace(-120.0, 120.0, 40)
+    left = np.asarray(
+        [
+            _lonlat(lon - 2.0, lat)
+            for lon, lat in zip(longitudes, latitudes, strict=True)
+        ]
+    )
+    right = np.asarray(
+        [
+            _lonlat(lon + 2.0, lat)
+            for lon, lat in zip(longitudes, latitudes, strict=True)
+        ]
+    )
+    small = np.sort(rng.choice(px.cell_count(resolution), size=64, replace=False))
+
+    for name, cover, segments in [
+        (
+            "cap",
+            lambda **kw: px.cover_cap(caps, radii, resolution, threads=1, **kw),
+            300,
+        ),
+        (
+            "sweep",
+            lambda **kw: px.cover_sweep(left, right, resolution, threads=1, **kw),
+            39,
+        ),
+    ]:
+        coverage = cover()
+        values = rng.normal(size=segments)
+        for reducer in (px.Count(cells=small), px.Sum(values, cells=small)):
+            np.testing.assert_array_equal(
+                cover(into=reducer),
+                coverage.reduce(reducer),
+                err_msg=f"{name} {type(reducer).__name__}",
+            )

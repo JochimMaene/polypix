@@ -626,6 +626,79 @@ def test_cover_cap_selected_count_small_request(
     )
 
 
+def test_cover_polygon_selected_count_small_request(
+    benchmark, footprints: np.ndarray
+) -> None:
+    """A small request must be answered by testing those cells, not by scanning.
+
+    Covering these footprints at resolution 9 and gathering 1000 cells out of
+    the result was measured at 220x the cost of handing the request to the
+    kernel as its candidate set, and it peaked at the full cell list besides.
+    """
+    requested = np.arange(1000, dtype=np.int64) * 3001
+    counts = benchmark(
+        px.cover_convex_polygon,
+        footprints,
+        9,
+        into=px.Count(cells=requested),
+        threads=1,
+    )
+
+    assert counts.shape == requested.shape
+    np.testing.assert_array_equal(
+        counts,
+        px.cover_convex_polygon(footprints, 9).reduce(px.Count(cells=requested)),
+    )
+
+
+def test_cover_polygon_selected_count_large_request(
+    benchmark, footprints: np.ndarray
+) -> None:
+    """A large request must keep scanning once and gathering.
+
+    Testing every requested cell against every footprint loses by up to 50x
+    once the request stops being a small share of the grid, so the substitution
+    has to decline here.
+    """
+    requested = np.arange(200_000, dtype=np.int64)
+    counts = benchmark(
+        px.cover_convex_polygon,
+        footprints,
+        9,
+        into=px.Count(cells=requested),
+        threads=1,
+    )
+
+    assert counts.shape == requested.shape
+    np.testing.assert_array_equal(
+        counts,
+        px.cover_convex_polygon(footprints, 9).reduce(px.Count(cells=requested)),
+    )
+
+
+def test_cover_sweep_selected_sum_small_request(
+    benchmark, strip_edges: tuple[np.ndarray, np.ndarray]
+) -> None:
+    """Sums follow counts: a small request is a question about those cells."""
+    left, right = strip_edges
+    requested = np.arange(1000, dtype=np.int64) * 3001
+    values = np.linspace(0.5, 1.5, left.shape[0] - 1)
+    sums = benchmark(
+        px.cover_sweep,
+        left,
+        right,
+        9,
+        into=px.Sum(values, cells=requested),
+        threads=1,
+    )
+
+    assert sums.shape == requested.shape
+    np.testing.assert_array_equal(
+        sums,
+        px.cover_sweep(left, right, 9).reduce(px.Sum(values, cells=requested)),
+    )
+
+
 def test_cover_cap_selected_count_large_request(
     benchmark,
     constellation_caps: tuple[np.ndarray, np.ndarray],

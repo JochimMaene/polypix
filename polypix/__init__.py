@@ -701,12 +701,15 @@ def cover_convex_polygon(
         else _as_packed_polygons(polygons_xyz, vertex_offsets)
     )
     reducer = _as_coverage_reducer(into)
+    candidates = _as_candidates(candidate_cells)
+    if candidates is None:
+        candidates = _selected_candidates(reducer, resolved)
     coverage = Coverage._from_native(
         *_cover(
             vertices,
             offsets,
             resolved,
-            _as_candidates(candidate_cells),
+            candidates,
             _as_threads(threads),
         ),
         resolved,
@@ -788,10 +791,11 @@ def cover_cap(
         )
         if counts is not None:
             return counts
+    candidates = _as_candidates(candidate_cells)
+    if candidates is None:
+        candidates = _selected_candidates(reducer, resolved)
     coverage = Coverage._from_native(
-        *_cover_cap(
-            centers, radii, resolved, _as_candidates(candidate_cells), requested_threads
-        ),
+        *_cover_cap(centers, radii, resolved, candidates, requested_threads),
         resolved,
     )
     return coverage if reducer is None else _reduce_coverage(coverage, reducer)
@@ -818,6 +822,43 @@ def _coverage_cells(
                 f"cells must contain valid RING indices at resolution {resolution}."
             )
     return cells
+
+
+# Reducing over a selection asks about those cells and no others, so the
+# selection is itself a candidate set: the kernel can test each selected cell
+# against each footprint instead of scanning every ring the footprints cross
+# and discarding nearly everything it finds. Testing costs one cell decode plus
+# one predicate per selected cell per footprint, so it wins only while the
+# selection stays small. Measured against covering then gathering, it is worth
+# between 1.4x and 380x below the two bounds here, and loses by up to 50x well
+# above them; at the bounds themselves the worst case measured was a 9% loss on
+# a one-millisecond call. The proportional bound keeps the trade comparable
+# across resolutions, and the absolute bound stops a resolution-11 grid from
+# admitting fifty thousand cells merely because they are a small share of it.
+_SELECTED_CANDIDATE_GRID_DIVISOR = 1000
+_SELECTED_CANDIDATE_MAXIMUM = 4096
+
+
+def _selected_candidates(
+    reducer: CoverageReducer | None,
+    resolution: int,
+) -> npt.NDArray[np.uint64] | None:
+    """Return a reducer's cell selection as a candidate set, when that is cheaper.
+
+    Returns ``None`` when there is no selection or it is large enough that
+    scanning and gathering wins, leaving the caller's normal path in place.
+    Restricting the scan cannot change a result: a cell outside the selection
+    never contributes to a selected cell's count, and never to its sum either,
+    so :class:`Sum` keeps both its value and its addition order.
+    """
+    if reducer is None or reducer.cells is None:
+        return None
+    cells = _coverage_cells(reducer.cells, resolution)
+    limit = min(
+        cell_count(resolution) // _SELECTED_CANDIDATE_GRID_DIVISOR,
+        _SELECTED_CANDIDATE_MAXIMUM,
+    )
+    return cells if cells.size <= limit else None
 
 
 def _as_segment_values(
@@ -936,10 +977,11 @@ def cover_sweep(
             "left_edge_xyz and right_edge_xyz must contain the same number of samples."
         )
     requested_threads = _as_threads(threads)
+    candidates = _as_candidates(candidate_cells)
+    if candidates is None:
+        candidates = _selected_candidates(reducer, resolved)
     coverage = Coverage._from_native(
-        *_cover_sweep(
-            left, right, resolved, _as_candidates(candidate_cells), requested_threads
-        ),
+        *_cover_sweep(left, right, resolved, candidates, requested_threads),
         resolved,
     )
     return coverage if reducer is None else _reduce_coverage(coverage, reducer)

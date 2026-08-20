@@ -2,16 +2,6 @@
 
 ## Unreleased
 
-### Fixed
-
-- Covered the cells a footprint's longitude span ends on. `cover_sweep()` and
-  `cover_convex_polygon()` derive one longitude interval per footprint; when
-  that span ended exactly on the prime meridian the interval was treated as
-  unwrapped, so the cells at longitude zero - offset 0 of every unshifted ring -
-  were never scanned. A footprint with a vertex on the meridian silently lost up
-  to one cell per ring it crossed. Selecting `candidate_cells` was unaffected,
-  because that path tests each cell directly.
-
 ### Added
 
 - Added scale-invariant batch direction-to-RING indexing through `cell_at()`,
@@ -29,6 +19,29 @@
 - Added packed ragged convex polygons through `vertex_offsets=`,
   `Coverage.segment_indices()`, `Coverage.filter_hits()`, and
   `cell_count()`.
+
+### Changed
+
+- Answered a reduction over a small cell selection by testing those cells
+  instead of covering everything and gathering. `into=Count(cells=...)` and
+  `into=Sum(..., cells=...)` name the only cells the result depends on, so the
+  selection is itself a candidate set. Below a size bound the covering calls now
+  hand it to the kernel as one, which measured 220x faster for polygons at
+  resolution 10, 870x for sums at resolution 11 with a third of the peak
+  memory, and 30x for a sweep - all bitwise-identical results. Larger
+  selections keep scanning once and gathering, which stays faster for them.
+  Passing `candidate_cells` explicitly is unchanged: it remains the caller's
+  restriction, not a hint.
+
+### Fixed
+
+- Covered the cells a footprint's longitude span ends on. `cover_sweep()` and
+  `cover_convex_polygon()` derive one longitude interval per footprint; when
+  that span ended exactly on the prime meridian the interval was treated as
+  unwrapped, so the cells at longitude zero - offset 0 of every unshifted ring -
+  were never scanned. A footprint with a vertex on the meridian silently lost up
+  to one cell per ring it crossed. Selecting `candidate_cells` was unaffected,
+  because that path tests each cell directly.
 
 ### Changed
 
