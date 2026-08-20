@@ -299,7 +299,13 @@ def test_candidate_filtering_matches_the_full_scan(resolution: int) -> None:
 
 @pytest.mark.parametrize("threads", [1, 2, 3, 8])
 def test_results_are_invariant_across_thread_counts(threads: int) -> None:
-    """Chunk boundaries must not reach the result."""
+    """Chunk boundaries must not reach the result.
+
+    Covers the reduced forms as well as the materialized one: a dense
+    ``Count``/``Sum`` reaches its result through per-worker accumulators that
+    are merged, so a thread count that changes the chunking must not change
+    the answer - bitwise, for ``Sum``.
+    """
     rng = np.random.default_rng(20260823)
     resolution = 8
     polygons = np.stack(
@@ -307,7 +313,23 @@ def test_results_are_invariant_across_thread_counts(threads: int) -> None:
     )
     caps = np.vstack([_unit(rng.normal(size=3)) for _ in range(4000)])
     radii = rng.uniform(0.01, 0.06, size=4000)
-    values = rng.normal(size=4000)
+    polygon_values = rng.normal(size=1500)
+    cap_values = rng.normal(size=4000)
+    latitudes = np.linspace(-50.0, 50.0, 1501)
+    longitudes = np.linspace(-150.0, 150.0, 1501)
+    left = np.asarray(
+        [
+            _lonlat(lon - 1.0, lat)
+            for lon, lat in zip(longitudes, latitudes, strict=True)
+        ]
+    )
+    right = np.asarray(
+        [
+            _lonlat(lon + 1.0, lat)
+            for lon, lat in zip(longitudes, latitudes, strict=True)
+        ]
+    )
+    sweep_values = rng.normal(size=1500)
 
     reference = px.cover_convex_polygon(polygons, resolution, threads=1)
     actual = px.cover_convex_polygon(polygons, resolution, threads=threads)
@@ -319,24 +341,52 @@ def test_results_are_invariant_across_thread_counts(threads: int) -> None:
     np.testing.assert_array_equal(cap_reference.cells, cap_actual.cells)
     np.testing.assert_array_equal(cap_reference.offsets, cap_actual.offsets)
 
-    np.testing.assert_array_equal(
-        px.cover_cap(caps, radii, resolution, threads=1, into=px.Count()),
-        px.cover_cap(caps, radii, resolution, threads=threads, into=px.Count()),
-    )
-    # Sums are bitwise-compared on purpose: a reassociated partial sum is a
-    # behaviour change, not a rounding detail.
-    np.testing.assert_array_equal(
-        px.cover_cap(caps, radii, resolution, threads=1, into=px.Sum(values)),
-        px.cover_cap(caps, radii, resolution, threads=threads, into=px.Sum(values)),
-    )
+    for name, cover, kwargs, segment_values in [
+        (
+            "polygon",
+            px.cover_convex_polygon,
+            {"polygons_xyz": polygons},
+            polygon_values,
+        ),
+        ("cap", px.cover_cap, {"centers_xyz": caps, "radii_rad": radii}, cap_values),
+        (
+            "sweep",
+            px.cover_sweep,
+            {"left_edge_xyz": left, "right_edge_xyz": right},
+            sweep_values,
+        ),
+    ]:
+        np.testing.assert_array_equal(
+            cover(**kwargs, resolution=resolution, threads=1, into=px.Count()),
+            cover(**kwargs, resolution=resolution, threads=threads, into=px.Count()),
+            err_msg=f"{name} dense Count",
+        )
+        # Sums are bitwise-compared on purpose: a reassociated partial sum is
+        # a behaviour change, not a rounding detail.
+        np.testing.assert_array_equal(
+            cover(
+                **kwargs, resolution=resolution, threads=1, into=px.Sum(segment_values)
+            ),
+            cover(
+                **kwargs,
+                resolution=resolution,
+                threads=threads,
+                into=px.Sum(segment_values),
+            ),
+            err_msg=f"{name} dense Sum",
+        )
 
 
-def test_fused_reducers_match_materialize_then_reduce() -> None:
+@pytest.mark.parametrize("threads", [1, None])
+def test_fused_reducers_match_materialize_then_reduce(threads: int | None) -> None:
     """``into=`` must be an optimization, never a different answer.
 
-    ``cover_cap(into=Count())`` already has a fused kernel; the rest reduce a
-    materialized ``Coverage``. Both must equal reducing that ``Coverage`` by
-    hand, so fusing more of them later cannot change a result silently.
+    ``cover_cap`` has a fused kernel for dense counts and for small
+    selections; polygons and sweeps materialize a ``Coverage`` and reduce it,
+    and a small selection on any of them is answered by testing those cells
+    instead of scanning. Every one of those routes must equal reducing that
+    ``Coverage`` by hand, so which route runs stays invisible - and fusing a
+    further pair later cannot change a result silently.
     """
     rng = np.random.default_rng(20260824)
     resolution = 7
@@ -345,12 +395,38 @@ def test_fused_reducers_match_materialize_then_reduce() -> None:
     polygons = np.stack(
         [_convex_polygon(rng, 4, float(rng.uniform(0.01, 0.1))) for _ in range(600)]
     )
+    latitudes = np.linspace(-50.0, 50.0, 601)
+    longitudes = np.linspace(-150.0, 150.0, 601)
+    left = np.asarray(
+        [
+            _lonlat(lon - 1.0, lat)
+            for lon, lat in zip(longitudes, latitudes, strict=True)
+        ]
+    )
+    right = np.asarray(
+        [
+            _lonlat(lon + 1.0, lat)
+            for lon, lat in zip(longitudes, latitudes, strict=True)
+        ]
+    )
     values = rng.normal(size=600)
     selected = rng.choice(px.cell_count(resolution), size=500, replace=False)
 
     for name, cover in [
-        ("cap", lambda **kw: px.cover_cap(caps, radii, resolution, **kw)),
-        ("polygon", lambda **kw: px.cover_convex_polygon(polygons, resolution, **kw)),
+        (
+            "cap",
+            lambda **kw: px.cover_cap(caps, radii, resolution, threads=threads, **kw),
+        ),
+        (
+            "polygon",
+            lambda **kw: px.cover_convex_polygon(
+                polygons, resolution, threads=threads, **kw
+            ),
+        ),
+        (
+            "sweep",
+            lambda **kw: px.cover_sweep(left, right, resolution, threads=threads, **kw),
+        ),
     ]:
         coverage = cover()
         for reducer in [
@@ -362,7 +438,7 @@ def test_fused_reducers_match_materialize_then_reduce() -> None:
             np.testing.assert_array_equal(
                 cover(into=reducer),
                 coverage.reduce(reducer),
-                err_msg=f"{name} {type(reducer).__name__}",
+                err_msg=f"{name} {type(reducer).__name__} threads={threads}",
             )
 
 

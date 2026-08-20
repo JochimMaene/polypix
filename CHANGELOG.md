@@ -32,19 +32,6 @@
   selections keep scanning once and gathering, which stays faster for them.
   Passing `candidate_cells` explicitly is unchanged: it remains the caller's
   restriction, not a hint.
-
-### Fixed
-
-- Covered the cells a footprint's longitude span ends on. `cover_sweep()` and
-  `cover_convex_polygon()` derive one longitude interval per footprint; when
-  that span ended exactly on the prime meridian the interval was treated as
-  unwrapped, so the cells at longitude zero - offset 0 of every unshifted ring -
-  were never scanned. A footprint with a vertex on the meridian silently lost up
-  to one cell per ring it crossed. Selecting `candidate_cells` was unaffected,
-  because that path tests each cell directly.
-
-### Changed
-
 - Validated the offsets every segmented cell array carries in one shared place,
   so the occupancy entry points check them too. They index
   `cells[offsets[i]..offsets[i + 1]]` directly, but only checked that the
@@ -126,6 +113,25 @@
   normalization, and removed repeated polygon-longitude transforms.
 - Reworked the executable Starlink example around exact caps and the
   Earth-observation example around native ordinal occupancy runs.
+
+### Fixed
+
+- Declined to parallelize a dense cap count when its per-worker buffers cost
+  more than the scan they divide. `cover_cap(..., into=Count())` gives each
+  worker a grid-sized accumulator and merges them by addition, and that buffer
+  spans the whole grid however few caps a worker's chunk holds - so unlike
+  coverage chunking, more workers neither shrinks it nor amortizes the merge
+  pass over it. A few thousand modest caps at resolution 9 were measured up to
+  2x slower with threads than without. The existing memory budget only ruled
+  out the largest grids; the decision now also weighs the scan against the
+  merge, and falls back to one sequential buffer when it does not clear both.
+- Covered the cells a footprint's longitude span ends on. `cover_sweep()` and
+  `cover_convex_polygon()` derive one longitude interval per footprint; when
+  that span ended exactly on the prime meridian the interval was treated as
+  unwrapped, so the cells at longitude zero - offset 0 of every unshifted ring -
+  were never scanned. A footprint with a vertex on the meridian silently lost up
+  to one cell per ring it crossed. Selecting `candidate_cells` was unaffected,
+  because that path tests each cell directly.
 
 ### Removed
 

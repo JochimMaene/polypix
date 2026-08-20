@@ -475,65 +475,53 @@ pub(crate) fn count_caps_per_cell(
         caps.len().saturating_mul(SCAN_PREPARATION_WORK),
         |total, cap| total.saturating_add(expected_cells_for_cap(cap, resolution)),
     );
-    let available_workers = std::thread::available_parallelism()
-        .map(|count| count.get())
-        .unwrap_or(1);
-    let maximum_workers = match threads {
-        Some(requested) => requested.min(available_workers),
-        None => rayon::current_num_threads(),
-    }
-    .min(caps.len());
-    let local_bytes = cell_count
-        .checked_add(1)
-        .and_then(|length| length.checked_mul(std::mem::size_of::<i64>()))
-        .and_then(|bytes| bytes.checked_mul(maximum_workers))
-        .unwrap_or(usize::MAX);
-    run_with_parallelism(
+    let parallel_worthwhile = dense_accumulator_parallel_worthwhile(
+        cell_count.saturating_add(1),
         caps.len(),
-        parallel_work >= SCAN_PARALLEL_MIN_WORK && local_bytes <= CAP_COUNT_PARALLEL_MAX_BYTES,
+        parallel_work,
         threads,
-        |parallel| {
-            let worker_count = if parallel {
-                rayon::current_num_threads().min(caps.len())
-            } else {
-                1
-            };
-            let chunk_size = caps.len().div_ceil(worker_count);
-            let ranges = (0..caps.len())
-                .step_by(chunk_size)
-                .map(|start| start..(start + chunk_size).min(caps.len()))
-                .collect::<Vec<_>>();
-            let partial = if parallel {
-                ranges
-                    .into_par_iter()
-                    .map(|range| count_cap_chunk(&caps, range, resolution, cell_count))
-                    .collect::<Vec<_>>()
-            } else {
-                ranges
-                    .into_iter()
-                    .map(|range| count_cap_chunk(&caps, range, resolution, cell_count))
-                    .collect::<Vec<_>>()
-            };
-            let mut partial = partial.into_iter().collect::<Result<Vec<_>, _>>()?;
-            let mut deltas = partial
-                .pop()
-                .expect("at least one cap produces one partial result");
-            for other in partial {
-                for (total, value) in deltas.iter_mut().zip(other) {
-                    *total += value;
-                }
+    );
+    run_with_parallelism(caps.len(), parallel_worthwhile, threads, |parallel| {
+        let worker_count = if parallel {
+            rayon::current_num_threads().min(caps.len())
+        } else {
+            1
+        };
+        let chunk_size = caps.len().div_ceil(worker_count);
+        let ranges = (0..caps.len())
+            .step_by(chunk_size)
+            .map(|start| start..(start + chunk_size).min(caps.len()))
+            .collect::<Vec<_>>();
+        let partial = if parallel {
+            ranges
+                .into_par_iter()
+                .map(|range| count_cap_chunk(&caps, range, resolution, cell_count))
+                .collect::<Vec<_>>()
+        } else {
+            ranges
+                .into_iter()
+                .map(|range| count_cap_chunk(&caps, range, resolution, cell_count))
+                .collect::<Vec<_>>()
+        };
+        let mut partial = partial.into_iter().collect::<Result<Vec<_>, _>>()?;
+        let mut deltas = partial
+            .pop()
+            .expect("at least one cap produces one partial result");
+        for other in partial {
+            for (total, value) in deltas.iter_mut().zip(other) {
+                *total += value;
             }
-            let mut running = 0_i64;
-            for value in deltas.iter_mut().take(cell_count) {
-                running += *value;
-                debug_assert!(running >= 0);
-                *value = running;
-            }
-            debug_assert_eq!(running + deltas[cell_count], 0);
-            deltas.pop();
-            Ok(Some(deltas))
-        },
-    )?
+        }
+        let mut running = 0_i64;
+        for value in deltas.iter_mut().take(cell_count) {
+            running += *value;
+            debug_assert!(running >= 0);
+            *value = running;
+        }
+        debug_assert_eq!(running + deltas[cell_count], 0);
+        deltas.pop();
+        Ok(Some(deltas))
+    })?
 }
 
 pub(super) fn compute_sweep_chunk(
@@ -720,6 +708,47 @@ pub(super) fn compute_planned_candidates(
     })
 }
 
+/// Would parallelizing a chunked dense accumulation pay for itself?
+///
+/// Splitting `item_count` items across workers gives each one a private
+/// `buffer_length`-sized accumulator, merged by addition afterward. Two costs
+/// follow that more workers cannot shrink, because every buffer spans the whole
+/// grid however few items its chunk holds: the buffers themselves, and one pass
+/// over each of them during the merge. The scan therefore has to be large
+/// against both, or parallelizing is a net loss - measured up to 2x slower than
+/// staying sequential for a few thousand modest caps at resolution 9, where the
+/// buffers rather than the scan dominated. Declining before any buffer is
+/// allocated is what keeps the sequential fallback cheap.
+///
+/// `parallel_work` is the same per-item estimate `dispatch_coverage` weighs, not
+/// a cell count, so the ratio against `buffer_length` is calibrated against that
+/// measured crossover rather than derived, with margin on the side that costs a
+/// missed speedup rather than a regression.
+fn dense_accumulator_parallel_worthwhile(
+    buffer_length: usize,
+    item_count: usize,
+    parallel_work: usize,
+    threads: Option<usize>,
+) -> bool {
+    if parallel_work < SCAN_PARALLEL_MIN_WORK
+        || parallel_work < buffer_length.saturating_mul(DENSE_ACCUMULATOR_PARALLEL_WORK_RATIO)
+    {
+        return false;
+    }
+    let available_workers = std::thread::available_parallelism()
+        .map(|count| count.get())
+        .unwrap_or(1);
+    let maximum_workers = match threads {
+        Some(requested) => requested.min(available_workers),
+        None => rayon::current_num_threads(),
+    }
+    .min(item_count);
+    buffer_length
+        .checked_mul(std::mem::size_of::<i64>())
+        .and_then(|bytes| bytes.checked_mul(maximum_workers))
+        .is_some_and(|bytes| bytes <= DENSE_ACCUMULATOR_PARALLEL_MAX_BYTES)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{count_caps_per_cell, raw_cell_count};
@@ -748,5 +777,25 @@ mod tests {
             .expect("a dense cap count never declines");
         assert_eq!(counts.len(), raw_cell_count(4) as usize);
         assert!(counts.iter().any(|&value| value > 0));
+    }
+
+    #[test]
+    fn dense_cap_counts_agree_regardless_of_thread_count() {
+        // The dense fixture above passes `threads=Some(1)`, so it never
+        // reaches the chunked-and-merged path at all. This one does. Few,
+        // modest caps against a grid large enough to make merging relatively
+        // expensive is also the shape `DENSE_ACCUMULATOR_PARALLEL_WORK_RATIO`
+        // exists to decline, so agreement here covers both the decision and
+        // the merge it guards.
+        let (centers, radii) = caps_along_equator(400, 0.035);
+        let sequential = count_caps_per_cell(&centers, &radii, 9, None, Some(1))
+            .unwrap()
+            .expect("a dense cap count never declines");
+        for threads in [None, Some(2), Some(8)] {
+            let actual = count_caps_per_cell(&centers, &radii, 9, None, threads)
+                .unwrap()
+                .expect("a dense cap count never declines");
+            assert_eq!(actual, sequential, "threads={threads:?}");
+        }
     }
 }

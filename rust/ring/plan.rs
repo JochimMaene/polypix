@@ -36,7 +36,25 @@ pub(super) const CANDIDATE_CENTER_CACHE_REUSE: usize = 3;
 
 pub(super) const CANDIDATE_CENTER_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
 
-pub(super) const CAP_COUNT_PARALLEL_MAX_BYTES: usize = 256 * 1024 * 1024;
+// A chunked dense accumulator - today only the dense cap count - gives each
+// worker its own grid-sized buffer and merges them by addition afterward. That
+// buffer spans `cell_count` regardless of how few items a worker's chunk holds,
+// so unlike coverage chunking, more workers does not shrink it: at resolution
+// 11 one worker's buffer alone is 402 MiB. Bound the total rather than the
+// per-worker share, and fall back to a single sequential buffer above it.
+pub(super) const DENSE_ACCUMULATOR_PARALLEL_MAX_BYTES: usize = 256 * 1024 * 1024;
+
+// The buffer budget above only rules out the largest grids; it says nothing
+// about whether merging is worth it at all. Every worker's buffer still has to
+// be walked once during the merge however little work its chunk did, so
+// parallelizing a scan that is not itself substantially larger than that walk
+// is a net loss - measured up to 2x slower than sequential for a few thousand
+// modest caps at resolution 9. `parallel_work` is a per-item proxy rather than
+// a cell count, so this ratio is calibrated against the measured crossover
+// (roughly 5x) rather than derived, with margin kept on the side that costs a
+// missed speedup rather than a regression. Being measured on one machine, it is
+// a prime candidate for re-measurement on new hardware.
+pub(super) const DENSE_ACCUMULATOR_PARALLEL_WORK_RATIO: usize = 8;
 
 // The two ways to answer a selected cap count, priced in units of one
 // cap-containment test. Testing every cap against every requested cell also
