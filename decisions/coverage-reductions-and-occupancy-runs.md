@@ -383,3 +383,30 @@ intersection coverage.
 - A shared kernel sink abstraction, so every geometry could fuse every reducer.
   Admissible later and invisible to the API by construction, but unjustified
   now: only the cap kernel has a measured fusing advantage.
+
+  Attempted since, for dense polygon and sweep `Count`/`Sum`, and reverted. The
+  scan seam itself is cheap and now exists - `cover_centers()` takes a visit
+  closure rather than a `Vec`, at no measured cost - but the consumer side did
+  not clear the bar this decision sets. Sequentially the fused path was 1.3x to
+  1.4x faster and halved peak memory, from 930 MiB to 424 MiB, on 4000
+  overlapping resolution-11 footprints; it was indistinguishable on ordinary
+  sparse workloads, where allocating and zeroing the grid-sized result already
+  dominates both paths and fusing cannot reduce it.
+
+  The blocker is parallelism, not the seam. Chunking by footprint gives each
+  worker a grid-sized accumulator to merge afterward, and that buffer does not
+  shrink with more workers, so the merge alone made resolution-9 counts up to
+  2x slower with threads than without, and a resolution-11 count 7x slower than
+  materializing. Gating the fused path to `threads=1` recovered the win but put
+  it behind a flag no caller would think to reach for, and left the default
+  path - the one that would benefit from halved peak memory - unimproved.
+
+  What would qualify: partition the *output* rather than the input. Give each
+  worker a disjoint contiguous ring range and let it scan every footprint whose
+  `z_bounds()` overlaps that range, emitting only into its own slice. No
+  per-worker grid buffer, no merge pass, no memory budget, no work-ratio
+  constant, and the memory win lands on the default path at every thread count.
+  Revisit then, or once the scan emits ordered ranges rather than cells, at
+  which point a dense count stops enumerating hits at all - range endpoints and
+  one prefix sum - and becomes asymptotically better rather than a constant
+  factor.
