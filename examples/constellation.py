@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import math
 from collections.abc import Sequence
 from io import BytesIO
@@ -33,23 +32,6 @@ DOC_FIGURE_DIR = Path("docs/assets/generated")
 
 # Path from a built page at examples/<name>.html to the assets copied by Sphinx.
 DOC_FIGURE_URL = "../generated"
-
-
-def write_measurements(path: Path, measurements: dict[str, Any]) -> None:
-    """Record one run's measurements next to the figures it produced."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(measurements, indent=2, sort_keys=True) + "\n")
-
-
-def read_measurements(path: Path) -> dict[str, Any]:
-    """Load measurements recorded by the documentation asset step."""
-    if not path.exists():
-        raise FileNotFoundError(
-            f"{path} is missing. Run `pixi run --environment docs docs-figures` "
-            "to execute the examples before building the documentation."
-        )
-    loaded: dict[str, Any] = json.loads(path.read_text())
-    return loaded
 
 
 def constellation_centers(

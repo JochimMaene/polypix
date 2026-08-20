@@ -19,15 +19,12 @@ from examples.constellation import (
     constellation_centers,
     map_coordinates,
     plot_global_map,
-    read_measurements,
     swath_edges,
-    write_measurements,
 )
-from examples.palette import gap_colormap, sequential_colormap
+from examples.palette import COUNT_CMAP, GAP_CMAP
 
 OBSERVATIONS_FIGURE_PATH = DOC_FIGURE_DIR / "earth-observation-count.png"
 REVISIT_FIGURE_PATH = DOC_FIGURE_DIR / "earth-observation-revisit.png"
-MEASUREMENTS_PATH = DOC_FIGURE_DIR / "earth-observation.json"
 
 SATELLITE_COUNT = 10
 PLANE_COUNT = 5
@@ -207,7 +204,7 @@ def plot_observations(
         visible=visible,
         resolution=HEALPIX_RESOLUTION,
         colorbar_label="Merged occupied-bin runs per cell",
-        cmap=plt.get_cmap(sequential_colormap(), len(levels)),
+        cmap=plt.get_cmap(COUNT_CMAP, len(levels)),
         norm=colors.BoundaryNorm(levels, len(levels), extend="max"),
         colorbar_ticks=levels,
         extend="max",
@@ -242,7 +239,7 @@ def plot_revisit(
         visible=measured,
         resolution=HEALPIX_RESOLUTION,
         colorbar_label="Mean internal uncovered gap (hours)",
-        cmap=plt.get_cmap(gap_colormap(), len(levels)),
+        cmap=plt.get_cmap(GAP_CMAP, len(levels)),
         norm=colors.BoundaryNorm(levels, len(levels), extend="max"),
         colorbar_ticks=levels,
         extend="max",
@@ -250,8 +247,8 @@ def plot_revisit(
     )
 
 
-def build_documentation_assets() -> None:
-    """Run the scenario, write both maps, and record the measurements."""
+def build_documentation_assets() -> str:
+    """Run the scenario, write both maps, and return its documentation HTML."""
     result = analyze()
     plotting_started = time.perf_counter()
     coordinates = map_coordinates(resolution=HEALPIX_RESOLUTION)
@@ -261,35 +258,7 @@ def build_documentation_assets() -> None:
     plot_revisit(result, REVISIT_FIGURE_PATH, coordinates=coordinates, dpi=100)
     plotting_elapsed_s = time.perf_counter() - plotting_started
 
-    measured = np.isfinite(result.mean_internal_gap_s)
-    gap_hours = result.mean_internal_gap_s[measured] / 3_600
-    write_measurements(
-        MEASUREMENTS_PATH,
-        {
-            "interval_count": DURATION_S // CADENCE_S * SATELLITE_COUNT,
-            "stored_hit_count": result.stored_hit_count,
-            "swath_ms": result.swath_elapsed_s * 1_000,
-            "coverage_ms": result.coverage_elapsed_s * 1_000,
-            "reduction_ms": result.reduction_elapsed_s * 1_000,
-            "analysis_ms": result.analysis_elapsed_s * 1_000,
-            "plotting_ms": plotting_elapsed_s * 1_000,
-            "cells_observed": int(np.count_nonzero(result.observations)),
-            "cells_with_internal_gaps": int(np.count_nonzero(measured)),
-            "cell_count": int(result.observations.size),
-            "observations_max": int(result.observations.max()),
-            "gap_median_h": float(np.median(gap_hours)),
-            "gap_min_h": float(gap_hours.min()),
-            "gap_max_h": float(gap_hours.max()),
-            "maximum_internal_gap_h": float(
-                np.nanmax(result.max_internal_gap_s) / 3_600
-            ),
-        },
-    )
-
-
-def documentation_html() -> str:
-    """Return the recorded figures and measurements as HTML for the docs page."""
-    m = read_measurements(MEASUREMENTS_PATH)
+    cells_observed = int(np.count_nonzero(result.observations))
     return f"""
 <figure class="example-figure">
   <img src="{DOC_FIGURE_URL}/{OBSERVATIONS_FIGURE_PATH.name}"
@@ -311,10 +280,10 @@ def documentation_html() -> str:
 </figure>
 
 <div class="example-metrics">
-  <div><strong>{m["interval_count"]:,}</strong><span>swept intervals</span></div>
-  <div><strong>{m["stored_hit_count"]:,}</strong><span>interval–cell hits</span></div>
-  <div><strong>{m["cells_observed"]:,}</strong><span>cells observed</span></div>
-  <div><strong>{m["cell_count"] - m["cells_observed"]:,}</strong><span>cells never observed</span></div>
+  <div><strong>{DURATION_S // CADENCE_S * SATELLITE_COUNT:,}</strong><span>swept intervals</span></div>
+  <div><strong>{result.stored_hit_count:,}</strong><span>interval–cell hits</span></div>
+  <div><strong>{cells_observed:,}</strong><span>cells observed</span></div>
+  <div><strong>{result.observations.size - cells_observed:,}</strong><span>cells never observed</span></div>
 </div>
 
 <table class="example-timings">
@@ -324,15 +293,15 @@ def documentation_html() -> str:
   </thead>
   <tbody>
     <tr><td>Ten <code>cover_sweep()</code> calls</td>
-        <td><strong>{m["coverage_ms"]:.0f} ms</strong></td></tr>
+        <td><strong>{result.coverage_elapsed_s * 1_000:.0f} ms</strong></td></tr>
     <tr><td>Orbits and swath edges</td>
-        <td>{m["swath_ms"]:.0f} ms</td></tr>
+        <td>{result.swath_elapsed_s * 1_000:.0f} ms</td></tr>
     <tr><td>Occupancy runs and scatter</td>
-        <td>{m["reduction_ms"]:.0f} ms</td></tr>
+        <td>{result.reduction_elapsed_s * 1_000:.0f} ms</td></tr>
     <tr><td>Complete analysis</td>
-        <td>{m["analysis_ms"]:.0f} ms</td></tr>
+        <td>{result.analysis_elapsed_s * 1_000:.0f} ms</td></tr>
     <tr><td>Two plots and PNG encoding</td>
-        <td>{m["plotting_ms"]:.0f} ms</td></tr>
+        <td>{plotting_elapsed_s * 1_000:.0f} ms</td></tr>
   </tbody>
 </table>
 """.strip()

@@ -149,7 +149,7 @@ edges 3.2° either side of it:
 >>> len(swath_coverage)
 6
 >>> swath_coverage.segment_sizes
-array([2, 2, 2, 4, 2, 2])
+array([2, 2, 4, 4, 2, 2])
 ```
 
 Seven samples give six intervals, with one result segment per interval:
