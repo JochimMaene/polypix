@@ -49,16 +49,16 @@ fn validate_run_sources(
     }
 
     // Every source is a `Coverage`, which validates its cells and offsets once
-    // at construction and exposes them read-only, so the per-hit scans have
-    // already run and cannot be invalidated afterwards. Only the offsets are
-    // re-read here, to agree on a shared segment count.
+    // at construction, so the per-hit scans have already run. That does not
+    // carry over to the native entry point, which any caller can reach with
+    // arbitrary arrays, and the offsets are indexed directly by
+    // `segment_slices`. Revalidate them: the cost is one pass over the
+    // offsets, negligible beside the per-hit work that follows. The far more
+    // expensive per-hit cell scan stays skipped, because the accumulators
+    // bound-check every cell they touch anyway.
     let mut segment_count = None;
-    for (source, &offsets) in offset_arrays.iter().enumerate() {
-        if offsets.is_empty() {
-            return Err(format!(
-                "sources[{source}]: offsets must contain at least the initial zero."
-            ));
-        }
+    for (source, (&cells, &offsets)) in cell_arrays.iter().zip(offset_arrays).enumerate() {
+        ring::validate_offsets(offsets, cells.len() as u64, &format!("sources[{source}]: "))?;
         let source_segment_count = offsets.len() - 1;
         if segment_count.is_some_and(|expected| expected != source_segment_count) {
             return Err(
@@ -812,6 +812,31 @@ mod tests {
             error_message(&[&empty_cells], &[&[0]], ring::MAX_RESOLUTION + 1, 1)
                 .contains("resolution must be between")
         );
+    }
+
+    #[test]
+    fn malformed_offsets_are_rejected_rather_than_panicking() {
+        // `segment_slices` indexes the offsets directly, so a caller reaching
+        // the native entry point with arrays no `Coverage` produced must get an
+        // error. Every case below either panicked on the slice index or, for a
+        // nonzero initial offset, silently dropped the leading hits.
+        let cells = [1_u64, 2, 3, 4];
+        for (offsets, expected) in [
+            (vec![0_u64, 9], "offsets[-1] must equal"),
+            (vec![4, 0], "must start at zero"),
+            (vec![0, 4, 2], "must be nondecreasing"),
+            (vec![2, 4], "must start at zero"),
+            (vec![0, 2], "offsets[-1] must equal"),
+        ] {
+            let message = error_message(&[&cells], &[offsets.as_slice()], 4, 1);
+            assert!(
+                message.contains(expected) && message.starts_with("sources[0]: "),
+                "offsets {offsets:?} produced {message:?}"
+            );
+        }
+
+        let valid = [0_u64, 2, 4];
+        assert!(occupancy_runs(&[&cells], &[&valid], 4, 1).is_ok());
     }
 
     #[test]

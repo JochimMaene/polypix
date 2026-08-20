@@ -161,24 +161,9 @@ fn validate_weighted_coverage(
     resolution: u8,
 ) -> NativeResult<u64> {
     let cell_count = raw_cell_count(resolution)?;
-    if offsets.is_empty() {
-        return Err("offsets must contain at least the initial zero."
-            .to_owned()
-            .into());
-    }
-    if offsets[0] != 0 {
-        return Err("offsets must start at zero.".to_owned().into());
-    }
-    if offsets.windows(2).any(|pair| pair[0] > pair[1]) {
-        return Err("offsets must be nondecreasing.".to_owned().into());
-    }
     let cells_length = u64::try_from(cells.len())
         .map_err(|_| NativeError::out_of_memory("Coverage is too large to address."))?;
-    if offsets[offsets.len() - 1] != cells_length {
-        return Err("offsets[-1] must equal the number of cells."
-            .to_owned()
-            .into());
-    }
+    ring::validate_offsets(offsets, cells_length, "")?;
     if values.len() != offsets.len() - 1 {
         return Err("values must contain one value per coverage segment."
             .to_owned()

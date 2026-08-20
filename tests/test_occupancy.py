@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pytest
 
@@ -212,3 +214,34 @@ def test_occupancy_stats_match_statistics_derived_from_runs(resolution: int) -> 
         assert stats.minimum_sources == threshold
         assert stats.source_count == source_count
         assert stats.segment_count == segments
+
+
+@pytest.mark.parametrize(
+    ("offsets", "expected"),
+    [
+        ([0, 9], "offsets[-1] must equal"),
+        ([4, 0], "must start at zero"),
+        ([0, 4, 2], "must be nondecreasing"),
+        ([2, 4], "must start at zero"),
+        ([0, 2], "offsets[-1] must equal"),
+    ],
+)
+def test_native_occupancy_rejects_malformed_offsets(
+    offsets: list[int], expected: str
+) -> None:
+    """The native entry points index offsets directly, so they must check them.
+
+    ``Coverage`` copies and validates what it is given, so the public API
+    cannot reach this. The private functions can be called with any arrays,
+    and before validation these inputs either panicked on the slice index or,
+    for a nonzero initial offset, silently dropped the leading hits.
+    """
+    from polypix._core import _occupancy_runs, _occupancy_stats
+
+    cells = np.array([1, 2, 3, 4], dtype=np.uint64)
+    malformed = np.asarray(offsets, dtype=np.uint64)
+    for native in (_occupancy_runs, _occupancy_stats):
+        with pytest.raises(ValueError, match=r"^sources\[0\]: "):
+            native([cells], [malformed], 4, 1)
+        with pytest.raises(ValueError, match=re.escape(expected)):
+            native([cells], [malformed], 4, 1)

@@ -22,6 +22,13 @@
 
 ### Changed
 
+- Validated the offsets every segmented cell array carries in one shared place,
+  so the occupancy entry points check them too. They index
+  `cells[offsets[i]..offsets[i + 1]]` directly, but only checked that the
+  offsets were nonempty and agreed on a segment count. Offsets no `Coverage`
+  produced - reachable through the native functions, which take any arrays -
+  therefore panicked, or, when the first offset was not zero, silently dropped
+  the leading hits of every segment.
 - Rejected a `Coverage` whose cells were mutated after construction with a
   `ValueError` instead of a Rust panic. The reductions do not rescan validated
   hits, but a result array owns its data, so Python can reset its read-only

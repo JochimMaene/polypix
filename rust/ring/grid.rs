@@ -423,23 +423,48 @@ pub(crate) fn validate_cell_range(
     Ok(())
 }
 
+/// Check the offsets contract every segmented cell array shares.
+///
+/// The three consumers of segmented coverage - construction, weighted
+/// reduction, and occupancy - all index `cells[offsets[i]..offsets[i + 1]]`
+/// directly, so each one needs the same four guarantees before it may. Sharing
+/// one body keeps a consumer from being written without them: omitting the
+/// initial-zero check silently drops the leading hits rather than failing, and
+/// omitting the other two panics on the slice index.
+///
+/// `prefix` names the source in the message when a caller validates several.
+/// `cell_count` is passed in rather than derived so a caller that must report
+/// an unrepresentable length as an allocation failure still can.
+pub(crate) fn validate_offsets(
+    offsets: &[u64],
+    cell_count: u64,
+    prefix: &str,
+) -> Result<(), String> {
+    if offsets.is_empty() {
+        return Err(format!(
+            "{prefix}offsets must contain at least the initial zero."
+        ));
+    }
+    if offsets[0] != 0 {
+        return Err(format!("{prefix}offsets must start at zero."));
+    }
+    if offsets.windows(2).any(|pair| pair[0] > pair[1]) {
+        return Err(format!("{prefix}offsets must be nondecreasing."));
+    }
+    if offsets[offsets.len() - 1] != cell_count {
+        return Err(format!(
+            "{prefix}offsets[-1] must equal the number of cells."
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_coverage_arrays(
     cells: &[u64],
     offsets: &[u64],
     resolution: u8,
 ) -> Result<(), String> {
-    if offsets.is_empty() {
-        return Err("offsets must contain at least the initial zero.".to_owned());
-    }
-    if offsets[0] != 0 {
-        return Err("offsets must start at zero.".to_owned());
-    }
-    if offsets.windows(2).any(|pair| pair[0] > pair[1]) {
-        return Err("offsets must be nondecreasing.".to_owned());
-    }
-    if offsets[offsets.len() - 1] != cells.len() as u64 {
-        return Err("offsets[-1] must equal the number of cells.".to_owned());
-    }
+    validate_offsets(offsets, cells.len() as u64, "")?;
     validate_cell_range(cells, resolution, "cells")?;
 
     let mut seen = HashSet::new();

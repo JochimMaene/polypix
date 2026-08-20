@@ -27,7 +27,7 @@ mod shape;
 pub(crate) use cover::{count_caps_per_cell, cover, cover_caps, cover_sweep};
 pub(crate) use grid::{
     cells_at, centers, corners, invalid_cell_message, raw_cell_count, validate_cell_range,
-    validate_coverage_arrays, MAX_RESOLUTION,
+    validate_coverage_arrays, validate_offsets, MAX_RESOLUTION,
 };
 
 const COVERAGE_TOO_LARGE: &str = "Coverage result is too large to fit in memory.";
