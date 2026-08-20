@@ -1186,27 +1186,52 @@ fn plan_from_ranges(ranges: Vec<Range<usize>>) -> CandidatePlan {
     }
 }
 
-fn plan_candidates(
-    footprints: &[PreparedFootprint],
+/// Plan the candidate range each item can reach, from its latitude band.
+///
+/// `z_bounds` is monomorphized per item type, so footprints and caps share the
+/// planning, caching, and dispatch policy without sharing a predicate.
+fn plan_item_candidates<T: Sync>(
+    items: &[T],
     candidates: &[u64],
     resolution: u8,
     parallel: bool,
+    z_bounds: impl Fn(&T) -> (f64, f64) + Sync,
 ) -> CandidatePlan {
-    let candidate_range_for = |footprint: &PreparedFootprint| {
-        let (minimum_z, maximum_z) = footprint.z_bounds();
+    let candidate_range_for = |item: &T| {
+        let (minimum_z, maximum_z) = z_bounds(item);
         candidate_range(candidates, resolution, minimum_z, maximum_z)
     };
     plan_from_ranges(if parallel {
-        footprints
+        items
             .par_iter()
             .map(candidate_range_for)
             .collect::<Vec<_>>()
     } else {
-        footprints
-            .iter()
-            .map(candidate_range_for)
-            .collect::<Vec<_>>()
+        items.iter().map(candidate_range_for).collect::<Vec<_>>()
     })
+}
+
+/// Work proxy for deciding whether to enter a thread pool before planning.
+///
+/// Planning performs two binary searches per item. This tracks their
+/// logarithmic cost without scanning candidates or initializing a pool; the
+/// exact visit count remains the fallback for smaller batches.
+/// `per_item_preparation` covers work the pool would also absorb, and is zero
+/// for items the caller already prepared.
+fn candidate_preparation_work(
+    item_count: usize,
+    candidate_count: usize,
+    per_item_preparation: usize,
+) -> usize {
+    let range_probe_count = if candidate_count > 1 {
+        candidate_count.ilog2() as usize + 1
+    } else {
+        0
+    };
+    item_count.saturating_mul(
+        per_item_preparation
+            .saturating_add(range_probe_count.saturating_mul(CANDIDATE_RANGE_PROBE_WORK)),
+    )
 }
 
 fn candidate_cache_range(plan: &CandidatePlan) -> Option<Range<usize>> {
@@ -1292,22 +1317,29 @@ fn compute_candidate_chunk_with(
     Ok(coverage)
 }
 
-fn compute_candidate_chunk(
-    footprints: &[PreparedFootprint],
+/// Build the candidate-center cache and cover every item against the plan.
+///
+/// Both stages honour `parallel`, so a caller that decided to enter a pool
+/// keeps the cache construction inside it rather than paying for it serially.
+fn compute_planned_candidates(
+    item_count: usize,
     plan: &CandidatePlan,
-    centers: Option<&[Vec3]>,
     candidates: &[u64],
-    range: Range<usize>,
     resolution: u8,
+    parallel: bool,
+    contains: impl Fn(usize, Vec3) -> bool + Send + Sync,
 ) -> NativeResult<Coverage> {
-    compute_candidate_chunk_with(
-        plan,
-        centers,
-        candidates,
-        range,
-        resolution,
-        |index, point| footprints[index].contains(point),
-    )
+    let centers = candidate_centers(plan, candidates, resolution, parallel)?;
+    compute_coverage_chunks(item_count, parallel, |range| {
+        compute_candidate_chunk_with(
+            plan,
+            centers.as_deref(),
+            candidates,
+            range,
+            resolution,
+            &contains,
+        )
+    })
 }
 
 #[inline]
@@ -1542,41 +1574,34 @@ fn compute_candidate_coverage(
         // footprint is stable across thread counts.
         prepared.into_iter().collect::<Result<Vec<_>, _>>()
     };
-    let compute_planned = |footprints: &[PreparedFootprint], plan: &CandidatePlan, parallel| {
-        let centers = candidate_centers(plan, candidates, resolution, parallel)?;
-        compute_coverage_chunks(item_count, parallel, |range| {
-            compute_candidate_chunk(
-                footprints,
-                plan,
-                centers.as_deref(),
-                candidates,
-                range,
-                resolution,
-            )
+    let plan_for = |footprints: &[PreparedFootprint], parallel| {
+        plan_item_candidates(footprints, candidates, resolution, parallel, |footprint| {
+            footprint.z_bounds()
         })
     };
-    // Planning performs two binary searches per footprint. This proxy tracks
-    // their logarithmic cost without scanning candidates or initializing a
-    // pool; the exact visit count remains the fallback for smaller batches.
-    let range_probe_count = if candidates.len() > 1 {
-        candidates.len().ilog2() as usize + 1
-    } else {
-        0
+    let compute_planned = |footprints: &[PreparedFootprint], plan: &CandidatePlan, parallel| {
+        compute_planned_candidates(
+            item_count,
+            plan,
+            candidates,
+            resolution,
+            parallel,
+            |index, point| footprints[index].contains(point),
+        )
     };
-    let preparation_work = item_count.saturating_mul(
-        CANDIDATE_PREPARATION_WORK
-            .saturating_add(range_probe_count.saturating_mul(CANDIDATE_RANGE_PROBE_WORK)),
-    );
+    // Footprint preparation happens here too, so it counts toward the decision.
+    let preparation_work =
+        candidate_preparation_work(item_count, candidates.len(), CANDIDATE_PREPARATION_WORK);
     if threads != Some(1) && preparation_work >= CANDIDATE_PARALLEL_MIN_VISITS {
         return run_with_parallelism(item_count, true, threads, |parallel| {
             let footprints = prepare_all(parallel)?;
-            let plan = plan_candidates(&footprints, candidates, resolution, parallel);
+            let plan = plan_for(&footprints, parallel);
             compute_planned(&footprints, &plan, parallel)
         })?;
     }
 
     let footprints = prepare_all(false)?;
-    let plan = plan_candidates(&footprints, candidates, resolution, false);
+    let plan = plan_for(&footprints, false);
     run_with_parallelism(
         item_count,
         plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS,
@@ -1762,32 +1787,6 @@ fn compute_cap_chunk(caps: &[Cap], range: Range<usize>, resolution: u8) -> Nativ
     Ok(coverage)
 }
 
-fn plan_cap_candidates(caps: &[Cap], candidates: &[u64], resolution: u8) -> CandidatePlan {
-    plan_from_ranges(
-        caps.iter()
-            .map(|cap| candidate_range(candidates, resolution, cap.minimum_z, cap.maximum_z))
-            .collect(),
-    )
-}
-
-fn compute_cap_candidate_chunk(
-    caps: &[Cap],
-    plan: &CandidatePlan,
-    centers: Option<&[Vec3]>,
-    candidates: &[u64],
-    range: Range<usize>,
-    resolution: u8,
-) -> NativeResult<Coverage> {
-    compute_candidate_chunk_with(
-        plan,
-        centers,
-        candidates,
-        range,
-        resolution,
-        |index, point| caps[index].contains(point),
-    )
-}
-
 pub(crate) fn cover_caps(
     centers: &[f64],
     radii: &[f64],
@@ -1799,23 +1798,40 @@ pub(crate) fn cover_caps(
     let caps = prepare_caps(centers, radii)?;
     let candidates = candidate_cells(raw_candidates, resolution)?;
     if let Some(candidates) = candidates.as_deref() {
-        let plan = plan_cap_candidates(&caps, candidates, resolution);
-        let centers = candidate_centers(&plan, candidates, resolution, false)?;
-        return dispatch_coverage(
+        let plan_for = |parallel| {
+            plan_item_candidates(&caps, candidates, resolution, parallel, |cap: &Cap| {
+                (cap.minimum_z, cap.maximum_z)
+            })
+        };
+        let compute_planned = |plan: &CandidatePlan, parallel| {
+            compute_planned_candidates(
+                caps.len(),
+                plan,
+                candidates,
+                resolution,
+                parallel,
+                |index, point| caps[index].contains(point),
+            )
+        };
+        // Caps arrive prepared, so only planning and the candidate-center cache
+        // remain to absorb; the cache alone can reach
+        // `CANDIDATE_CENTER_CACHE_MAX_BYTES` of center decoding, which must not
+        // be paid serially ahead of a parallel dispatch.
+        let preparation_work = candidate_preparation_work(caps.len(), candidates.len(), 0);
+        if threads != Some(1) && preparation_work >= CANDIDATE_PARALLEL_MIN_VISITS {
+            return run_with_parallelism(caps.len(), true, threads, |parallel| {
+                let plan = plan_for(parallel);
+                compute_planned(&plan, parallel)
+            })?;
+        }
+
+        let plan = plan_for(false);
+        return run_with_parallelism(
             caps.len(),
             plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS,
             threads,
-            |range| {
-                compute_cap_candidate_chunk(
-                    &caps,
-                    &plan,
-                    centers.as_deref(),
-                    candidates,
-                    range,
-                    resolution,
-                )
-            },
-        );
+            |parallel| compute_planned(&plan, parallel),
+        )?;
     }
 
     let parallel_work = caps.iter().fold(

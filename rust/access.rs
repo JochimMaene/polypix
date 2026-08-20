@@ -117,6 +117,25 @@ impl DenseCellState {
     };
 }
 
+/// Dense per-cell accumulator whose interval counter the shared segment pass
+/// owns. Everything else in the state belongs to the reduction using it.
+trait IntervalCounted: Copy {
+    fn interval_count(&self) -> u32;
+    fn set_interval_count(&mut self, count: u32);
+}
+
+impl IntervalCounted for DenseCellState {
+    #[inline]
+    fn interval_count(&self) -> u32 {
+        self.interval_count
+    }
+
+    #[inline]
+    fn set_interval_count(&mut self, count: u32) {
+        self.interval_count = count;
+    }
+}
+
 fn dense_state_length(resolution: u8, total_hits: usize, element_bytes: usize) -> Option<usize> {
     let cell_count = usize::try_from(ring::raw_cell_count(resolution)).ok()?;
     let state_bytes = cell_count.checked_mul(element_bytes)?;
@@ -134,10 +153,10 @@ fn dense_state_length(resolution: u8, total_hits: usize, element_bytes: usize) -
     Some(cell_count)
 }
 
-fn try_dense_states(cell_count: usize) -> Option<Vec<DenseCellState>> {
+fn try_dense_states<S: Copy>(cell_count: usize, empty: S) -> Option<Vec<S>> {
     let mut states = Vec::new();
     states.try_reserve_exact(cell_count).ok()?;
-    states.resize(cell_count, DenseCellState::EMPTY);
+    states.resize(cell_count, empty);
     Some(states)
 }
 
@@ -150,29 +169,98 @@ fn zeroed_run_vector(length: usize) -> NativeResult<Vec<u64>> {
     Ok(values)
 }
 
-fn accumulate_dense_segment(
-    cell_arrays: &[&[u64]],
-    offset_arrays: &[&[u64]],
+/// The validated coverage sources, addressed one segment at a time.
+///
+/// Every source shares the segment axis, so a segment is the concatenation of
+/// each source's cells between its own consecutive offsets.
+#[derive(Clone, Copy)]
+struct SegmentedSources<'a> {
+    cell_arrays: &'a [&'a [u64]],
+    offset_arrays: &'a [&'a [u64]],
+}
+
+impl<'a> SegmentedSources<'a> {
+    fn new(cell_arrays: &'a [&'a [u64]], offset_arrays: &'a [&'a [u64]]) -> Self {
+        Self {
+            cell_arrays,
+            offset_arrays,
+        }
+    }
+
+    /// One slice of cell hits per source for `segment`.
+    ///
+    /// Slices rather than individual cells: callers keep their own plain inner
+    /// loop, so a fallible body still propagates straight to their epilogue
+    /// and the hot per-hit path carries no closure call or error value.
+    fn segment_slices(&self, segment: usize) -> impl Iterator<Item = &'a [u64]> + '_ {
+        self.cell_arrays
+            .iter()
+            .zip(self.offset_arrays)
+            .map(move |(&cells, &offsets)| {
+                &cells[offsets[segment] as usize..offsets[segment + 1] as usize]
+            })
+    }
+}
+
+/// Fold one segment of every source into the dense interval counters, listing
+/// every cell the segment touched.
+///
+/// This is the hit-rate-bound half of both dense reductions and the only half
+/// they share: what a qualifying cell then means is reduction-specific, so
+/// callers walk `touched` themselves and clear it. `touched` is caller-owned
+/// scratch so a two-pass caller keeps its capacity across passes. The counter
+/// stops climbing once the threshold is reached, so it cannot overflow however
+/// many sources repeat a cell.
+fn accumulate_dense_segment<S: IntervalCounted>(
+    sources: SegmentedSources<'_>,
     segment: usize,
     minimum_sources: u32,
-    states: &mut [DenseCellState],
+    states: &mut [S],
     touched: &mut Vec<usize>,
+    out_of_memory: fn() -> NativeError,
 ) -> NativeResult<()> {
-    for (&cells, &offsets) in cell_arrays.iter().zip(offset_arrays) {
-        for &cell in &cells[offsets[segment] as usize..offsets[segment + 1] as usize] {
+    for cells in sources.segment_slices(segment) {
+        for &cell in cells {
             let cell = cell as usize;
             let state = &mut states[cell];
-            if state.interval_count == 0 {
+            let count = state.interval_count();
+            if count == 0 {
                 if touched.len() == touched.capacity() {
-                    touched
-                        .try_reserve(1)
-                        .map_err(|_| runs_out_of_memory_error())?;
+                    touched.try_reserve(1).map_err(|_| out_of_memory())?;
                 }
                 touched.push(cell);
             }
-            if state.interval_count < minimum_sources {
-                state.interval_count += 1;
+            if count < minimum_sources {
+                state.set_interval_count(count + 1);
             }
+        }
+    }
+    Ok(())
+}
+
+/// Count, for one segment, how many sources contain each observed cell.
+///
+/// The map only grows for a genuinely new key, so a repeated cell never
+/// enlarges it. Each source contributes a cell at most once per segment, so a
+/// count cannot exceed the number of sources; saturating keeps the counter
+/// inside `u32` without a bound that any admissible input could reach.
+fn count_sparse_segment(
+    sources: SegmentedSources<'_>,
+    segment: usize,
+    interval_counts: &mut HashMap<u64, u32>,
+    out_of_memory: fn() -> NativeError,
+) -> NativeResult<()> {
+    for cells in sources.segment_slices(segment) {
+        for &cell in cells {
+            if interval_counts.len() == interval_counts.capacity()
+                && !interval_counts.contains_key(&cell)
+            {
+                interval_counts
+                    .try_reserve(1)
+                    .map_err(|_| out_of_memory())?;
+            }
+            let count = interval_counts.entry(cell).or_insert(0);
+            *count = count.saturating_add(1);
         }
     }
     Ok(())
@@ -186,18 +274,19 @@ fn occupancy_runs_dense(
     mut states: Vec<DenseCellState>,
 ) -> NativeResult<OccupancyRuns> {
     let minimum_sources = minimum_sources as u32;
+    let sources = SegmentedSources::new(cell_arrays, offset_arrays);
     let mut touched = Vec::new();
 
     // Count maximal runs per cell. Remembering only the most recent qualifying
     // segment is sufficient: a later segment either extends it or starts a run.
     for segment in 0..segment_count {
         accumulate_dense_segment(
-            cell_arrays,
-            offset_arrays,
+            sources,
             segment,
             minimum_sources,
             &mut states,
             &mut touched,
+            runs_out_of_memory_error,
         )?;
         let segment = segment as u32;
         for &cell in &touched {
@@ -268,12 +357,12 @@ fn occupancy_runs_dense(
     // This replaces the old global Vec<(cell, start, stop)> and tuple sort.
     for segment in 0..segment_count {
         accumulate_dense_segment(
-            cell_arrays,
-            offset_arrays,
+            sources,
             segment,
             minimum_sources,
             &mut states,
             &mut touched,
+            runs_out_of_memory_error,
         )?;
         let segment = segment as u32;
         let stop = u64::from(segment) + 1;
@@ -315,22 +404,18 @@ fn occupancy_runs_sparse(
 ) -> NativeResult<OccupancyRuns> {
     // Each source-entry segment is unique by validation, so an interval count
     // is exactly the number of source entries containing the cell.
-    let mut interval_counts: HashMap<u64, usize> = HashMap::new();
+    let minimum_sources = minimum_sources as u32;
+    let sources = SegmentedSources::new(cell_arrays, offset_arrays);
+    let mut interval_counts: HashMap<u64, u32> = HashMap::new();
     let mut open_runs: HashMap<u64, (u64, u64)> = HashMap::new();
     let mut runs = Vec::new();
     for segment in 0..segment_count {
-        for (&cells, &offsets) in cell_arrays.iter().zip(offset_arrays) {
-            for &cell in &cells[offsets[segment] as usize..offsets[segment + 1] as usize] {
-                if interval_counts.len() == interval_counts.capacity()
-                    && !interval_counts.contains_key(&cell)
-                {
-                    interval_counts
-                        .try_reserve(1)
-                        .map_err(|_| runs_out_of_memory_error())?;
-                }
-                *interval_counts.entry(cell).or_insert(0) += 1;
-            }
-        }
+        count_sparse_segment(
+            sources,
+            segment,
+            &mut interval_counts,
+            runs_out_of_memory_error,
+        )?;
 
         let segment = segment as u64;
         for (cell, count) in interval_counts.drain() {
@@ -433,7 +518,7 @@ pub(crate) fn occupancy_runs(
     if let Some(cell_count) =
         dense_state_length(resolution, total_hits, size_of::<DenseCellState>())
     {
-        if let Some(states) = try_dense_states(cell_count) {
+        if let Some(states) = try_dense_states(cell_count, DenseCellState::EMPTY) {
             return occupancy_runs_dense(
                 cell_arrays,
                 offset_arrays,
@@ -608,7 +693,7 @@ mod tests {
                     &offset_slices,
                     segment_count,
                     minimum_sources,
-                    try_dense_states(state_length).unwrap(),
+                    try_dense_states(state_length, DenseCellState::EMPTY).unwrap(),
                 )
                 .unwrap(),
                 occupancy_runs_sparse(&cell_slices, &offset_slices, segment_count, minimum_sources)
@@ -749,6 +834,18 @@ impl StatsState {
     }
 }
 
+impl IntervalCounted for StatsState {
+    #[inline]
+    fn interval_count(&self) -> u32 {
+        self.interval_count
+    }
+
+    #[inline]
+    fn set_interval_count(&mut self, count: u32) {
+        self.interval_count = count;
+    }
+}
+
 fn stats_out_of_memory_error() -> NativeError {
     NativeError::out_of_memory("Occupancy statistics are too large to fit in memory.")
 }
@@ -761,6 +858,25 @@ fn push_stats(out: &mut OccupancyStats, cell: u64, state: &StatsState) {
         .push(u64::from(state.max_gap));
     out.first_start.push(u64::from(state.first_start));
     out.last_stop.push(u64::from(state.last_segment) + 1);
+}
+
+/// Statistics output sized for the exact number of observed cells, so the
+/// per-cell pushes cannot allocate and cannot fail late.
+fn stats_with_capacity(cell_count: usize) -> NativeResult<OccupancyStats> {
+    let mut out = empty_stats();
+    for vector in [
+        &mut out.cells,
+        &mut out.run_counts,
+        &mut out.internal_gap_steps_sum,
+        &mut out.maximum_internal_gap_steps,
+        &mut out.first_start,
+        &mut out.last_stop,
+    ] {
+        vector
+            .try_reserve_exact(cell_count)
+            .map_err(|_| stats_out_of_memory_error())?;
+    }
+    Ok(out)
 }
 
 fn empty_stats() -> OccupancyStats {
@@ -792,30 +908,22 @@ pub(crate) fn occupancy_stats(
         return Ok(empty_stats());
     }
     let minimum_sources = minimum_sources as u32;
-    let mut out = empty_stats();
+    let sources = SegmentedSources::new(cell_arrays, offset_arrays);
 
     // Dense state is a flat grid; sparse state is keyed by observed cell. Both
     // hold one accumulator per cell, never one per run.
     if let Some(cell_count) = dense_state_length(resolution, total_hits, size_of::<StatsState>()) {
-        let mut states = Vec::new();
-        if states.try_reserve_exact(cell_count).is_ok() {
-            states.resize(cell_count, StatsState::EMPTY);
+        if let Some(mut states) = try_dense_states(cell_count, StatsState::EMPTY) {
             let mut touched: Vec<usize> = Vec::new();
             for segment in 0..segment_count {
-                for (&cells, &offsets) in cell_arrays.iter().zip(offset_arrays) {
-                    for &cell in &cells[offsets[segment] as usize..offsets[segment + 1] as usize] {
-                        let state = &mut states[cell as usize];
-                        if state.interval_count == 0 {
-                            touched
-                                .try_reserve(1)
-                                .map_err(|_| stats_out_of_memory_error())?;
-                            touched.push(cell as usize);
-                        }
-                        if state.interval_count < minimum_sources {
-                            state.interval_count += 1;
-                        }
-                    }
-                }
+                accumulate_dense_segment(
+                    sources,
+                    segment,
+                    minimum_sources,
+                    &mut states,
+                    &mut touched,
+                    stats_out_of_memory_error,
+                )?;
                 let segment = segment as u32;
                 for &cell in &touched {
                     let state = &mut states[cell];
@@ -826,6 +934,8 @@ pub(crate) fn occupancy_stats(
                 }
                 touched.clear();
             }
+            let observed = states.iter().filter(|state| state.run_count != 0).count();
+            let mut out = stats_with_capacity(observed)?;
             for (cell, state) in states.iter().enumerate() {
                 if state.run_count != 0 {
                     push_stats(&mut out, cell as u64, state);
@@ -838,22 +948,22 @@ pub(crate) fn occupancy_stats(
     let mut interval_counts: HashMap<u64, u32> = HashMap::new();
     let mut states: HashMap<u64, StatsState> = HashMap::new();
     for segment in 0..segment_count {
-        for (&cells, &offsets) in cell_arrays.iter().zip(offset_arrays) {
-            for &cell in &cells[offsets[segment] as usize..offsets[segment + 1] as usize] {
-                interval_counts
-                    .try_reserve(1)
-                    .map_err(|_| stats_out_of_memory_error())?;
-                *interval_counts.entry(cell).or_insert(0) += 1;
-            }
-        }
+        count_sparse_segment(
+            sources,
+            segment,
+            &mut interval_counts,
+            stats_out_of_memory_error,
+        )?;
         let segment = segment as u32;
         for (cell, count) in interval_counts.drain() {
             if count < minimum_sources {
                 continue;
             }
-            states
-                .try_reserve(1)
-                .map_err(|_| stats_out_of_memory_error())?;
+            if states.len() == states.capacity() && !states.contains_key(&cell) {
+                states
+                    .try_reserve(1)
+                    .map_err(|_| stats_out_of_memory_error())?;
+            }
             states
                 .entry(cell)
                 .or_insert(StatsState::EMPTY)
@@ -862,6 +972,7 @@ pub(crate) fn occupancy_stats(
     }
     let mut observed: Vec<(u64, StatsState)> = states.into_iter().collect();
     observed.sort_unstable_by_key(|(cell, _)| *cell);
+    let mut out = stats_with_capacity(observed.len())?;
     for (cell, state) in &observed {
         push_stats(&mut out, *cell, state);
     }

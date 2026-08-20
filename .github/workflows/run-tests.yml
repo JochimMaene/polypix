@@ -103,6 +103,17 @@ jobs:
         working-directory: ${{ runner.temp }}
         run: python -m pytest -q "$GITHUB_WORKSPACE/tests"
 
+  minimum-rust:
+    name: Rust 1.87 (MSRV)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.87.0
+
+      - name: Check the crate builds on the declared MSRV
+        run: cargo check --all-targets --locked
+
   latest-python:
     name: Python 3.14
     runs-on: ubuntu-latest

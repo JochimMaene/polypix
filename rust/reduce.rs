@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::mem::size_of;
 
 use crate::error::{NativeError, NativeResult};
 use crate::ring::{self, MAX_RESOLUTION};

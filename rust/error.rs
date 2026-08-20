@@ -1,25 +1,27 @@
 use std::fmt::{Display, Formatter};
 
+/// Failure categories the Python boundary maps to distinct exception types.
+///
+/// Allocation messages are `&'static str` because every one of them is a fixed
+/// literal: reporting that an allocation failed must not itself allocate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum NativeError {
     InvalidInput(String),
-    OutOfMemory(String),
+    OutOfMemory(&'static str),
 }
 
 impl NativeError {
-    pub(crate) fn out_of_memory(message: impl Into<String>) -> Self {
-        Self::OutOfMemory(message.into())
-    }
-
-    pub(crate) fn is_out_of_memory(&self) -> bool {
-        matches!(self, Self::OutOfMemory(_))
+    pub(crate) fn out_of_memory(message: &'static str) -> Self {
+        Self::OutOfMemory(message)
     }
 }
 
 impl Display for NativeError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-        let (Self::InvalidInput(message) | Self::OutOfMemory(message)) = self;
-        formatter.write_str(message)
+        match self {
+            Self::InvalidInput(message) => formatter.write_str(message),
+            Self::OutOfMemory(message) => formatter.write_str(message),
+        }
     }
 }
 
@@ -41,8 +43,8 @@ mod tests {
         let invalid = NativeError::InvalidInput(message.to_owned());
         let allocation = NativeError::out_of_memory(message);
 
-        assert!(!invalid.is_out_of_memory());
-        assert!(allocation.is_out_of_memory());
+        assert!(matches!(invalid, NativeError::InvalidInput(_)));
+        assert!(matches!(allocation, NativeError::OutOfMemory(_)));
         assert_eq!(invalid.to_string(), allocation.to_string());
     }
 }

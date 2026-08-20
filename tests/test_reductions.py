@@ -165,3 +165,16 @@ def test_queried_reductions_match_the_dense_result_across_paths() -> None:
         sums = (coverage).reduce(px.Sum(values, cells=queried))
         assert sums.dtype == np.float64
         np.testing.assert_allclose(sums, [0.75, 2.5, 0.0, 2.5, 0.5, 0.5])
+
+
+def test_native_errors_map_to_distinct_python_exception_types() -> None:
+    """Invalid input raises ValueError; an unsatisfiable allocation raises MemoryError."""
+    coverage = px.Coverage.from_arrays([0, 1], [0, 1, 2], resolution=1)
+    with pytest.raises(ValueError, match="one value per coverage segment"):
+        coverage.reduce(px.Sum([1.0, 2.0, 3.0]))
+
+    # A dense grid at the maximum resolution cannot be allocated on any machine,
+    # so this exercises the allocation category rather than the input category.
+    huge = px.Coverage.from_arrays([0], [0, 1], resolution=29)
+    with pytest.raises(MemoryError, match="too large to fit in memory"):
+        huge.reduce(px.Count())

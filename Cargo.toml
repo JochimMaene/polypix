@@ -2,6 +2,7 @@
 name = "polypix"
 version = "0.3.0"
 edition = "2021"
+rust-version = "1.87"
 description = "Fast batch HEALPix rasterization and occupancy reduction for spherical regions."
 homepage = "https://jochimmaene.github.io/polypix/"
 repository = "https://github.com/JochimMaene/polypix"

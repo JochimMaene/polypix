@@ -46,10 +46,11 @@ fn validate_resolution(resolution: u8) -> PyResult<()> {
 }
 
 fn native_error(error: NativeError) -> PyErr {
-    if error.is_out_of_memory() {
-        PyMemoryError::new_err(error.to_string())
-    } else {
-        PyValueError::new_err(error.to_string())
+    // Consume the message rather than formatting it again: the allocation
+    // category must not allocate, and the input category already owns a String.
+    match error {
+        NativeError::OutOfMemory(message) => PyMemoryError::new_err(message),
+        NativeError::InvalidInput(message) => PyValueError::new_err(message),
     }
 }
 
