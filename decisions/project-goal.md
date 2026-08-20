@@ -223,35 +223,47 @@ Segments preserve input region or interval order and contain no duplicate cells.
 Within a segment, native traversal order is deterministic but is not
 promised to be ascending. Polypix never sorts solely for presentation.
 
-Explicit cells remain the canonical geometry result. Native reducers consume
-that common representation regardless of the geometry that produced it:
+Explicit cells remain the canonical geometry result. A caller who wants an
+accumulation rather than membership names the result with a reducer, and every
+producing operation accepts one through `into=`:
 
-- `count_coverage_per_cell()` counts segments containing each cell;
-- `sum_coverage_per_cell()` adds one finite `float64` value per segment into
-  its covered cells.
+- `Count(cells=None)` counts the segments containing each cell;
+- `Sum(values, cells=None)` adds one finite `float64` value per segment into the
+  cells that segment covers;
+- `Stats()`, accepted only by `occupancy()`, accumulates per-cell occupancy
+  statistics without building the runs.
 
-Both return either a dense grid or positional values for explicitly requested
-cells. The selected-cell path does not allocate the full grid. This supplies
-the useful symmetry across caps, polygons, and sweeps without multiplying the
-public surface into geometry-specific count and sum verbs.
+Omitting `into=` keeps the full result: a `Coverage`, or every occupancy run.
+`Coverage.reduce()` applies the same `Count` and `Sum` vocabulary to coverage
+that is already materialized, so covering once and reducing several times is one
+concept. `Count` and `Sum` return either a dense grid or positional values for
+explicitly requested cells, and the selected-cell path does not allocate the
+full grid. This supplies the useful symmetry across caps, polygons, and sweeps
+without multiplying the public surface into geometry-specific count and sum
+verbs.
 
-Two bounded operations address cases where merely retaining a summary would
-otherwise discard essential information or where explicit membership itself
-is the measured bottleneck:
+A reducer names a result, not an algorithm. Polypix fuses the accumulation into
+the geometry kernel where measurement shows that wins and materializes
+membership otherwise, so the two are interchangeable at the call site. Only the
+cap kernel currently fuses, and only where it estimates that fusing is cheaper
+than covering once and reducing.
 
-- `count_caps_per_cell()` returns dense counts indexed by RING ID, or positional
-  counts for explicitly requested cells, while consuming private cap ranges
-  without materializing cap-cell pairs;
-- `occupancy_runs()` returns every maximal half-open ordinal run per cell after
-  thresholding aligned `Coverage` sources.
+Two bounded results address cases where merely retaining a summary would
+otherwise discard essential information:
+
+- `occupancy(sources, *, minimum_sources=1)` returns every maximal half-open
+  ordinal run per cell after thresholding aligned `Coverage` sources;
+- `occupancy(..., into=Stats())` returns per-cell run counts, complete internal
+  gap sums and maxima, and the observed window bounds, accumulated in one pass
+  without building the runs.
 
 `OccupancyRuns` is lossless with respect to the thresholded ordinal state. It
 does not choose a cadence, convert to timestamps, silently wrap a period, omit
 boundary gaps, or hard-code mean/max/median revisit statistics. Those choices
 remain downstream. It retains the applied threshold and input source-entry
-count as provenance. The older mixed `OccupancySummary` result and
-`summarize_occupancy()` were removed because they combined source-local run
-counts with source-unioned mean-gap ingredients.
+count as provenance, as does `OccupancyStats`. The older mixed
+`OccupancySummary` result and `summarize_occupancy()` were removed because they
+combined source-local run counts with source-unioned mean-gap ingredients.
 
 `Coverage` is the public interchange seam between region generation, Polypix,
 and downstream tools. Native operations wrap their newly owned buffers without
@@ -269,6 +281,10 @@ The implemented canonical surface is a candidate rather than the complete 1.0
 target:
 
 ```python
+Count(cells=None)
+Sum(values, cells=None)
+Stats()
+
 cover_convex_polygon(
     polygons_xyz,
     resolution,
@@ -276,7 +292,8 @@ cover_convex_polygon(
     vertex_offsets=None,
     candidate_cells=None,
     threads=None,
-) -> Coverage
+    into=None,
+) -> Coverage | ndarray
 
 cover_cap(
     centers_xyz,
@@ -285,16 +302,8 @@ cover_cap(
     *,
     candidate_cells=None,
     threads=None,
-) -> Coverage
-
-count_caps_per_cell(
-    centers_xyz,
-    radii_rad,
-    resolution,
-    *,
-    cells=None,
-    threads=None,
-) -> ndarray[int64]
+    into=None,
+) -> Coverage | ndarray
 
 cover_sweep(
     left_edge_xyz,
@@ -303,12 +312,17 @@ cover_sweep(
     *,
     candidate_cells=None,
     threads=None,
-) -> Coverage
+    into=None,
+) -> Coverage | ndarray
 
-count_coverage_per_cell(coverage, *, cells=None) -> ndarray[int64]
-sum_coverage_per_cell(coverage, values, *, cells=None) -> ndarray[float64]
+Coverage.reduce(reducer) -> ndarray[int64] | ndarray[float64]
 
-occupancy_runs(sources, *, minimum_sources=1) -> OccupancyRuns
+occupancy(
+    sources,
+    *,
+    minimum_sources=1,
+    into=None,
+) -> OccupancyRuns | OccupancyStats
 
 cell_at(vectors_xyz, resolution)
 cell_centers(cells, resolution)
@@ -321,7 +335,10 @@ established HEALPix meaning of a latitude strip. `cover_convex_polygon()` names
 the actual accepted geometry instead of overloading "footprint," which may also
 mean a point, cap, line, or non-convex region in upstream libraries. The former
 `cover_footprint()`, `centers()`, and `corners()` spellings were removed while
-the project is pre-1.0 instead of creating a permanent parallel vocabulary.
+the project is pre-1.0 instead of creating a permanent parallel vocabulary. The
+same window removed `count_caps_per_cell()`, `count_coverage_per_cell()`,
+`sum_coverage_per_cell()`, `occupancy_runs()`, `occupancy_stats()`, and
+`summarize_occupancy()` in favour of the `into=` reducer form.
 
 `cover_convex_polygon()` accepts one `(vertices, 3)` array, a dense
 `(polygons, vertices, 3)` batch, a sequence of arrays for a ragged batch, or a
@@ -330,16 +347,16 @@ are accepted and converted once when needed. Compatible contiguous arrays use a
 zero-copy fast path; the API exposes no memory-layout or copying controls.
 
 `cover_cap()` accepts `(3,)` or `(caps, 3)` centers with scalar or pairwise
-radii. `count_caps_per_cell()` shares those inputs. Its `cells` query preserves
-order and duplicates, unlike the set semantics of coverage candidates.
+radii.
 
-`count_coverage_per_cell()` and `sum_coverage_per_cell()` accept any materialized
-`Coverage`. `values` is a scalar or one finite `float64` value per segment.
-`cells=None` returns a dense array indexed by RING ID; `cells=` preserves query
-order and duplicates without allocating a resolution-sized grid. Floating sums
-are accumulated deterministically in segment and hit order.
+`Count` and `Sum` are accepted as `into=` by every covering call and by
+`Coverage.reduce()` for coverage that already exists. `values` is a scalar or one
+finite `float64` value per segment. `cells=None` returns a dense array indexed by
+RING ID; `cells=` preserves query order and duplicates without allocating a
+resolution-sized grid, unlike the set semantics of coverage candidates. Floating
+sums are accumulated deterministically in segment and hit order.
 
-`occupancy_runs()` accepts one `Coverage` or one per source entry with the same
+`occupancy()` accepts one `Coverage` or one per source entry with the same
 resolution and number of aligned, ordered bins. The caller owns source
 uniqueness, identical bin boundaries, and temporal adjacency. For each cell it
 returns every maximal half-open `[start, stop)` interval where at least
@@ -567,7 +584,7 @@ The following are outside the committed product:
   or fractional rule requires a separately admitted verb and contract;
 - general-purpose geometry or map boolean algebra, arbitrary reducers,
   access-window lists, timestamps, and variable-duration time integration; the
-  ordinal `occupancy_runs()` result deliberately leaves those policies downstream;
+  ordinal `occupancy()` result deliberately leaves those policies downstream;
 - NESTED or mixed-resolution results;
 - MOCs, map operations, neighbors, hierarchy traversal, interpolation,
   spherical harmonics, FITS, or plotting;

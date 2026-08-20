@@ -36,7 +36,7 @@ evidence that must be gathered before deciding which small subset belongs.
 | `cover_convex_polygon()` | Foundational convex-region primitive; canonical name states the geometry. The former `cover_footprint()` name is removed. |
 | `cover_sweep()` | The paired-edge sweep is broadly useful; this name avoids conflict with the established HEALPix meaning of a latitude strip. |
 | `Count` / `Sum` reducers, via `into=` and `Coverage.reduce()` | Geometry-neutral native reductions over `Coverage`; admitted for dense and positional selected-cell outputs. The separate `count_coverage_per_cell()` and `sum_coverage_per_cell()` verbs are removed, and the fused cap accelerator survives as `cover_cap(..., into=Count())` rather than the removed `count_caps_per_cell()`. |
-| `occupancy()` | Lossless cell-major ordinal windows via `into=Runs()`, or fused per-cell statistics via `into=Stats()`; replaces the mixed, lossy canonical `summarize_occupancy()` result and the separate `occupancy_runs()` and `occupancy_stats()` verbs. |
+| `occupancy()` | Lossless cell-major ordinal windows by default, or fused per-cell statistics via `into=Stats()`; replaces the mixed, lossy canonical `summarize_occupancy()` result and the separate `occupancy_runs()` and `occupancy_stats()` verbs. |
 | `cell_at()` | Foundational direction-to-cell bridge; retain. |
 | `cell_centers()` | Foundational cell-to-direction bridge; explicit canonical name. |
 | `cell_corners()` | Explicitly describes the four returned cell vertices without implying that curved HEALPix cell edges are sampled. |

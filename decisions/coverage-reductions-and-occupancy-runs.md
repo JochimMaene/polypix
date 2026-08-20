@@ -9,7 +9,7 @@ operation accepts one through `into=`:
 
 ```python
 Count(cells=None)                 Sum(values, cells=None)
-Runs()                            Stats()
+Stats()
 
 cover_convex_polygon(..., into=None)   cover_cap(..., into=None)
 cover_sweep(..., into=None)            occupancy(sources, ..., into=None)
@@ -62,7 +62,7 @@ obligations; equal resolution and segment count alone cannot prove them. A time
 discontinuity must split the analysis or be represented by an empty separator
 bin so a run cannot cross it.
 
-`occupancy_runs()` does not own time. A caller can map run boundaries through
+`occupancy()` does not own time. A caller can map run boundaries through
 constant or arbitrary time-edge arrays and can choose complete, leading,
 trailing, finite-horizon, or cyclic gaps. It also leaves mean, maximum, median,
 frequency, minimum-duration, and short-gap-merging policies downstream.
@@ -169,7 +169,9 @@ maintenance measurements:
   path remained materially faster and avoided the membership allocation;
 - on the ten-source Earth-observation workload, 9.28 million hits produced
   9.20 million lossless runs in about 0.31 s. Direct two-pass materialization
-  replaced a global tuple sort that initially took about 3.09 s; measured peak
+  replaced a global tuple sort on the dense path, which initially took about
+  3.09 s; the sparse path still sorts its runs, because it cannot count them
+  per cell without a second pass over expensive probes. Measured peak
   reducer memory above the prepared inputs fell from roughly 353 MiB to
   143 MiB, which is close to the unavoidable 141 MiB result itself.
 
@@ -184,10 +186,22 @@ Earth-observation example, the same workload end to end:
 | `occupancy()` runs, reduced in NumPy | 311 ms | 476 ms | 413 MiB |
 | `occupancy(into=Stats())` | 52 ms | 208 ms | 132 MiB |
 
-Those figures are the dense-state path, which covers resolutions up to 9.
-Above that both reducers fall back to hash-keyed state, and there `Stats()`
-stays *slower* than `Runs()` — about 115 ms against 87 ms for 725,000 runs at
-resolution 11 — while still avoiding the run allocation. Narrowing every
+Those figures are the resolution-6 dense-state path. They are not the whole
+picture, and the table above is the workload most favourable to `Stats()`. The
+dense state array is sized by the grid rather than by the observed cells, so its
+zeroing cost grows while the hit-bound work does not. At the largest grid the
+24-byte accumulator admits — resolution 9, where 75 MiB of state is zeroed for
+about 216,000 observed cells — `Stats()` is *slower* than the operation it
+replaces: 33 to 37 ns per hit against 26 to 28 ns for `summarize_occupancy()`,
+measured over four input sizes at 1.4 million hits, or about 1.25x. It still
+holds peak RSS to 143 MiB against 207 MiB. Resolutions 6 and 11 both favour
+`Stats()` by roughly 1.8x, so the regression is confined to the upper end of the
+dense band and is accepted for the memory profile it buys.
+
+Above resolution 9 both reducers fall back to hash-keyed state, and there
+`Stats()` stays slower than the default run materialization — about 115 ms
+against 87 ms for 725,000 runs at resolution 11 — while still avoiding the run
+allocation. Narrowing every
 statistics counter to 32 bits, which the segment-count bound already permits,
 took the accumulator from 32 to 24 bytes and recovered 9 to 16 percent of that
 gap across resolutions 9 to 12 and on the dense path. The remainder is the cost
@@ -241,6 +255,26 @@ resolution-sized grid, including at resolution 29; its working storage is the
 bounded dense scratch grid or a hash table, whichever the work estimate above
 selects. None of these additions
 changes the cap traversal or explicit coverage hot paths.
+
+Moving public indices to signed `int64` does change one path that no kernel
+touches: importing an array back into Polypix. A signed array takes the
+non-negative branch of index validation, which an unsigned array skipped, and
+that branch now runs on every array Polypix itself returns. Two passes were
+avoidable and are gone. The int64 range check is dead for a signed input, since
+a value that is not negative is already inside int64, so it runs only for
+unsigned and object inputs. The non-negative check is a reduction rather than
+`any(array < 0)`, which read the array once instead of also materializing a
+boolean temporary of equal length. Re-importing the 921,600-hit
+Earth-observation coverage through `Coverage.from_arrays()` went from 2.80 ms to
+2.27 ms, against 2.29 ms for the same call given unsigned arrays; instruction
+count, which weights a streaming compare far more heavily than wall clock does,
+had risen about 29 percent and is recovered.
+
+What remains is one reduction per imported array — about 2.4 microseconds of it
+on a 672-cell `cell_centers()` call whose floor is 17. That check is retained
+rather than deferred to native range validation, which would subsume it for
+`cells` arguments but not for `vertex_offsets`, and which reports out-of-range
+rather than negative indices.
 
 These values are regression-design evidence from one machine, not public
 cross-machine performance claims, and the cost constants above are calibration

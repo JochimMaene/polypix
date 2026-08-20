@@ -33,7 +33,7 @@ fn validate_run_sources(
         ));
     }
     if cell_arrays.is_empty() {
-        return Err("occupancy_runs() requires at least one coverage source.".to_owned());
+        return Err("occupancy() requires at least one coverage source.".to_owned());
     }
     // Both the dense and sparse accumulators track segments and source counts
     // in `u32`, so reject anything that would truncate rather than returning a
@@ -561,7 +561,7 @@ mod tests {
         minimum_sources: usize,
     ) -> String {
         match occupancy_runs(cell_arrays, offset_arrays, resolution, minimum_sources) {
-            Ok(_) => panic!("expected occupancy_runs() to reject the input"),
+            Ok(_) => panic!("expected occupancy() to reject the input"),
             Err(error) => error.to_string(),
         }
     }

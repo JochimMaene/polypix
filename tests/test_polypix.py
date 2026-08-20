@@ -1268,6 +1268,45 @@ class PolypixTests(unittest.TestCase):
         with self.assertRaises(OverflowError):
             px.cell_centers(np.asarray([2**64], dtype=object), resolution=3)
 
+    def test_imported_indices_are_range_checked_per_input_dtype(self) -> None:
+        """Public results skip a redundant pass; other inputs still get one.
+
+        A signed input that holds no negative value is already inside int64, so
+        importing a Polypix result costs one copy. Unsigned and object inputs
+        can exceed int64 and must still be rejected rather than wrapping to a
+        negative public index.
+        """
+        for name, values in (
+            ("cells", (np.asarray([2**63], dtype=np.uint64), [0, 1])),
+            ("offsets", (np.asarray([0]), np.asarray([0, 2**63], dtype=np.uint64))),
+            ("cells", ([2**63], [0, 1])),
+            ("cells", (np.asarray([2**63], dtype=object), [0, 1])),
+        ):
+            cells, offsets = values
+            with self.subTest(name=name, dtype=np.asarray(cells).dtype):
+                with self.assertRaisesRegex(OverflowError, "out of range for int64"):
+                    px.Coverage.from_arrays(cells, offsets, resolution=0)
+
+        for cells in (
+            np.asarray([-1], dtype=np.int64),
+            np.asarray([-1], dtype=np.int32),
+            [-1],
+        ):
+            with self.subTest(dtype=np.asarray(cells).dtype):
+                with self.assertRaisesRegex(ValueError, "non-negative integers"):
+                    px.Coverage.from_arrays(cells, [0, 1], resolution=0)
+
+        # Empty arrays reach neither reduction, whatever their dtype.
+        for dtype in (np.int64, np.uint64):
+            with self.subTest(dtype=dtype):
+                empty = px.Coverage.from_arrays(
+                    np.asarray([], dtype=dtype),
+                    np.asarray([0], dtype=dtype),
+                    resolution=0,
+                )
+                self.assertEqual(empty.cells.size, 0)
+                self.assertEqual(empty.cells.dtype, np.int64)
+
     def test_cover_rejects_invalid_array_shape(self) -> None:
         polygon = vectors([(-5.0, -5.0), (12.0, -4.0), (10.0, 9.0), (-6.0, 7.0)])
         for invalid in (polygon[:, :2], polygon[:, :2].tolist()):

@@ -46,8 +46,15 @@
   run accumulator, and rejected segment and source counts that would truncate
   through `u32` rather than returning a silently wrong result.
 - Skipped the redundant per-hit revalidation of an already-validated,
-  read-only `Coverage` inside `occupancy_runs()` and the reductions, cutting
+  read-only `Coverage` inside `occupancy()` and the reductions, cutting
   two of four full passes over the hits.
+- Removed two redundant validation passes when importing an integer array,
+  which the move to signed public indices had put on the path of feeding any
+  Polypix result back into the next call. The int64 range check now runs only
+  for unsigned and object inputs, where it is not already implied, and the
+  non-negative check is a reduction rather than a comparison that also
+  materializes a boolean temporary. `Coverage.from_arrays()` on a 921,600-hit
+  coverage went from 2.80 ms to 2.27 ms.
 - Served queried `Count` and `Sum` reductions from a dense scratch grid up to
   resolution 8, instead of one hash probe per hit, but only when the coverage
   and query together touch enough of that grid to amortize zeroing it. Sparse
@@ -76,7 +83,8 @@
   use `cover_convex_polygon()`, `cell_centers()`, and `cell_corners()`.
 - Removed the ambiguous `Coverage.counts` property; use `segment_sizes`.
 - Removed the lossy `summarize_occupancy()` and `OccupancySummary`; use
-  `occupancy_runs()` and calculate the required gap policy downstream.
+  `occupancy(..., into=Stats())`, or `occupancy()` for the runs themselves, and
+  calculate the required gap policy downstream.
 
 ## 0.3.0 — 2026-07-28
 

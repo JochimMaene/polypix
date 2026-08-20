@@ -358,7 +358,11 @@ def _as_uint64_vector(
     if np.issubdtype(array.dtype, np.unsignedinteger):
         return np.ascontiguousarray(array.astype(np.uint64, copy=False))
     if np.issubdtype(array.dtype, np.signedinteger):
-        if np.any(array < 0):
+        # A reduction reads the array once and allocates nothing, where
+        # ``any(array < 0)`` also materializes a full boolean temporary. Every
+        # Polypix result array is signed, so this check runs on the common path
+        # of feeding one result back into the next call.
+        if array.min() < 0:
             raise ValueError(f"{name} must contain non-negative integers.")
         if array.dtype == np.dtype(np.int64) and array.flags.c_contiguous:
             return array.view(np.uint64)
@@ -378,8 +382,12 @@ def _owned_int64_vector(
     if array.ndim != 1:
         raise ValueError(f"{name} must be a one-dimensional integer array.")
     converted = _as_uint64_vector(array, name)
-    if np.any(converted > np.iinfo(np.int64).max):
-        raise OverflowError(f"{name} value is out of range for int64.")
+    # A signed input that survived the non-negative check above is already
+    # inside int64, so only unsigned and object inputs can exceed it. Skipping
+    # the pass keeps importing a Polypix-produced array to a single copy.
+    if converted.size and not np.issubdtype(array.dtype, np.signedinteger):
+        if converted.max() > np.iinfo(np.int64).max:
+            raise OverflowError(f"{name} value is out of range for int64.")
     return np.array(converted, dtype=np.int64, order="C", copy=True)
 
 
