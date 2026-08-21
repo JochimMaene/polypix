@@ -21,7 +21,7 @@ Public output storage, ignoring temporary native chunks:
 | `cell_centers()` | 24 bytes per cell |
 | `cell_corners()` | 96 bytes per cell |
 | Dense cap counts | `8 * cell_count` bytes |
-| `OccupancyStats` | `48 * represented_cell_count` bytes |
+| `RevisitStats` | `48 * represented_cell_count` bytes |
 
 Parallel coverage builds ordered worker chunks and merges them, so peak native
 memory can reach roughly twice the final `cells` array. If allocation fails you
@@ -44,7 +44,7 @@ Concatenating all chunks recreates the original memory requirement.
 | Membership per region | `cover_cap()`, `cover_convex_polygon()`, `cover_sweep()` | nothing; membership is the point |
 | Counts or weighted values per cell | `reduce=Count()`, `reduce=Sum(values)` | sorting, Python accumulation, one repeated value per hit |
 | Caps per cell | `cover_cap(..., reduce=Count())` | one cell ID per cap-cell hit, plus a `bincount()` |
-| Per-cell counts and internal gaps | `occupancy()` | expanding every hit as an event, then building every run just to reduce it away |
+| Per-cell counts and internal gaps | `revisit()` | expanding every hit as an event, then building every run just to reduce it away |
 
 ## Choosing a dense or selected reduction
 
@@ -68,7 +68,7 @@ under [choosing a reducer](api.md#choosing-a-reducer). The
 [architecture decisions](development.md#architecture-decisions) carry the
 benchmark evidence.
 
-`occupancy()` allocates by represented cell, never by run. That matters because
+`revisit()` allocates by represented cell, never by run. That matters because
 materializing the runs themselves is not guaranteed to be smaller than the
 input: a cell hit in alternating bins creates one run per hit. This is the
 common case for a scanning constellation, where a cell is observed briefly and

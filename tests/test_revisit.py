@@ -55,7 +55,7 @@ def test_occupancy_summarizes_complete_ordinal_windows() -> None:
         resolution=1,
     )
 
-    union = px.occupancy([first, second])
+    union = px.revisit([first, second])
     for values in (
         union.cells,
         union.run_counts,
@@ -75,7 +75,7 @@ def test_occupancy_summarizes_complete_ordinal_windows() -> None:
     np.testing.assert_array_equal(union.first_start, [0, 1])
     np.testing.assert_array_equal(union.last_stop, [5, 4])
 
-    coincident = px.occupancy([first, second], minimum_sources=2)
+    coincident = px.revisit([first, second], minimum_sources=2)
     np.testing.assert_array_equal(coincident.cells, [1, 2])
     np.testing.assert_array_equal(coincident.run_counts, [2, 1])
     np.testing.assert_array_equal(coincident.internal_gap_steps_sum, [2, 0])
@@ -83,16 +83,16 @@ def test_occupancy_summarizes_complete_ordinal_windows() -> None:
     np.testing.assert_array_equal(coincident.first_start, [1, 2])
     np.testing.assert_array_equal(coincident.last_stop, [5, 3])
 
-    impossible = px.occupancy([first, second], minimum_sources=3)
+    impossible = px.revisit([first, second], minimum_sources=3)
     np.testing.assert_array_equal(impossible.cells, [])
     np.testing.assert_array_equal(impossible.run_counts, [])
     np.testing.assert_array_equal(impossible.first_start, [])
 
-    enormous = px.occupancy([first, second], minimum_sources=10**100)
+    enormous = px.revisit([first, second], minimum_sources=10**100)
     np.testing.assert_array_equal(enormous.cells, [])
 
     # Sequence positions are source entries; callers own source uniqueness.
-    repeated = px.occupancy([first, first], minimum_sources=2)
+    repeated = px.revisit([first, first], minimum_sources=2)
     np.testing.assert_array_equal(repeated.cells, [1, 2])
 
 
@@ -102,19 +102,19 @@ def test_occupancy_validates_alignment_and_threshold() -> None:
     other_resolution = px.Coverage.from_arrays([1], [0, 1], resolution=2)
 
     with pytest.raises(ValueError, match="at least one"):
-        px.occupancy([])
+        px.revisit([])
     with pytest.raises(ValueError, match="same number of segments"):
-        px.occupancy([one, two_segments])
+        px.revisit([one, two_segments])
     with pytest.raises(ValueError, match="same resolution"):
-        px.occupancy([one, other_resolution])
+        px.revisit([one, other_resolution])
     with pytest.raises(ValueError, match="positive integer"):
-        px.occupancy(one, minimum_sources=0)
+        px.revisit(one, minimum_sources=0)
     with pytest.raises(TypeError, match="positive integer"):
-        px.occupancy(one, minimum_sources=True)
+        px.revisit(one, minimum_sources=True)
     with pytest.raises(TypeError, match="timelines must be"):
-        px.occupancy(object())  # type: ignore[arg-type]
+        px.revisit(object())  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="timelines must contain"):
-        px.occupancy([one, object()])  # type: ignore[list-item]
+        px.revisit([one, object()])  # type: ignore[list-item]
 
 
 def test_occupancy_matches_random_boolean_oracle() -> None:
@@ -138,7 +138,7 @@ def test_occupancy_matches_random_boolean_oracle() -> None:
             sources.append(px.Coverage.from_arrays(cells, offsets, resolution=0))
 
         threshold = int(random.integers(1, source_count + 2))
-        actual = px.occupancy(sources, minimum_sources=threshold)
+        actual = px.revisit(sources, minimum_sources=threshold)
         expected = _expected_stats(occupancy.sum(axis=0) >= threshold)
 
         for name, values in expected.items():
@@ -171,7 +171,7 @@ def test_occupancy_matches_the_oracle_on_both_memory_profiles(
                 )
             )
         threshold = int(rng.integers(1, source_count + 2))
-        stats = px.occupancy(sources, minimum_sources=threshold)
+        stats = px.revisit(sources, minimum_sources=threshold)
         expected = _expected_stats(occupancy.sum(axis=0) >= threshold)
 
         for name, values in expected.items():
@@ -184,14 +184,14 @@ def test_occupancy_accepts_unsorted_hits_and_all_empty_segments() -> None:
         offsets=[0, 2, 4],
         resolution=1,
     )
-    stats = px.occupancy(shuffled)
+    stats = px.revisit(shuffled)
     np.testing.assert_array_equal(stats.cells, [2, 7])
     np.testing.assert_array_equal(stats.run_counts, [1, 1])
     np.testing.assert_array_equal(stats.first_start, [0, 0])
     np.testing.assert_array_equal(stats.last_stop, [2, 2])
 
     all_empty = px.Coverage.from_arrays([], [0, 0, 0, 0], resolution=29)
-    empty = px.occupancy(all_empty)
+    empty = px.revisit(all_empty)
     assert len(empty) == 0
     np.testing.assert_array_equal(empty.cells, [])
 
@@ -204,7 +204,7 @@ def test_occupancy_preserves_resolution_29_cell_ids() -> None:
         resolution=29,
     )
 
-    stats = px.occupancy(coverage)
+    stats = px.revisit(coverage)
 
     # Cell 0 is occupied in segment 1 alone; the final cell in segments 0 and
     # 2, so two runs with one internal gap of one segment.
@@ -236,11 +236,11 @@ def test_native_occupancy_rejects_malformed_offsets(
     and before validation these inputs either panicked on the slice index or,
     for a nonzero initial offset, silently dropped the leading hits.
     """
-    from polypix._core import _occupancy_stats
+    from polypix._core import _revisit_stats
 
     cells = np.array([1, 2, 3, 4], dtype=np.uint64)
     malformed = np.asarray(offsets, dtype=np.uint64)
     with pytest.raises(ValueError, match=r"^sources\[0\]: "):
-        _occupancy_stats([cells], [malformed], 4, 1)
+        _revisit_stats([cells], [malformed], 4, 1)
     with pytest.raises(ValueError, match=re.escape(expected)):
-        _occupancy_stats([cells], [malformed], 4, 1)
+        _revisit_stats([cells], [malformed], 4, 1)

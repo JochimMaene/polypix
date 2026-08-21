@@ -1,4 +1,4 @@
-//! Reduction of segmented cell coverage into ordinal occupancy statistics.
+//! Reduction of segmented cell coverage into ordinal revisit statistics.
 
 use std::collections::HashMap;
 use std::mem::size_of;
@@ -22,7 +22,7 @@ fn validate_run_sources(
         ));
     }
     if cell_arrays.is_empty() {
-        return Err("occupancy() requires at least one coverage source.".to_owned());
+        return Err("revisit() requires at least one coverage source.".to_owned());
     }
     // Both the dense and sparse accumulators track segments and source counts
     // in `u32`, so reject anything that would truncate rather than returning a
@@ -229,7 +229,7 @@ fn count_sparse_segment(
     Ok(())
 }
 
-pub(crate) struct OccupancyStats {
+pub(crate) struct RevisitStats {
     pub(crate) cells: Vec<u64>,
     pub(crate) run_counts: Vec<u64>,
     pub(crate) internal_gap_steps_sum: Vec<u64>,
@@ -300,7 +300,7 @@ fn stats_out_of_memory_error() -> NativeError {
     NativeError::out_of_memory("Occupancy statistics are too large to fit in memory.")
 }
 
-fn push_stats(out: &mut OccupancyStats, cell: u64, state: &StatsState) {
+fn push_stats(out: &mut RevisitStats, cell: u64, state: &StatsState) {
     out.cells.push(cell);
     out.run_counts.push(u64::from(state.run_count));
     out.internal_gap_steps_sum.push(u64::from(state.gap_sum));
@@ -312,7 +312,7 @@ fn push_stats(out: &mut OccupancyStats, cell: u64, state: &StatsState) {
 
 /// Statistics output sized for the exact number of observed cells, so the
 /// per-cell pushes cannot allocate and cannot fail late.
-fn stats_with_capacity(cell_count: usize) -> NativeResult<OccupancyStats> {
+fn stats_with_capacity(cell_count: usize) -> NativeResult<RevisitStats> {
     let mut out = empty_stats();
     for vector in [
         &mut out.cells,
@@ -329,8 +329,8 @@ fn stats_with_capacity(cell_count: usize) -> NativeResult<OccupancyStats> {
     Ok(out)
 }
 
-fn empty_stats() -> OccupancyStats {
-    OccupancyStats {
+fn empty_stats() -> RevisitStats {
+    RevisitStats {
         cells: Vec::new(),
         run_counts: Vec::new(),
         internal_gap_steps_sum: Vec::new(),
@@ -340,12 +340,12 @@ fn empty_stats() -> OccupancyStats {
     }
 }
 
-pub(crate) fn occupancy_stats(
+pub(crate) fn revisit_stats(
     cell_arrays: &[&[u64]],
     offset_arrays: &[&[u64]],
     resolution: u8,
     minimum_sources: usize,
-) -> NativeResult<OccupancyStats> {
+) -> NativeResult<RevisitStats> {
     let segment_count =
         validate_run_sources(cell_arrays, offset_arrays, resolution, minimum_sources)?;
     if minimum_sources > cell_arrays.len() || segment_count == 0 {
@@ -437,10 +437,10 @@ pub(crate) fn occupancy_stats(
 mod tests {
     use std::collections::{BTreeMap, HashMap};
 
-    use super::{occupancy_stats, OccupancyStats};
+    use super::{revisit_stats, RevisitStats};
     use crate::ring;
 
-    fn assert_stats(actual: &OccupancyStats, expected: &OccupancyStats) {
+    fn assert_stats(actual: &RevisitStats, expected: &RevisitStats) {
         assert_eq!(actual.cells, expected.cells);
         assert_eq!(actual.run_counts, expected.run_counts);
         assert_eq!(
@@ -461,8 +461,8 @@ mod tests {
         resolution: u8,
         minimum_sources: usize,
     ) -> String {
-        match occupancy_stats(cell_arrays, offset_arrays, resolution, minimum_sources) {
-            Ok(_) => panic!("expected occupancy() to reject the input"),
+        match revisit_stats(cell_arrays, offset_arrays, resolution, minimum_sources) {
+            Ok(_) => panic!("expected revisit() to reject the input"),
             Err(error) => error.to_string(),
         }
     }
@@ -473,7 +473,7 @@ mod tests {
         cell_arrays: &[&[u64]],
         offset_arrays: &[&[u64]],
         minimum_sources: usize,
-    ) -> OccupancyStats {
+    ) -> RevisitStats {
         let segment_count = offset_arrays[0].len() - 1;
         let mut qualifying: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
         for segment in 0..segment_count {
@@ -490,7 +490,7 @@ mod tests {
             }
         }
 
-        let mut out = OccupancyStats {
+        let mut out = RevisitStats {
             cells: Vec::new(),
             run_counts: Vec::new(),
             internal_gap_steps_sum: Vec::new(),
@@ -566,14 +566,14 @@ mod tests {
         let offsets: [&[u64]; 2] = [&offsets_a, &offsets_b];
 
         for minimum_sources in [1, 2] {
-            let actual = occupancy_stats(&cells, &offsets, 0, minimum_sources).unwrap();
+            let actual = revisit_stats(&cells, &offsets, 0, minimum_sources).unwrap();
             assert_stats(&actual, &reference_stats(&cells, &offsets, minimum_sources));
         }
 
         // Thresholding is not a filter on the single-source answer: requiring
         // two simultaneous sources splits cell 1 into a later, shorter window.
-        let union = occupancy_stats(&cells, &offsets, 0, 1).unwrap();
-        let both = occupancy_stats(&cells, &offsets, 0, 2).unwrap();
+        let union = revisit_stats(&cells, &offsets, 0, 1).unwrap();
+        let both = revisit_stats(&cells, &offsets, 0, 2).unwrap();
         assert_eq!(union.first_start, [0, 0]);
         assert_eq!(both.first_start, [5, 2]);
         assert_eq!(both.last_stop, [6, 4]);
@@ -587,7 +587,7 @@ mod tests {
 
         for minimum_sources in [1, 2] {
             let expected = reference_stats(&cells, &offsets, minimum_sources);
-            let actual = occupancy_stats(&cells, &offsets, 6, minimum_sources).unwrap();
+            let actual = revisit_stats(&cells, &offsets, 6, minimum_sources).unwrap();
             assert_stats(&actual, &expected);
         }
 
@@ -595,11 +595,11 @@ mod tests {
         // only worth its runtime if it reaches both. Unioned, most cells are
         // revisited with gaps between; requiring two simultaneous sources
         // leaves only the shared cells, each occupied in one unbroken run.
-        let union = occupancy_stats(&cells, &offsets, 6, 1).unwrap();
+        let union = revisit_stats(&cells, &offsets, 6, 1).unwrap();
         assert!(union.run_counts.iter().filter(|&&count| count > 1).count() > 20_000);
         assert!(union.maximum_internal_gap_steps.iter().any(|&gap| gap > 0));
 
-        let both = occupancy_stats(&cells, &offsets, 6, 2).unwrap();
+        let both = revisit_stats(&cells, &offsets, 6, 2).unwrap();
         assert!(both.run_counts.iter().all(|&count| count == 1));
         assert!(both.internal_gap_steps_sum.iter().all(|&sum| sum == 0));
     }
@@ -613,8 +613,8 @@ mod tests {
         let cells: Vec<&[u64]> = cell_arrays.iter().map(Vec::as_slice).collect();
         let offsets: Vec<&[u64]> = offset_arrays.iter().map(Vec::as_slice).collect();
 
-        let dense = occupancy_stats(&cells, &offsets, 6, 1).unwrap();
-        let sparse = occupancy_stats(&cells, &offsets, ring::MAX_RESOLUTION, 1).unwrap();
+        let dense = revisit_stats(&cells, &offsets, 6, 1).unwrap();
+        let sparse = revisit_stats(&cells, &offsets, ring::MAX_RESOLUTION, 1).unwrap();
 
         assert_stats(&sparse, &dense);
         assert!(!dense.cells.is_empty());
@@ -626,7 +626,7 @@ mod tests {
         let cells = [1];
         let offsets = [0, 1];
 
-        let actual = occupancy_stats(&[&cells], &[&offsets], 0, 2).unwrap();
+        let actual = revisit_stats(&[&cells], &[&offsets], 0, 2).unwrap();
 
         assert!(actual.cells.is_empty());
         assert!(actual.run_counts.is_empty());
@@ -682,7 +682,7 @@ mod tests {
         }
 
         let valid = [0_u64, 2, 4];
-        assert!(occupancy_stats(&[&cells], &[&valid], 4, 1).is_ok());
+        assert!(revisit_stats(&[&cells], &[&valid], 4, 1).is_ok());
     }
 
     #[test]
@@ -714,7 +714,7 @@ mod tests {
 
     #[test]
     fn coverage_construction_owns_the_per_hit_invariants() {
-        // `occupancy_stats` trusts its sources because every one is a
+        // `revisit_stats` trusts its sources because every one is a
         // `Coverage`, which rejects duplicate and out-of-range cells when it
         // is built.
         let duplicate = ring::validate_coverage_arrays(&[1, 1], &[0, 2], 0).unwrap_err();

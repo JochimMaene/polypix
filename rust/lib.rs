@@ -6,7 +6,7 @@ use numpy::{
 use pyo3::exceptions::{PyMemoryError, PyValueError};
 use pyo3::prelude::*;
 
-mod access;
+mod revisit;
 mod error;
 mod geometry;
 mod reduce;
@@ -20,7 +20,7 @@ type PyCoverage<'py> = (
     Bound<'py, numpy::PyArray1<u64>>,
 );
 
-type PyOccupancyStats<'py> = (
+type PyRevisitStats<'py> = (
     Bound<'py, PyArray1<u64>>,
     Bound<'py, PyArray1<u64>>,
     Bound<'py, PyArray1<u64>>,
@@ -202,18 +202,18 @@ fn _sum_coverage_per_cell<'py>(
 }
 
 #[pyfunction(signature = (cell_arrays, offset_arrays, resolution, minimum_sources))]
-fn _occupancy_stats<'py>(
+fn _revisit_stats<'py>(
     py: Python<'py>,
     cell_arrays: Vec<PyReadonlyArray1<'py, u64>>,
     offset_arrays: Vec<PyReadonlyArray1<'py, u64>>,
     resolution: u8,
     minimum_sources: usize,
-) -> PyResult<PyOccupancyStats<'py>> {
+) -> PyResult<PyRevisitStats<'py>> {
     validate_resolution(resolution)?;
     let cells = slices(&cell_arrays, "Coverage cells")?;
     let offsets = slices(&offset_arrays, "Coverage offsets")?;
     let stats = py
-        .detach(|| access::occupancy_stats(&cells, &offsets, resolution, minimum_sources))
+        .detach(|| revisit::revisit_stats(&cells, &offsets, resolution, minimum_sources))
         .map_err(native_error)?;
     Ok((
         readonly_vec(stats.cells, py),
@@ -334,7 +334,7 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_cover_sweep, module)?)?;
     module.add_function(wrap_pyfunction!(_count_caps_per_cell, module)?)?;
     module.add_function(wrap_pyfunction!(_count_coverage_per_cell, module)?)?;
-    module.add_function(wrap_pyfunction!(_occupancy_stats, module)?)?;
+    module.add_function(wrap_pyfunction!(_revisit_stats, module)?)?;
     module.add_function(wrap_pyfunction!(_sum_coverage_per_cell, module)?)?;
     module.add_function(wrap_pyfunction!(_validate_coverage, module)?)?;
     module.add_function(wrap_pyfunction!(_cell_at, module)?)?;

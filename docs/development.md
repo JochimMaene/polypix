@@ -8,7 +8,7 @@ polypix/
   _core.pyi           private compiled-extension typing stub
   py.typed            PEP 561 marker
 rust/
-  access.rs           segmented occupancy run and gap reduction
+  revisit.rs          segmented revisit and gap reduction
   geometry.rs         convex spherical-polygon validation
   lib.rs              PyO3 bindings and native-buffer safety
   ring.rs             HEALPix RING coverage and threading

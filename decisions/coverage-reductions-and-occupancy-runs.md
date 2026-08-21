@@ -503,3 +503,36 @@ only mechanism that makes the delegation possible, and the trailing gap is
 `segment_count - last_stop` against a segment count the caller already has.
 Unused is a reason to cut. Unused but load-bearing for a delegation the library
 makes on purpose is not.
+
+### `occupancy()` is `revisit()`
+
+`occupancy` was the only name on the surface that did not say what it produced.
+Everything else is geometry to cells or a grid transform; this one operation
+reads an *ordered* axis, and the name gave no hint of it. Worse, it named a
+state - whether a cell is occupied - where the result is statistics about that
+state over time: visit counts, gaps between visits, window bounds.
+
+`revisit(timelines) -> RevisitStats` says all three parts, and the term travels
+across the domains this library serves: EO revisit, communications outage,
+survey cadence. It also finishes what renaming the argument to `timelines`
+started; `occupancy(timelines) -> OccupancyStats` was committed to the temporal
+reading in one place and neutral in two.
+
+The cost is that the name now asserts a temporal reading the semantics still
+refuse to fix - the result stays ordinal, and mapping bins to physical time
+remains the caller's. That was judged the lesser evil: the operation is only
+meaningful on an ordered axis, so a name that hides the ordering serves nobody.
+
+### `Coverage` carries no derivable members
+
+`segment_sizes`, `segment_indices()`, and `segment_count` are `np.diff`,
+`np.repeat`, and `len(offsets) - 1`. None is cheaper inside Polypix than
+outside it, and `segment_count` merely duplicated `len(coverage)`. Removed
+under the same rule that trimmed the revisit result.
+
+`__len__` and `__getitem__` stay. They are the container protocol rather than
+computation, `coverage[i]` returns a zero-copy view rather than allocating, and
+without them the offsets layout would have to be hand-indexed at every call
+site. The guide now introduces `cells`, `offsets`, `len()`, and `np.diff` in
+its first example, which teaches the layout earlier than the convenience
+properties did.

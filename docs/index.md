@@ -67,7 +67,7 @@ latitude:
 >>> radii = np.deg2rad([5.0, 8.0])                     # footprint half-angles
 
 >>> coverage = px.cover_cap(centers, radii, resolution=8)
->>> coverage.segment_sizes
+>>> np.diff(coverage.offsets)
 array([1500, 3829])
 ```
 

@@ -21,7 +21,7 @@ from ._core import (
     _cover,
     _cover_cap,
     _cover_sweep,
-    _occupancy_stats,
+    _revisit_stats,
     _sum_coverage_per_cell,
     _validate_coverage,
 )
@@ -51,10 +51,20 @@ ValuesLike = float | Sequence[float] | npt.ArrayLike
 class Coverage:
     """Validated, read-only segmented HEALPix RING coverage.
 
-    Public construction copies and validates imported arrays. Results returned
-    by Polypix reuse their already-owned native buffers without another copy.
-    Equality remains identity-based so comparing two large coverages never
-    performs an implicit linear scan.
+    A segment is one input item: one polygon, one cap, one sweep interval.
+    ``cells`` is the flat concatenation of every segment's cells and ``offsets``
+    delimits them, so ``len(coverage)`` is the segment count, not the cell
+    count, and ``coverage[i]`` is a zero-copy view of one segment. Sizes are
+    ``np.diff(offsets)`` and the hit-aligned segment index is
+    ``np.repeat(np.arange(len(coverage)), np.diff(offsets))``; neither is
+    returned, because neither is cheaper here than in NumPy.
+
+    Holding a Coverage is proof that its invariants hold - cells in range,
+    offsets nondecreasing and closed, cells unique within each segment - which
+    is why :func:`revisit` needs no rescan. Public construction copies and
+    validates; results returned by Polypix reuse their already-owned native
+    buffers without another copy. Equality is identity-based so comparing two
+    large coverages never performs an implicit linear scan.
     """
 
     cells: npt.NDArray[np.int64]
@@ -118,37 +128,21 @@ class Coverage:
 
     def __len__(self) -> int:
         """Return the number of input items (segments)."""
-        return self.segment_count
+        return self.offsets.size - 1
 
     def __getitem__(self, index: SupportsIndex) -> npt.NDArray[np.int64]:
         """Return a read-only view of one segment's cell IDs."""
         if isinstance(index, (bool, np.bool_)):
             raise TypeError("Coverage indices must be integers, not bool.")
         item = operator.index(index)
+        count = len(self)
         if item < 0:
-            item += self.segment_count
-        if item < 0 or item >= self.segment_count:
+            item += count
+        if item < 0 or item >= count:
             raise IndexError("Coverage segment index out of range.")
         start = int(self.offsets[item])
         stop = int(self.offsets[item + 1])
         return self.cells[start:stop]
-
-    @property
-    def segment_count(self) -> int:
-        """Number of segmented input items represented by this result."""
-        return self.offsets.size - 1
-
-    @property
-    def segment_sizes(self) -> npt.NDArray[np.int64]:
-        """Number of covered cells for each input item."""
-        return np.diff(self.offsets)
-
-    def segment_indices(self) -> npt.NDArray[np.int64]:
-        """Return the segment index aligned with every flat cell hit."""
-        return np.repeat(
-            np.arange(self.segment_count, dtype=np.int64),
-            self.segment_sizes,
-        )
 
     def reduce(
         self,
@@ -178,10 +172,10 @@ class Coverage:
 
 
 @dataclass(frozen=True, eq=False, init=False, slots=True)
-class OccupancyStats:
-    """Read-only per-cell occupancy statistics on one thresholded axis.
+class RevisitStats:
+    """Read-only per-cell revisit statistics on one thresholded axis.
 
-    Every field describes the same source-unioned occupancy of a cell after
+    Every field describes the same source-unioned coverage of a cell after
     thresholding, and every one of them needs the single pass over the segment
     axis: nothing here can be recovered from the rest afterwards. In
     particular ``maximum_internal_gap_steps`` exists only while a run closes,
@@ -200,13 +194,13 @@ class OccupancyStats:
     last_stop: npt.NDArray[np.int64]
 
     def __init__(self, *_args: Never, **_kwargs: Never) -> None:
-        raise TypeError("OccupancyStats values are constructed by Polypix.")
+        raise TypeError("RevisitStats values are constructed by Polypix.")
 
     @classmethod
     def _from_native(
         cls,
         arrays: tuple[npt.NDArray[np.uint64], ...],
-    ) -> OccupancyStats:
+    ) -> RevisitStats:
         result = object.__new__(cls)
         names = (
             "cells",
@@ -830,7 +824,7 @@ def _reduce_coverage(
             coverage.resolution,
             requested,
         )
-    segment_values = _as_segment_values(reducer.values, coverage.segment_count)
+    segment_values = _as_segment_values(reducer.values, len(coverage))
     if requested is not None and requested.size == 0:
         if np.any(~np.isfinite(segment_values)):
             raise ValueError("values must contain only finite values.")
@@ -958,8 +952,8 @@ def _prepared_timelines(
     resolution = normalized[0].resolution
     if any(source.resolution != resolution for source in normalized[1:]):
         raise ValueError("all timelines must use the same resolution.")
-    segment_count = normalized[0].segment_count
-    if any(source.segment_count != segment_count for source in normalized[1:]):
+    segment_count = len(normalized[0])
+    if any(len(source) != segment_count for source in normalized[1:]):
         raise ValueError("all timelines must contain the same number of segments.")
 
     return (
@@ -971,29 +965,29 @@ def _prepared_timelines(
     )
 
 
-def occupancy(
+def revisit(
     timelines: Coverage | Sequence[Coverage],
     *,
     minimum_sources: int = 1,
-) -> OccupancyStats:
-    """Read aligned coverage segments as ordered occupancy bins.
+) -> RevisitStats:
+    """Summarize how often each cell is covered across ordered bins.
 
     Each timeline is a coverage whose segments are consecutive, temporally
     adjacent bins in ascending order. Each sequence entry is counted as one
-    source, and a cell is occupied in a segment when at least
-    ``minimum_sources`` entries cover it. Callers must supply unique timelines
-    with identical bin boundaries when those semantics matter. The result stays
-    ordinal; callers decide how boundaries map to physical time and how
-    leading, trailing, or cyclic gaps should be treated.
+    source, and a cell is covered in a bin when at least ``minimum_sources``
+    entries contain it. Callers must supply unique timelines with identical bin
+    boundaries when those semantics matter. The result stays ordinal; callers
+    decide how bins map to physical time and how leading, trailing, or cyclic
+    gaps should be treated.
 
-    Per-cell counts and complete internal gaps accumulate in one pass, without
-    ever building the individual runs.
+    Per-cell visit counts and complete internal gaps accumulate in one pass,
+    without ever building the individual runs.
     """
     cells, offsets, resolution, threshold, count = _prepared_timelines(
-        timelines, minimum_sources, "occupancy"
+        timelines, minimum_sources, "revisit"
     )
-    return OccupancyStats._from_native(
-        _occupancy_stats(cells, offsets, resolution, min(threshold, count + 1))
+    return RevisitStats._from_native(
+        _revisit_stats(cells, offsets, resolution, min(threshold, count + 1))
     )
 
 
@@ -1048,7 +1042,7 @@ def cell_corners(
 __all__ = [
     "Count",
     "Coverage",
-    "OccupancyStats",
+    "RevisitStats",
     "Sum",
     "__version__",
     "cell_at",
@@ -1058,5 +1052,5 @@ __all__ = [
     "cover_cap",
     "cover_convex_polygon",
     "cover_sweep",
-    "occupancy",
+    "revisit",
 ]

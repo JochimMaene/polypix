@@ -247,7 +247,7 @@ def test_sweep_segments_match_their_quads(resolution: int) -> None:
     )
     coverage = px.cover_sweep(left, right, resolution)
 
-    for segment in range(coverage.segment_count):
+    for segment in range(len(coverage)):
         quad = np.asarray(
             [left[segment], right[segment], right[segment + 1], left[segment + 1]]
         )
@@ -288,7 +288,7 @@ def test_candidate_filtering_matches_the_full_scan(resolution: int) -> None:
         ),
     ]:
         np.testing.assert_array_equal(scanned.offsets, filtered.offsets, err_msg=name)
-        for segment in range(scanned.segment_count):
+        for segment in range(len(scanned)):
             start, stop = scanned.offsets[segment], scanned.offsets[segment + 1]
             np.testing.assert_array_equal(
                 np.sort(scanned.cells[start:stop]),
@@ -491,7 +491,7 @@ def test_occupancy_agrees_across_memory_profiles(minimum_sources: int) -> None:
         sources.append((np.asarray(cells, np.int64), np.asarray(offsets, np.int64)))
 
     def occupancy(resolution: int, **kwargs: object):
-        return px.occupancy(
+        return px.revisit(
             [
                 px.Coverage.from_arrays(cells, offsets, resolution=resolution)
                 for cells, offsets in sources

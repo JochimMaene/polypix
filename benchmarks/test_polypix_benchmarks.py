@@ -580,7 +580,7 @@ def test_coverage_from_arrays_eo_shape(
     )
 
     assert imported.cells.size == 921_600
-    assert imported.segment_count == 14_400
+    assert len(imported) == 14_400
     assert not np.shares_memory(imported.cells, eo_shaped_coverage.cells)
     assert not imported.cells.flags.writeable
 
@@ -600,7 +600,7 @@ def test_sum_coverage_per_cell_eo_shape(
     benchmark,
     eo_shaped_coverage: px.Coverage,
 ) -> None:
-    values = np.linspace(0.25, 1.25, eo_shaped_coverage.segment_count)
+    values = np.linspace(0.25, 1.25, len(eo_shaped_coverage))
     sums = benchmark(eo_shaped_coverage.reduce, px.Sum(values))
 
     assert sums.shape == (12 * 4**6,)
@@ -757,7 +757,7 @@ def test_sum_coverage_selected_sparse_high_resolution(
     sparse_high_resolution_reduction: tuple[px.Coverage, np.ndarray],
 ) -> None:
     coverage, queried = sparse_high_resolution_reduction
-    values = np.linspace(0.25, 1.25, coverage.segment_count)
+    values = np.linspace(0.25, 1.25, len(coverage))
     sums = benchmark(coverage.reduce, px.Sum(values), cells=queried)
 
     assert sums.shape == queried.shape

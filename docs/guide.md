@@ -76,12 +76,16 @@ Here are two caps of different sizes, given in degrees and converted:
 >>> cap_coverage = px.cover_cap(
 ...     unit_vector(cap_lon, cap_lat), np.radians(cap_radius_deg), resolution=4
 ... )
->>> cap_coverage.segment_sizes
+>>> len(cap_coverage)
+2
+>>> np.diff(cap_coverage.offsets)
 array([9, 4])
 ```
 
-Both caps came back in one result. Indexing it returns a read-only view for one
-region:
+Both caps came back in one result. A result holds every cell in one flat
+`cells` array, with `offsets` marking where each input's cells begin and end -
+so `len()` counts the inputs and `np.diff(offsets)` gives the cells each one
+covered. Indexing returns a read-only view of one of them:
 
 ```{doctest}
 >>> cap_coverage[0]
@@ -112,7 +116,7 @@ adjacent vertices are joined by the shorter great-circle arc:
 >>> scene_coverage = px.cover_convex_polygon(
 ...     unit_vector(scene_lon, scene_lat), resolution=4
 ... )
->>> scene_coverage.segment_sizes
+>>> np.diff(scene_coverage.offsets)
 array([16])
 >>> scene_coverage[0][:6]
 array([1312, 1376, 1377, 1439, 1440, 1441])
@@ -148,7 +152,7 @@ edges 3.2° either side of it:
 >>> swath_coverage = px.cover_sweep(left_edge, right_edge, resolution=4)
 >>> len(swath_coverage)
 6
->>> swath_coverage.segment_sizes
+>>> np.diff(swath_coverage.offsets)
 array([2, 2, 4, 4, 2, 2])
 ```
 
@@ -254,12 +258,12 @@ hit.
 
 ## Summarize revisit over a timeline
 
-When a coverage's segments are consecutive time bins, `occupancy()` reads them
+When a coverage's segments are consecutive time bins, `revisit()` reads them
 as a timeline and returns per-cell revisit statistics. Bins are ordinal, so
 apply your own time base afterward:
 
 ```{doctest}
->>> stats = px.occupancy(swath_coverage)
+>>> stats = px.revisit(swath_coverage)
 >>> observed_once = stats.run_counts == 1
 >>> bool(np.all(stats.maximum_internal_gap_steps[observed_once] == 0))
 True

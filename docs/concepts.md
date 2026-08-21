@@ -107,7 +107,7 @@ densely enough that each arc is the boundary you meant.
 
 ## Occupancy runs
 
-`occupancy()` reads the segments of one or more `Coverage` results as
+`revisit()` reads the segments of one or more `Coverage` results as
 aligned, ordered bins. It returns every maximal half-open `[start, stop)` run,
 grouped by cell, where at least `minimum_sources` source entries cover the cell.
 Matching indices must describe identical bin boundaries, and consecutive bins
@@ -121,7 +121,7 @@ end-to-start, start-to-start, a finite-horizon edge gap, or a cyclic gap.
 
 Runs are often only an intermediate. If all you need per cell is how many times
 it was occupied, the total and largest complete internal gap, and the bounds of
-its observed window, `occupancy()` computes exactly that
+its observed window, `revisit()` computes exactly that
 in one pass and
 never builds the runs. It reports the same thresholded, source-unioned axis for
 every field, and leaves the leading, trailing, and cyclic policies to you by

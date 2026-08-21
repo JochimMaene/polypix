@@ -56,7 +56,7 @@
   `is_multiple_of`, and is above the 1.83 both dependencies require.
 
 - Replaced `count_caps_per_cell()`, `count_coverage_per_cell()`,
-  `sum_coverage_per_cell()`, `occupancy_runs()`, and `occupancy_stats()` with
+  `sum_coverage_per_cell()`, `occupancy_runs()`, and `revisit_stats()` with
   the `reduce=` reducer form, removing the geometry-specific reducer asymmetry
   and the two-verb occupancy split. The fused cap kernel is retained behind
   `cover_cap(..., reduce=Count())`.

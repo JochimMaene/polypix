@@ -14,14 +14,14 @@ HEALPix and NumPy handoff conventions see
 | [`cover_convex_polygon`](#cover_convex_polygon) | Cover convex spherical polygons |
 | [`cover_cap`](#cover_cap) | Cover exact spherical caps |
 | [`cover_sweep`](#cover_sweep) | Cover the quadrilaterals between two sampled edges |
-| [`occupancy`](#occupancy) | Read aligned coverage as ordered occupancy bins |
+| [`revisit`](#revisit) | Read aligned coverage as ordered occupancy bins |
 | [`Count`](#reducers), [`Sum`](#reducers) | Reducers accepted by the covering calls |
 | [`cell_at`](#cell_at) | Direction vectors to RING cell IDs |
 | [`cell_centers`](#cell_centers) | Cell center vectors |
 | [`cell_corners`](#cell_corners) | Cell corner vectors |
 | [`cell_count`](#cell_count) | Number of cells at a resolution |
 | [`Coverage`](#coverage) | Segmented result of the coverage calls |
-| [`OccupancyStats`](#occupancystats) | Per-cell occupancy statistics on one axis |
+| [`RevisitStats`](#revisitstats) | Per-cell occupancy statistics on one axis |
 
 ## cover_convex_polygon
 
@@ -242,10 +242,10 @@ Consecutive samples are joined by minor great-circle arcs, so sampling density
 is part of the input contract. See
 [Batches and segments](concepts.md#batches-and-segments).
 
-## occupancy
+## revisit
 
 ```python
-occupancy(timelines, *, minimum_sources=1)
+revisit(timelines, *, minimum_sources=1)
 ```
 
 Read one `Coverage`, or aligned coverage belonging to multiple sources, as
@@ -274,7 +274,7 @@ empty separator bin.
 
 **Returns**
 
-`OccupancyStats`
+`RevisitStats`
 : Ascending qualifying cells, with one statistic per cell.
 
 **Raises**
@@ -289,7 +289,7 @@ empty separator bin.
 **Notes**
 
 Coverage arrays are read-only and borrowed while the native reducer runs
-without the GIL. To retain observer attribution, call `occupancy()` once per
+without the GIL. To retain observer attribution, call `revisit()` once per
 source; the multi-source form intentionally returns thresholded occupancy. For
 sampled sweeps these are occupied bins, not exact continuous access events;
 boundary times are uncertain at the input sampling scale.
@@ -340,7 +340,7 @@ rather than gathered from a complete result. A selection large enough that
 scanning wins is scanned instead, at the same answer. A large selection is
 therefore not a mistake, just a different shape of query.
 
-`occupancy()` takes no reducer. It accumulates per-cell counts and complete
+`revisit()` takes no reducer. It accumulates per-cell counts and complete
 internal gaps in one pass and allocates by represented cell, never by run,
 because materializing every boundary approaches the hit count when cells are
 occupied briefly and repeatedly.
@@ -493,9 +493,6 @@ coverage = px.Coverage.from_arrays(
   by RING cell ID, or supply it for one value per requested ID, in query order
   and including duplicates.
 
-`segment_indices()`
-: Return the segment index aligned with every flat cell hit.
-
 **Attributes**
 
 `cells`
@@ -503,20 +500,18 @@ coverage = px.Coverage.from_arrays(
   indices.
 
 `offsets`
-: *ndarray*. `int64` segment boundaries, length `segment_count + 1`.
+: *ndarray*. `int64` segment boundaries, length `len(coverage) + 1`.
 
 `resolution`
 : *int*. The resolution shared by every returned cell.
 
-`segment_count`
-: *int*. Number of input items, equal to `len(offsets) - 1` and
-  `len(coverage)`.
+`len(coverage)` is the number of input items. Two things Polypix deliberately
+does not return, because NumPy does them no more slowly:
 
-`segment_sizes`
-: *ndarray*. Newly allocated `int64` array equal to `np.diff(offsets)`.
-
-`segment_indices()`
-: Return one `int64` segment index aligned with every flat cell hit.
+```python
+sizes = np.diff(coverage.offsets)
+per_hit_segment = np.repeat(np.arange(len(coverage)), sizes)
+```
 
 Indexing returns a zero-copy, read-only view of one segment and supports
 negative integer indices:
@@ -544,9 +539,9 @@ security boundary or a promise of deep immutability against deliberate NumPy
 flag manipulation. Imported arrays are still copied, so later changes to the
 caller's inputs cannot change a `Coverage`.
 
-## OccupancyStats
+## RevisitStats
 
-`OccupancyStats` values are produced only by `occupancy()`; manual
+`RevisitStats` values are produced only by `revisit()`; manual
 construction is intentionally disabled.
 
 Every attribute needs the single pass over the segment axis, and none can be
@@ -575,7 +570,7 @@ source count all came from the arguments you passed.
   `segment_count - last_stop` against the segment count of the timelines you
   passed in. The gap count per cell is `run_counts - 1`.
 
-`OccupancyStats` follows the same identity-equality and read-only array
+`RevisitStats` follows the same identity-equality and read-only array
 contracts as `Coverage`, and `len(stats)` is the number of represented
 cells.
 

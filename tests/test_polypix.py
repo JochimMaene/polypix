@@ -213,7 +213,7 @@ class PolypixTests(unittest.TestCase):
             np.asarray([0, coverage.cells.size], dtype=np.uint64),
         )
         np.testing.assert_array_equal(
-            coverage.segment_sizes,
+            np.diff(coverage.offsets),
             np.asarray([coverage.cells.size], dtype=np.intp),
         )
         self.assertCellsEqual(
@@ -453,7 +453,7 @@ class PolypixTests(unittest.TestCase):
 
         self.assertSegmentsEqual(coverage, expected)
         np.testing.assert_array_equal(
-            coverage.segment_sizes,
+            np.diff(coverage.offsets),
             np.asarray([cells.size for cells in expected], dtype=np.intp),
         )
 
@@ -1088,7 +1088,7 @@ class PolypixTests(unittest.TestCase):
         np.testing.assert_array_equal(px.cell_corners(cells, 2).shape, (2, 4, 3))
         np.testing.assert_array_equal(px.cell_at(px.cell_centers(cells, 2), 2), [1, 2])
 
-        values = misaligned(np.float64, capped.segment_count)
+        values = misaligned(np.float64, len(capped))
         values[:] = 1.5
         self.assertAlmostEqual(
             float(capped.reduce(px.Sum(values)).sum()), 1.5 * capped.cells.size
@@ -1204,7 +1204,7 @@ class PolypixTests(unittest.TestCase):
                 self.assertEqual(coverage.offsets.dtype, np.dtype("int64"))
                 self.assertEqual(coverage.cells.shape, (0,))
                 np.testing.assert_array_equal(coverage.offsets, [0])
-                self.assertEqual(coverage.segment_sizes.shape, (0,))
+                self.assertEqual(np.diff(coverage.offsets).shape, (0,))
 
         list_coverage = px.cover_convex_polygon([], resolution=1)
         np.testing.assert_array_equal(list_coverage.cells, [])
@@ -1232,7 +1232,7 @@ class PolypixTests(unittest.TestCase):
         self.assertFalse(coverage.cells.flags.writeable)
         self.assertFalse(coverage.offsets.flags.writeable)
         self.assertEqual(len(coverage), 2)
-        self.assertEqual(coverage.segment_count, 2)
+        self.assertEqual(len(coverage), 2)
         np.testing.assert_array_equal(coverage[0], [1, 4])
         np.testing.assert_array_equal(coverage[-1], [7])
         self.assertTrue(np.shares_memory(coverage[0], coverage.cells))
@@ -1277,7 +1277,7 @@ class PolypixTests(unittest.TestCase):
             [
                 "Count",
                 "Coverage",
-                "OccupancyStats",
+                "RevisitStats",
                 "Sum",
                 "__version__",
                 "cell_at",
@@ -1287,14 +1287,15 @@ class PolypixTests(unittest.TestCase):
                 "cover_cap",
                 "cover_convex_polygon",
                 "cover_sweep",
-                "occupancy",
+                "revisit",
             ],
         )
         for name in [
             "OccupancyRuns",
+            "OccupancyStats",
             "OccupancySummary",
             "Stats",
-            "filter_hits",
+            "occupancy",
             "cell_area_from_resolution",
             "cell_boundary",
             "cell_center",
@@ -1311,8 +1312,16 @@ class PolypixTests(unittest.TestCase):
         ]:
             self.assertFalse(hasattr(px, name), name)
 
+        # Coverage members live on the class, so they need their own check.
         coverage = px.Coverage.from_arrays([], [0], resolution=0)
-        self.assertFalse(hasattr(coverage, "counts"))
+        for name in [
+            "counts",
+            "filter_hits",
+            "segment_count",
+            "segment_indices",
+            "segment_sizes",
+        ]:
+            self.assertFalse(hasattr(coverage, name), name)
 
 
 if __name__ == "__main__":

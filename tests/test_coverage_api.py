@@ -91,12 +91,16 @@ def test_coverage_helpers_preserve_segment_alignment() -> None:
 
     assert coverage.cells.dtype == np.int64
     assert coverage.offsets.dtype == np.int64
-    np.testing.assert_array_equal(coverage.segment_sizes, [2, 0, 1, 2])
-    np.testing.assert_array_equal(coverage.segment_indices(), [0, 0, 2, 3, 3])
+    np.testing.assert_array_equal(np.diff(coverage.offsets), [2, 0, 1, 2])
+    np.testing.assert_array_equal(
+        np.repeat(np.arange(len(coverage)), np.diff(coverage.offsets)), [0, 0, 2, 3, 3]
+    )
 
     empty = px.Coverage.from_arrays([], [0], resolution=1)
-    np.testing.assert_array_equal(empty.segment_sizes, [])
-    np.testing.assert_array_equal(empty.segment_indices(), [])
+    np.testing.assert_array_equal(np.diff(empty.offsets), [])
+    np.testing.assert_array_equal(
+        np.repeat(np.arange(len(empty)), np.diff(empty.offsets)), []
+    )
 
 
 def test_empty_cap_batches_validate_scalar_radii() -> None:
@@ -123,7 +127,7 @@ def test_sweep_accepts_an_empty_interval_axis() -> None:
 
     for edge in (empty, one):
         coverage = px.cover_sweep(edge, edge, resolution=2)
-        assert coverage.segment_count == 0
+        assert len(coverage) == 0
         np.testing.assert_array_equal(coverage.cells, [])
         np.testing.assert_array_equal(coverage.offsets, [0])
 

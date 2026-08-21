@@ -14,7 +14,7 @@ __all__ = [
     "_cover",
     "_cover_cap",
     "_cover_sweep",
-    "_occupancy_stats",
+    "_revisit_stats",
     "_sum_coverage_per_cell",
     "_validate_coverage",
 ]
@@ -59,7 +59,7 @@ def _cover_sweep(
     candidate_cells: npt.NDArray[np.uint64] | None = None,
     threads: int | None = None,
 ) -> tuple[npt.NDArray[np.uint64], npt.NDArray[np.uint64]]: ...
-def _occupancy_stats(
+def _revisit_stats(
     cell_arrays: list[npt.NDArray[np.uint64]],
     offset_arrays: list[npt.NDArray[np.uint64]],
     resolution: int,
