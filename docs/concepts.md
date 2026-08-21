@@ -99,6 +99,31 @@ Python object per region. `len(coverage)` is the item count and `coverage[i]` is
 a read-only zero-copy view of one segment. If segmented arrays arrive from
 somewhere else, `Coverage.from_arrays()` copies and validates them.
 
+That is also the way back from storage, and the reason the constructor is
+public. Coverage is usually the expensive product of a campaign, so the
+realistic shape of the work is to compute it once and query it afterwards. Two
+flat arrays and a resolution store in anything that holds arrays:
+
+```{literalinclude} ../examples/coverage_archive.py
+:language: python
+:start-after: "--8<-- [start:archive-store]"
+:end-before: "--8<-- [end:archive-store]"
+:dedent:
+```
+
+Reading them back validates once, at the boundary, so nothing downstream has to
+re-check a hit:
+
+```{literalinclude} ../examples/coverage_archive.py
+:language: python
+:start-after: "--8<-- [start:archive-load]"
+:end-before: "--8<-- [end:archive-load]"
+:dedent:
+```
+
+A reloaded coverage is an ordinary coverage: `revisit()` and `reduce()` apply
+unchanged and return exactly what they would have in the process that built it.
+
 Sweep sampling is part of the input contract, because Polypix joins consecutive
 samples with the shorter great-circle arc. Steps approaching 180° bow noticeably;
 past 180° you get the opposite arc; exactly ambiguous steps are rejected. Polypix

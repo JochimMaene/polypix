@@ -342,6 +342,28 @@ internal gaps in one pass and allocates by represented cell, never by run,
 because materializing every boundary approaches the hit count when cells are
 occupied briefly and repeatedly.
 
+`Coverage.reduce()` answers the same questions against a coverage you already
+hold, which is what you want when several reductions share one expensive
+covering pass, or when the coverage came back from storage. Its `cells=`
+argument is the reason to reach for it: it answers about a named set of cells
+without ever allocating the grid.
+
+```{literalinclude} ../examples/coverage_archive.py
+:language: python
+:start-after: "--8<-- [start:archive-region]"
+:end-before: "--8<-- [end:archive-region]"
+:dedent:
+```
+
+Without `cells=`, the array-level equivalent is a one-liner and usually faster
+than going back through Polypix, so prefer it: `np.bincount(coverage.cells,
+minlength=cell_count(resolution))` for `Count`, and the same call with
+`weights=np.repeat(values, np.diff(coverage.offsets))` for `Sum`. That
+equivalence stops holding as soon as you name cells, because `bincount` has to
+build the whole grid before it can index a few thousand cells out of it -- at
+resolution 13 that is six gibibytes to answer a question about a city. If you do
+not need the `Coverage` at all, `cover_*(..., reduce=...)` skips building it.
+
 
 ## cell_at
 

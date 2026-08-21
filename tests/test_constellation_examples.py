@@ -151,3 +151,52 @@ def test_reduce_coverage_rejects_mismatched_interval_counts() -> None:
 
     with np.testing.assert_raises_regex(ValueError, "same interval count"):
         reduce_coverage([first, second], cell_count=48, cadence_s=60)
+
+
+def test_archived_coverage_reloads_into_an_equivalent_coverage(
+    tmp_path: Path,
+) -> None:
+    """Storing and reloading a coverage must lose nothing an operation can see.
+
+    This is what ``Coverage.from_arrays()`` is for, and the only public way back
+    from stored arrays. If the round trip were lossy every downstream analysis
+    would be too, so the reloaded coverage is compared field by field and then
+    put through ``revisit()`` alongside the original.
+    """
+    from examples.coverage_archive import (
+        HEALPIX_RESOLUTION,
+        cover_campaign,
+        load,
+        region_cells,
+        store,
+    )
+
+    coverages = cover_campaign()
+    path = tmp_path / "campaign.npz"
+    store(coverages, path)
+    reloaded = load(path)
+
+    assert len(reloaded) == len(coverages)
+    for original, restored in zip(coverages, reloaded, strict=True):
+        assert restored.resolution == original.resolution
+        np.testing.assert_array_equal(restored.cells, original.cells)
+        np.testing.assert_array_equal(restored.offsets, original.offsets)
+
+    stats = px.revisit(reloaded)
+    expected = px.revisit(coverages)
+    np.testing.assert_array_equal(stats.cells, expected.cells)
+    np.testing.assert_array_equal(stats.run_counts, expected.run_counts)
+    np.testing.assert_array_equal(
+        stats.internal_gap_steps_sum, expected.internal_gap_steps_sum
+    )
+
+    # The regional query is the reason the selection form of reduce() exists:
+    # it must agree with the dense answer indexed down to the same cells.
+    region = region_cells(HEALPIX_RESOLUTION)
+    assert region.size > 0
+    for original, restored in zip(coverages, reloaded, strict=True):
+        selected = restored.reduce(px.Count(), cells=region)
+        dense = np.bincount(
+            np.asarray(original.cells), minlength=px.cell_count(HEALPIX_RESOLUTION)
+        )
+        np.testing.assert_array_equal(selected, dense[region])
