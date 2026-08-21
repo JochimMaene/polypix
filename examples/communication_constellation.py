@@ -109,7 +109,7 @@ def analyze() -> CommunicationsAnalysis:
             centers,
             radii_rad,
             resolution=HEALPIX_RESOLUTION,
-            into=px.Count(),
+            reduce=px.Count(),
         )
         coverage_elapsed_s += time.perf_counter() - coverage_started
 
@@ -203,7 +203,7 @@ def build_documentation_assets() -> str:
         <td>{result.propagation_elapsed_s * 1_000:.0f} ms</td></tr>
     <tr><td>Service-cap geometry</td>
         <td>{result.cap_geometry_elapsed_s * 1_000:.0f} ms</td></tr>
-    <tr><td>{result.snapshot_count} <code>cover_cap(into=Count())</code> calls</td>
+    <tr><td>{result.snapshot_count} <code>cover_cap(reduce=Count())</code> calls</td>
         <td><strong>{result.coverage_elapsed_s * 1_000:.0f} ms</strong></td></tr>
     <tr><td>Availability reduction</td>
         <td>{result.reduction_elapsed_s * 1_000:.0f} ms</td></tr>

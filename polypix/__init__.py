@@ -32,6 +32,19 @@ _POLYGON_SHAPE_ERROR = (
     "(polygons, vertices, 3), or be a sequence of (vertices, 3) arrays."
 )
 
+# Public spellings for the argument shapes that repeat across this module.
+# They document intent; ``npt.ArrayLike`` already admits everything else.
+CellsLike = int | Sequence[int] | npt.NDArray[np.integer[Any]]
+# Offsets and imported cell arrays are always sequences; a bare scalar is not
+# a meaningful segmentation, so they do not admit one.
+OffsetsLike = Sequence[int] | npt.NDArray[np.integer[Any]]
+VectorsLike = Sequence[float] | Sequence[Sequence[float]] | npt.ArrayLike
+PolygonsLike = (
+    Sequence[Sequence[float]] | Sequence[Sequence[Sequence[float]]] | npt.ArrayLike
+)
+EdgesLike = Sequence[Sequence[float]] | npt.ArrayLike
+ValuesLike = float | Sequence[float] | npt.ArrayLike
+
 
 @dataclass(frozen=True, eq=False, init=False, slots=True)
 class Coverage:
@@ -55,8 +68,8 @@ class Coverage:
     @classmethod
     def from_arrays(
         cls,
-        cells: Sequence[int] | npt.NDArray[np.integer[Any]],
-        offsets: Sequence[int] | npt.NDArray[np.integer[Any]],
+        cells: OffsetsLike,
+        offsets: OffsetsLike,
         resolution: int,
     ) -> Coverage:
         """Copy and validate imported segmented RING-cell arrays."""
@@ -143,7 +156,7 @@ class Coverage:
         """Accumulate this coverage with a :class:`Count` or :class:`Sum`.
 
         The reducer vocabulary is the one the covering operations accept as
-        ``into=``, so a stored coverage reduces exactly as a fused call
+        ``reduce=``, so a stored coverage reduces exactly as a fused call
         would have.
         """
         if not isinstance(reducer, (Count, Sum)):
@@ -619,56 +632,48 @@ CoverageReducer = Count | Sum
 
 @overload
 def cover_convex_polygon(
-    polygons_xyz: Sequence[Sequence[float]]
-    | Sequence[Sequence[Sequence[float]]]
-    | npt.ArrayLike,
+    polygons_xyz: PolygonsLike,
     resolution: int,
     *,
-    vertex_offsets: Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
-    candidate_cells: int | Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
+    vertex_offsets: OffsetsLike | None = None,
+    candidate_cells: CellsLike | None = None,
     threads: int | None = None,
-    into: None = None,
+    reduce: None = None,
 ) -> Coverage: ...
 
 
 @overload
 def cover_convex_polygon(
-    polygons_xyz: Sequence[Sequence[float]]
-    | Sequence[Sequence[Sequence[float]]]
-    | npt.ArrayLike,
+    polygons_xyz: PolygonsLike,
     resolution: int,
     *,
-    vertex_offsets: Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
-    candidate_cells: int | Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
+    vertex_offsets: OffsetsLike | None = None,
+    candidate_cells: CellsLike | None = None,
     threads: int | None = None,
-    into: Count,
+    reduce: Count,
 ) -> npt.NDArray[np.int64]: ...
 
 
 @overload
 def cover_convex_polygon(
-    polygons_xyz: Sequence[Sequence[float]]
-    | Sequence[Sequence[Sequence[float]]]
-    | npt.ArrayLike,
+    polygons_xyz: PolygonsLike,
     resolution: int,
     *,
-    vertex_offsets: Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
-    candidate_cells: int | Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
+    vertex_offsets: OffsetsLike | None = None,
+    candidate_cells: CellsLike | None = None,
     threads: int | None = None,
-    into: Sum,
+    reduce: Sum,
 ) -> npt.NDArray[np.float64]: ...
 
 
 def cover_convex_polygon(
-    polygons_xyz: Sequence[Sequence[float]]
-    | Sequence[Sequence[Sequence[float]]]
-    | npt.ArrayLike,
+    polygons_xyz: PolygonsLike,
     resolution: int,
     *,
-    vertex_offsets: Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
-    candidate_cells: int | Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
+    vertex_offsets: OffsetsLike | None = None,
+    candidate_cells: CellsLike | None = None,
     threads: int | None = None,
-    into: CoverageReducer | None = None,
+    reduce: CoverageReducer | None = None,
 ) -> Coverage | npt.NDArray[np.int64] | npt.NDArray[np.float64]:
     """Cover convex spherical polygons by HEALPix cell-center inclusion.
 
@@ -684,7 +689,7 @@ def cover_convex_polygon(
         Optional boundaries for a packed ``(vertices, 3)`` ragged batch.
     candidate_cells
         Optional RING indices restricting which cell centers are tested.
-    into
+    reduce
         Optional :class:`Count` or :class:`Sum` reducer. ``None`` returns the
         segmented ``Coverage``; a reducer returns its accumulated array and
         lets Polypix skip building the cell lists where it can.
@@ -696,7 +701,7 @@ def cover_convex_polygon(
     -------
     Coverage or ndarray
         Flat RING indices and offsets delimiting each input footprint, or the
-        reduced array when ``into`` is given.
+        reduced array when ``reduce`` is given.
 
     Raises
     ------
@@ -713,7 +718,7 @@ def cover_convex_polygon(
         if vertex_offsets is None
         else _as_packed_polygons(polygons_xyz, vertex_offsets)
     )
-    reducer = _as_coverage_reducer(into)
+    reducer = _as_coverage_reducer(reduce)
     candidates = _as_candidates(candidate_cells)
     if candidates is None:
         candidates = _selected_candidates(reducer, resolved)
@@ -732,48 +737,48 @@ def cover_convex_polygon(
 
 @overload
 def cover_cap(
-    centers_xyz: Sequence[float] | Sequence[Sequence[float]] | npt.ArrayLike,
-    radii_rad: float | Sequence[float] | npt.ArrayLike,
+    centers_xyz: VectorsLike,
+    radii_rad: ValuesLike,
     resolution: int,
     *,
-    candidate_cells: int | Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
+    candidate_cells: CellsLike | None = None,
     threads: int | None = None,
-    into: None = None,
+    reduce: None = None,
 ) -> Coverage: ...
 
 
 @overload
 def cover_cap(
-    centers_xyz: Sequence[float] | Sequence[Sequence[float]] | npt.ArrayLike,
-    radii_rad: float | Sequence[float] | npt.ArrayLike,
+    centers_xyz: VectorsLike,
+    radii_rad: ValuesLike,
     resolution: int,
     *,
-    candidate_cells: int | Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
+    candidate_cells: CellsLike | None = None,
     threads: int | None = None,
-    into: Count,
+    reduce: Count,
 ) -> npt.NDArray[np.int64]: ...
 
 
 @overload
 def cover_cap(
-    centers_xyz: Sequence[float] | Sequence[Sequence[float]] | npt.ArrayLike,
-    radii_rad: float | Sequence[float] | npt.ArrayLike,
+    centers_xyz: VectorsLike,
+    radii_rad: ValuesLike,
     resolution: int,
     *,
-    candidate_cells: int | Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
+    candidate_cells: CellsLike | None = None,
     threads: int | None = None,
-    into: Sum,
+    reduce: Sum,
 ) -> npt.NDArray[np.float64]: ...
 
 
 def cover_cap(
-    centers_xyz: Sequence[float] | Sequence[Sequence[float]] | npt.ArrayLike,
-    radii_rad: float | Sequence[float] | npt.ArrayLike,
+    centers_xyz: VectorsLike,
+    radii_rad: ValuesLike,
     resolution: int,
     *,
-    candidate_cells: int | Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
+    candidate_cells: CellsLike | None = None,
     threads: int | None = None,
-    into: CoverageReducer | None = None,
+    reduce: CoverageReducer | None = None,
 ) -> Coverage | npt.NDArray[np.int64] | npt.NDArray[np.float64]:
     """Cover exact spherical caps by HEALPix cell-center inclusion.
 
@@ -784,12 +789,12 @@ def cover_cap(
     vectors are normalized internally. Other arguments and the segmented
     result follow :func:`cover_convex_polygon`.
 
-    ``into=Count()`` counts caps per cell directly, without building cap
+    ``reduce=Count()`` counts caps per cell directly, without building cap
     coverage first. For selected cells the kernel picks whichever of the two is
     cheaper and falls back to covering once and counting when that wins.
     """
     resolved = _as_resolution(resolution)
-    reducer = _as_coverage_reducer(into)
+    reducer = _as_coverage_reducer(reduce)
     centers = _as_cap_centers(centers_xyz)
     radii = _as_cap_radii(radii_rad, centers.shape[0])
     requested_threads = _as_threads(threads)
@@ -923,66 +928,66 @@ def _reduce_coverage(
     )
 
 
-def _as_coverage_reducer(into: object) -> CoverageReducer | None:
-    if into is None or isinstance(into, (Count, Sum)):
-        return into
-    raise TypeError("into must be a Count or Sum reducer, or None.")
+def _as_coverage_reducer(reducer: object) -> CoverageReducer | None:
+    if reducer is None or isinstance(reducer, (Count, Sum)):
+        return reducer
+    raise TypeError("reduce must be a Count or Sum reducer, or None.")
 
 
 @overload
 def cover_sweep(
-    left_edge_xyz: Sequence[Sequence[float]] | npt.ArrayLike,
-    right_edge_xyz: Sequence[Sequence[float]] | npt.ArrayLike,
+    left_edge_xyz: EdgesLike,
+    right_edge_xyz: EdgesLike,
     resolution: int,
     *,
-    candidate_cells: int | Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
+    candidate_cells: CellsLike | None = None,
     threads: int | None = None,
-    into: None = None,
+    reduce: None = None,
 ) -> Coverage: ...
 
 
 @overload
 def cover_sweep(
-    left_edge_xyz: Sequence[Sequence[float]] | npt.ArrayLike,
-    right_edge_xyz: Sequence[Sequence[float]] | npt.ArrayLike,
+    left_edge_xyz: EdgesLike,
+    right_edge_xyz: EdgesLike,
     resolution: int,
     *,
-    candidate_cells: int | Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
+    candidate_cells: CellsLike | None = None,
     threads: int | None = None,
-    into: Count,
+    reduce: Count,
 ) -> npt.NDArray[np.int64]: ...
 
 
 @overload
 def cover_sweep(
-    left_edge_xyz: Sequence[Sequence[float]] | npt.ArrayLike,
-    right_edge_xyz: Sequence[Sequence[float]] | npt.ArrayLike,
+    left_edge_xyz: EdgesLike,
+    right_edge_xyz: EdgesLike,
     resolution: int,
     *,
-    candidate_cells: int | Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
+    candidate_cells: CellsLike | None = None,
     threads: int | None = None,
-    into: Sum,
+    reduce: Sum,
 ) -> npt.NDArray[np.float64]: ...
 
 
 def cover_sweep(
-    left_edge_xyz: Sequence[Sequence[float]] | npt.ArrayLike,
-    right_edge_xyz: Sequence[Sequence[float]] | npt.ArrayLike,
+    left_edge_xyz: EdgesLike,
+    right_edge_xyz: EdgesLike,
     resolution: int,
     *,
-    candidate_cells: int | Sequence[int] | npt.NDArray[np.integer[Any]] | None = None,
+    candidate_cells: CellsLike | None = None,
     threads: int | None = None,
-    into: CoverageReducer | None = None,
+    reduce: CoverageReducer | None = None,
 ) -> Coverage | npt.NDArray[np.int64] | npt.NDArray[np.float64]:
     """Cover the quadrilateral segments between two sampled spherical edges.
 
     Each output segment covers ``[left[i], right[i], right[i+1], left[i+1]]``.
     Repeated paired samples create a zero-area segment and are rejected.
-    Inputs, resolution, candidates, threading, ``into``, return value, and
+    Inputs, resolution, candidates, threading, ``reduce``, return value, and
     errors follow :func:`cover_convex_polygon`.
     """
     resolved = _as_resolution(resolution)
-    reducer = _as_coverage_reducer(into)
+    reducer = _as_coverage_reducer(reduce)
     left = _as_float_matrix(left_edge_xyz, 3, "left_edge_xyz")
     right = _as_float_matrix(right_edge_xyz, 3, "right_edge_xyz")
     if left.shape[0] != right.shape[0]:
@@ -1007,8 +1012,8 @@ def _as_minimum_sources(value: int) -> int:
     return minimum_sources
 
 
-def _prepared_sources(
-    sources: Coverage | Sequence[Coverage],
+def _prepared_timelines(
+    timelines: Coverage | Sequence[Coverage],
     minimum_sources: int,
     operation: str,
 ) -> tuple[
@@ -1019,28 +1024,28 @@ def _prepared_sources(
     int,
     int,
 ]:
-    """Validate aligned coverage sources and view them for the native call."""
+    """Validate aligned coverage timelines and view them for the native call."""
     threshold = _as_minimum_sources(minimum_sources)
     normalized: tuple[Coverage, ...]
-    if isinstance(sources, Coverage):
-        normalized = (sources,)
-    elif isinstance(sources, Sequence):
-        normalized = tuple(sources)
+    if isinstance(timelines, Coverage):
+        normalized = (timelines,)
+    elif isinstance(timelines, Sequence):
+        normalized = tuple(timelines)
     else:
-        raise TypeError("sources must be a Coverage or a sequence of Coverage values.")
+        raise TypeError(
+            "timelines must be a Coverage or a sequence of Coverage values."
+        )
     if not normalized:
-        raise ValueError(f"{operation}() requires at least one coverage source.")
+        raise ValueError(f"{operation}() requires at least one timeline.")
     if not all(isinstance(source, Coverage) for source in normalized):
-        raise TypeError("sources must contain only Coverage values.")
+        raise TypeError("timelines must contain only Coverage values.")
 
     resolution = normalized[0].resolution
     if any(source.resolution != resolution for source in normalized[1:]):
-        raise ValueError("all coverage sources must use the same resolution.")
+        raise ValueError("all timelines must use the same resolution.")
     segment_count = normalized[0].segment_count
     if any(source.segment_count != segment_count for source in normalized[1:]):
-        raise ValueError(
-            "all coverage sources must contain the same number of segments."
-        )
+        raise ValueError("all timelines must contain the same number of segments.")
 
     return (
         [_trusted_uint64(source.cells) for source in normalized],
@@ -1054,27 +1059,27 @@ def _prepared_sources(
 
 @overload
 def occupancy(
-    sources: Coverage | Sequence[Coverage],
+    timelines: Coverage | Sequence[Coverage],
     *,
     minimum_sources: int = 1,
-    into: None = None,
+    reduce: None = None,
 ) -> OccupancyRuns: ...
 
 
 @overload
 def occupancy(
-    sources: Coverage | Sequence[Coverage],
+    timelines: Coverage | Sequence[Coverage],
     *,
     minimum_sources: int = 1,
-    into: Stats,
+    reduce: Stats,
 ) -> OccupancyStats: ...
 
 
 def occupancy(
-    sources: Coverage | Sequence[Coverage],
+    timelines: Coverage | Sequence[Coverage],
     *,
     minimum_sources: int = 1,
-    into: Stats | None = None,
+    reduce: Stats | None = None,
 ) -> OccupancyRuns | OccupancyStats:
     """Read aligned coverage segments as ordered occupancy bins.
 
@@ -1087,19 +1092,19 @@ def occupancy(
 
     By default every maximal half-open run is kept, which costs memory in
     proportion to the run count; that approaches the hit count when cells are
-    occupied briefly and repeatedly. ``into=Stats()`` instead accumulates
+    occupied briefly and repeatedly. ``reduce=Stats()`` instead accumulates
     per-cell counts and complete internal gaps in one pass, without building
     the runs at all. Keep the default when the boundaries themselves are the
     answer: percentiles, minimum-duration filtering, short-gap merging, or
     arbitrary per-run timestamps.
     """
-    if into is not None and not isinstance(into, Stats):
-        raise TypeError("into must be a Stats reducer, or None.")
-    cells, offsets, resolution, segment_count, threshold, count = _prepared_sources(
-        sources, minimum_sources, "occupancy"
+    if reduce is not None and not isinstance(reduce, Stats):
+        raise TypeError("reduce must be a Stats reducer, or None.")
+    cells, offsets, resolution, segment_count, threshold, count = _prepared_timelines(
+        timelines, minimum_sources, "occupancy"
     )
     native_threshold = min(threshold, count + 1)
-    if isinstance(into, Stats):
+    if isinstance(reduce, Stats):
         return OccupancyStats._from_native(
             _occupancy_stats(cells, offsets, resolution, native_threshold),
             resolution=resolution,
@@ -1121,7 +1126,7 @@ def occupancy(
 
 
 def cell_centers(
-    cells: int | Sequence[int] | npt.NDArray[np.integer[Any]],
+    cells: CellsLike,
     resolution: int,
 ) -> npt.NDArray[np.float64]:
     """Return unit-vector centers for HEALPix RING indices.
@@ -1135,7 +1140,7 @@ def cell_centers(
 
 
 def cell_at(
-    vectors_xyz: Sequence[float] | Sequence[Sequence[float]] | npt.ArrayLike,
+    vectors_xyz: VectorsLike,
     resolution: int,
 ) -> npt.NDArray[np.int64]:
     """Return the HEALPix RING cell containing each Cartesian direction.
@@ -1155,7 +1160,7 @@ def cell_at(
 
 
 def cell_corners(
-    cells: int | Sequence[int] | npt.NDArray[np.integer[Any]],
+    cells: CellsLike,
     resolution: int,
 ) -> npt.NDArray[np.float64]:
     """Return four unit-vector corners for HEALPix RING indices.
@@ -1169,12 +1174,19 @@ def cell_corners(
 
 
 __all__ = [
+    "CellsLike",
     "Count",
     "Coverage",
+    "CoverageReducer",
+    "EdgesLike",
     "OccupancyRuns",
     "OccupancyStats",
+    "OffsetsLike",
+    "PolygonsLike",
     "Stats",
     "Sum",
+    "ValuesLike",
+    "VectorsLike",
     "__version__",
     "cell_at",
     "cell_centers",

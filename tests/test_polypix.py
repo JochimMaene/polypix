@@ -282,7 +282,9 @@ class PolypixTests(unittest.TestCase):
                 np.testing.assert_array_equal(coverage.cells, [])
                 np.testing.assert_array_equal(coverage.offsets, [0])
                 np.testing.assert_array_equal(
-                    px.cover_cap(empty, radii, resolution=resolution, into=px.Count()),
+                    px.cover_cap(
+                        empty, radii, resolution=resolution, reduce=px.Count()
+                    ),
                     np.zeros(12 * 4**resolution, dtype=np.int64),
                 )
                 np.testing.assert_array_equal(
@@ -290,7 +292,7 @@ class PolypixTests(unittest.TestCase):
                         empty,
                         radii,
                         resolution=resolution,
-                        into=px.Count(cells=[7, 1, 7]),
+                        reduce=px.Count(cells=[7, 1, 7]),
                     ),
                     [0, 0, 0],
                 )
@@ -337,10 +339,10 @@ class PolypixTests(unittest.TestCase):
         ).astype(np.int64, copy=False)
 
         serial = px.cover_cap(
-            centers, radii, resolution=resolution, into=px.Count(), threads=1
+            centers, radii, resolution=resolution, reduce=px.Count(), threads=1
         )
         parallel = px.cover_cap(
-            centers, radii, resolution=resolution, into=px.Count(), threads=4
+            centers, radii, resolution=resolution, reduce=px.Count(), threads=4
         )
 
         self.assertEqual(serial.dtype, np.dtype("int64"))
@@ -351,7 +353,7 @@ class PolypixTests(unittest.TestCase):
             centers,
             radii,
             resolution=resolution,
-            into=px.Count(cells=requested),
+            reduce=px.Count(cells=requested),
             threads=1,
         )
         np.testing.assert_array_equal(
@@ -373,7 +375,7 @@ class PolypixTests(unittest.TestCase):
         ).astype(np.int64, copy=False)
         np.testing.assert_array_equal(
             px.cover_cap(
-                centers, radii, resolution=resolution, into=px.Count(), threads=1
+                centers, radii, resolution=resolution, reduce=px.Count(), threads=1
             ),
             expected,
         )
@@ -386,18 +388,18 @@ class PolypixTests(unittest.TestCase):
                 [-1.0, 0.0, 0.0],
                 math.pi,
                 resolution=high_resolution,
-                into=px.Count(cells=high_cells),
+                reduce=px.Count(cells=high_cells),
             ),
             np.ones(high_cells.size, dtype=np.int64),
         )
         queried_empty = px.cover_cap(
-            [1.0, 0.0, 0.0], 0.1, resolution=high_resolution, into=px.Count(cells=[])
+            [1.0, 0.0, 0.0], 0.1, resolution=high_resolution, reduce=px.Count(cells=[])
         )
         self.assertEqual(queried_empty.shape, (0,))
         self.assertEqual(queried_empty.dtype, np.dtype("int64"))
         with self.assertRaisesRegex(MemoryError, "too large"):
             px.cover_cap(
-                [1.0, 0.0, 0.0], 0.1, resolution=high_resolution, into=px.Count()
+                [1.0, 0.0, 0.0], 0.1, resolution=high_resolution, reduce=px.Count()
             )
         with self.assertRaisesRegex(MemoryError, "too large"):
             px.cover_cap([1.0, 0.0, 0.0], math.pi, high_resolution)
@@ -416,7 +418,7 @@ class PolypixTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "shape"):
             px.cover_cap(np.zeros((2, 2)), 0.1, resolution=3)
         with self.assertRaisesRegex(ValueError, "valid RING indices"):
-            px.cover_cap(center, 0.1, resolution=3, into=px.Count(cells=[12 * 4**3]))
+            px.cover_cap(center, 0.1, resolution=3, reduce=px.Count(cells=[12 * 4**3]))
 
     def test_cover_accepts_dense_and_ragged_batches(self) -> None:
         polygons = [
@@ -991,7 +993,7 @@ class PolypixTests(unittest.TestCase):
                     np.asarray([[1.0, 0.0, 0.0]]),
                     0.1,
                     4,
-                    into=px.Count(cells=negative),
+                    reduce=px.Count(cells=negative),
                 ),
             ),
             (
@@ -1058,7 +1060,7 @@ class PolypixTests(unittest.TestCase):
         capped = px.cover_cap(center, radii, 5)
         self.assertGreater(capped.cells.size, 0)
         np.testing.assert_array_equal(
-            px.cover_cap(center, radii, 5, into=px.Count()),
+            px.cover_cap(center, radii, 5, reduce=px.Count()),
             capped.reduce(px.Count()),
         )
 
@@ -1259,12 +1261,19 @@ class PolypixTests(unittest.TestCase):
         self.assertEqual(
             px.__all__,
             [
+                "CellsLike",
                 "Count",
                 "Coverage",
+                "CoverageReducer",
+                "EdgesLike",
                 "OccupancyRuns",
                 "OccupancyStats",
+                "OffsetsLike",
+                "PolygonsLike",
                 "Stats",
                 "Sum",
+                "ValuesLike",
+                "VectorsLike",
                 "__version__",
                 "cell_at",
                 "cell_centers",

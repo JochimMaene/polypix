@@ -497,7 +497,7 @@ def test_cover_sweep_coarse_diagonal_count(
     benchmark, coarse_diagonal_strip_edges: tuple[np.ndarray, np.ndarray]
 ) -> None:
     left, right = coarse_diagonal_strip_edges
-    counts = benchmark(px.cover_sweep, left, right, 9, threads=1, into=px.Count())
+    counts = benchmark(px.cover_sweep, left, right, 9, threads=1, reduce=px.Count())
 
     assert counts.shape == (px.cell_count(9),)
 
@@ -560,7 +560,7 @@ def test_cover_cap_dense_count_constellation_batch(
 ) -> None:
     centers, radii = constellation_caps
     counts = benchmark(
-        px.cover_cap, centers, radii, 6, into=px.Count(), threads=threads
+        px.cover_cap, centers, radii, 6, reduce=px.Count(), threads=threads
     )
 
     assert counts.shape == (12 * 4**6,)
@@ -616,7 +616,7 @@ def test_cover_cap_selected_count_small_request(
     centers, radii = constellation_caps
     requested = np.arange(64, dtype=np.int64)
     counts = benchmark(
-        px.cover_cap, centers, radii, 6, into=px.Count(cells=requested), threads=1
+        px.cover_cap, centers, radii, 6, reduce=px.Count(cells=requested), threads=1
     )
 
     assert counts.shape == requested.shape
@@ -640,7 +640,7 @@ def test_cover_polygon_selected_count_small_request(
         px.cover_convex_polygon,
         footprints,
         9,
-        into=px.Count(cells=requested),
+        reduce=px.Count(cells=requested),
         threads=1,
     )
 
@@ -665,7 +665,7 @@ def test_cover_polygon_selected_count_large_request(
         px.cover_convex_polygon,
         footprints,
         9,
-        into=px.Count(cells=requested),
+        reduce=px.Count(cells=requested),
         threads=1,
     )
 
@@ -688,7 +688,7 @@ def test_cover_sweep_selected_sum_small_request(
         left,
         right,
         9,
-        into=px.Sum(values, cells=requested),
+        reduce=px.Sum(values, cells=requested),
         threads=1,
     )
 
@@ -711,7 +711,7 @@ def test_cover_cap_selected_count_large_request(
     centers, radii = constellation_caps
     requested = np.arange(100_000, dtype=np.int64)
     counts = benchmark(
-        px.cover_cap, centers, radii, 8, into=px.Count(cells=requested), threads=1
+        px.cover_cap, centers, radii, 8, reduce=px.Count(cells=requested), threads=1
     )
 
     assert counts.shape == requested.shape
@@ -791,7 +791,7 @@ def test_occupancy_stats_many_sources_eo_shape(
     eo_shaped_coverage: px.Coverage,
 ) -> None:
     """The fused statistics pass must not build the runs it summarizes."""
-    stats = benchmark(px.occupancy, [eo_shaped_coverage] * 10, into=px.Stats())
+    stats = benchmark(px.occupancy, [eo_shaped_coverage] * 10, reduce=px.Stats())
 
     assert stats.cells.size == 49_152
     assert stats.run_counts.dtype == np.int64
@@ -806,7 +806,7 @@ def test_occupancy_stats_sparse_high_resolution(
     benchmark,
     many_sparse_sources: list[px.Coverage],
 ) -> None:
-    stats = benchmark(px.occupancy, many_sparse_sources, into=px.Stats())
+    stats = benchmark(px.occupancy, many_sparse_sources, reduce=px.Stats())
 
     np.testing.assert_array_equal(stats.cells, [123])
     np.testing.assert_array_equal(stats.run_counts, [1])

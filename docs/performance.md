@@ -43,10 +43,10 @@ Concatenating all chunks recreates the original memory requirement.
 | What you need | Use | What you avoid |
 | --- | --- | --- |
 | Membership per region | `cover_cap()`, `cover_convex_polygon()`, `cover_sweep()` | nothing; membership is the point |
-| Counts or weighted values per cell | `into=Count()`, `into=Sum(values)` | sorting, Python accumulation, one repeated value per hit |
-| Caps per cell | `cover_cap(..., into=Count())` | one cell ID per cap-cell hit, plus a `bincount()` |
+| Counts or weighted values per cell | `reduce=Count()`, `reduce=Sum(values)` | sorting, Python accumulation, one repeated value per hit |
+| Caps per cell | `cover_cap(..., reduce=Count())` | one cell ID per cap-cell hit, plus a `bincount()` |
 | Complete occupied-bin runs | `occupancy()` | expanding and sorting every hit as an event |
-| Per-cell counts and internal gaps | `occupancy(..., into=Stats())` | building every run just to reduce it away |
+| Per-cell counts and internal gaps | `occupancy(..., reduce=Stats())` | building every run just to reduce it away |
 
 ## Choosing a dense or selected reduction
 
@@ -79,23 +79,23 @@ cell count. Size the unavoidable output with the table above.
 This is the common case for a scanning constellation: a cell is observed
 briefly and revisited hours later, so the run count approaches the hit count and
 runs compress nothing. When the runs only feed per-cell counts and complete
-internal gaps, `occupancy(..., into=Stats())` accumulates them in one pass and
+internal gaps, `occupancy(..., reduce=Stats())` accumulates them in one pass and
 allocates by represented cell instead, which is smaller by orders of magnitude
 on that shape of workload. Keep the default result when the boundaries
 themselves are the answer.
 
 ## Dense counts versus selected cells
 
-A dense `cover_cap(..., into=Count())` consumes analytic RING spans and is
+A dense `cover_cap(..., reduce=Count())` consumes analytic RING spans and is
 often faster than evaluating individual query cells:
 
 ```python
-dense = px.cover_cap(centers_xyz, radii_rad, resolution=8, into=px.Count())
+dense = px.cover_cap(centers_xyz, radii_rad, resolution=8, reduce=px.Count())
 sparse = px.cover_cap(
     centers_xyz,
     radii_rad,
     resolution=20,
-    into=px.Count(cells=small_site_cell_list),
+    reduce=px.Count(cells=small_site_cell_list),
 )
 ```
 

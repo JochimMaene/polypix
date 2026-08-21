@@ -204,7 +204,7 @@ def test_occupancy_stats_match_statistics_derived_from_runs(resolution: int) -> 
                 )
             )
         threshold = int(rng.integers(1, source_count + 2))
-        stats = px.occupancy(sources, minimum_sources=threshold, into=px.Stats())
+        stats = px.occupancy(sources, minimum_sources=threshold, reduce=px.Stats())
         runs = px.occupancy(sources, minimum_sources=threshold)
 
         np.testing.assert_array_equal(stats.cells, runs.cells)

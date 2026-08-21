@@ -357,21 +357,24 @@ def test_results_are_invariant_across_thread_counts(threads: int) -> None:
         ),
     ]:
         np.testing.assert_array_equal(
-            cover(**kwargs, resolution=resolution, threads=1, into=px.Count()),
-            cover(**kwargs, resolution=resolution, threads=threads, into=px.Count()),
+            cover(**kwargs, resolution=resolution, threads=1, reduce=px.Count()),
+            cover(**kwargs, resolution=resolution, threads=threads, reduce=px.Count()),
             err_msg=f"{name} dense Count",
         )
         # Sums are bitwise-compared on purpose: a reassociated partial sum is
         # a behaviour change, not a rounding detail.
         np.testing.assert_array_equal(
             cover(
-                **kwargs, resolution=resolution, threads=1, into=px.Sum(segment_values)
+                **kwargs,
+                resolution=resolution,
+                threads=1,
+                reduce=px.Sum(segment_values),
             ),
             cover(
                 **kwargs,
                 resolution=resolution,
                 threads=threads,
-                into=px.Sum(segment_values),
+                reduce=px.Sum(segment_values),
             ),
             err_msg=f"{name} dense Sum",
         )
@@ -379,7 +382,7 @@ def test_results_are_invariant_across_thread_counts(threads: int) -> None:
 
 @pytest.mark.parametrize("threads", [1, None])
 def test_fused_reducers_match_materialize_then_reduce(threads: int | None) -> None:
-    """``into=`` must be an optimization, never a different answer.
+    """``reduce=`` must be an optimization, never a different answer.
 
     ``cover_cap`` has a fused kernel for dense counts and for small
     selections; polygons and sweeps materialize a ``Coverage`` and reduce it,
@@ -436,7 +439,7 @@ def test_fused_reducers_match_materialize_then_reduce(threads: int | None) -> No
             px.Sum(values, cells=selected),
         ]:
             np.testing.assert_array_equal(
-                cover(into=reducer),
+                cover(reduce=reducer),
                 coverage.reduce(reducer),
                 err_msg=f"{name} {type(reducer).__name__} threads={threads}",
             )
@@ -503,8 +506,8 @@ def test_occupancy_agrees_across_memory_profiles(minimum_sources: int) -> None:
         )
 
     dense_stats, sparse_stats = (
-        occupancy(6, into=px.Stats()),
-        occupancy(10, into=px.Stats()),
+        occupancy(6, reduce=px.Stats()),
+        occupancy(10, reduce=px.Stats()),
     )
     for name in [
         "cells",
@@ -672,7 +675,7 @@ def test_selected_reducers_ignore_how_the_kernel_reaches_the_cells(
                 ):
                     np.testing.assert_array_equal(
                         px.cover_convex_polygon(
-                            quads, resolution, threads=1, into=reducer
+                            quads, resolution, threads=1, reduce=reducer
                         ),
                         coverage.reduce(reducer),
                     )
@@ -687,7 +690,7 @@ def test_explicit_candidates_still_bound_a_selected_reduction() -> None:
     rng = np.random.default_rng(20260827)
     resolution = 6
     quads = _grid_quads(rng, 200, 2.0)
-    dense = px.cover_convex_polygon(quads, resolution, threads=1, into=px.Count())
+    dense = px.cover_convex_polygon(quads, resolution, threads=1, reduce=px.Count())
     covered = np.flatnonzero(dense)
     inside, outside = covered[:8], covered[8:16]
     selected = np.concatenate([inside, outside])
@@ -697,7 +700,7 @@ def test_explicit_candidates_still_bound_a_selected_reduction() -> None:
         resolution,
         threads=1,
         candidate_cells=inside,
-        into=px.Count(cells=selected),
+        reduce=px.Count(cells=selected),
     )
     np.testing.assert_array_equal(restricted[: inside.size], dense[inside])
     np.testing.assert_array_equal(
@@ -745,7 +748,7 @@ def test_selected_cap_and_sweep_reductions_match_materialize_then_reduce(
         values = rng.normal(size=segments)
         for reducer in (px.Count(cells=small), px.Sum(values, cells=small)):
             np.testing.assert_array_equal(
-                cover(into=reducer),
+                cover(reduce=reducer),
                 coverage.reduce(reducer),
                 err_msg=f"{name} {type(reducer).__name__}",
             )

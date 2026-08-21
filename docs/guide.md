@@ -278,7 +278,7 @@ When runs are only a step on the way to per-cell revisit numbers, skip
 building them:
 
 ```{doctest}
->>> stats = px.occupancy(swath_coverage, into=px.Stats())
+>>> stats = px.occupancy(swath_coverage, reduce=px.Stats())
 >>> observed_once = stats.run_counts == 1
 >>> bool(np.all(stats.maximum_internal_gap_steps[observed_once] == 0))
 True
@@ -301,7 +301,7 @@ builds the region–cell pairs:
 ...     unit_vector(cap_lon, cap_lat),
 ...     np.radians(cap_radius_deg),
 ...     resolution=4,
-...     into=px.Count(),
+...     reduce=px.Count(),
 ... )
 >>> counts.shape
 (3072,)
@@ -315,7 +315,7 @@ At high resolution, query only the cells you need:
 ...     unit_vector(cap_lon, cap_lat),
 ...     np.radians(cap_radius_deg),
 ...     resolution=4,
-...     into=px.Count(cells=site_cells),
+...     reduce=px.Count(cells=site_cells),
 ... )
 >>> site_counts.shape
 (2,)

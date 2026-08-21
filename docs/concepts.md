@@ -79,7 +79,7 @@ Caps and footprints use the same rule. The accepted geometry and its numerical
 limits are in the [geometry contract](api.md#geometry-contract).
 
 When you only want to know *how many* caps cover each cell, reach for
-`cover_cap(..., into=px.Count())` rather than the default `Coverage`. It
+`cover_cap(..., reduce=px.Count())` rather than the default `Coverage`. It
 accumulates counts
 directly instead of emitting one cell ID per cap–cell pair.
 
@@ -121,7 +121,7 @@ end-to-start, start-to-start, a finite-horizon edge gap, or a cyclic gap.
 
 Runs are often only an intermediate. If all you need per cell is how many times
 it was occupied, the total and largest complete internal gap, and the bounds of
-its observed window, `occupancy(..., into=px.Stats())` computes exactly that
+its observed window, `occupancy(..., reduce=px.Stats())` computes exactly that
 in one pass and
 never builds the runs. It reports the same thresholded, source-unioned axis for
 every field, and leaves the leading, trailing, and cyclic policies to you by
@@ -170,7 +170,7 @@ Candidates are a set: order and duplicates are discarded. Filtering is still
 center sampled, so it does not become a conservative index, and a dense
 candidate set can end up slower than just scanning the rings.
 
-You do not need this to reduce over a sparse set of cells. `into=Count(cells=
+You do not need this to reduce over a sparse set of cells. `reduce=Count(cells=
 aoi_cells)` already restricts the scan when the selection is small enough to be
 worth it, and keeps the order and duplicates of your query in the result. Reach
 for `candidate_cells` when you want the `Coverage` itself restricted, or when

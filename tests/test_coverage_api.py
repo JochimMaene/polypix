@@ -114,7 +114,7 @@ def test_empty_cap_batches_validate_scalar_radii() -> None:
         with pytest.raises(ValueError, match="radii_rad"):
             px.cover_cap(empty, invalid, resolution=1)
         with pytest.raises(ValueError, match="radii_rad"):
-            px.cover_cap(empty, invalid, resolution=1, into=px.Count())
+            px.cover_cap(empty, invalid, resolution=1, reduce=px.Count())
 
 
 def test_reducer_tokens_use_identity_equality() -> None:

@@ -66,13 +66,13 @@ def test_fused_cap_counts_match_covering_then_reducing() -> None:
     coverage = px.cover_cap(centers, radii, resolution=5, threads=1)
 
     np.testing.assert_array_equal(
-        px.cover_cap(centers, radii, resolution=5, into=px.Count(), threads=1),
+        px.cover_cap(centers, radii, resolution=5, reduce=px.Count(), threads=1),
         (coverage).reduce(px.Count()),
     )
     requested = np.asarray([0, 8, 8, 100, 3000], dtype=np.int64)
     np.testing.assert_array_equal(
         px.cover_cap(
-            centers, radii, resolution=5, into=px.Count(cells=requested), threads=1
+            centers, radii, resolution=5, reduce=px.Count(cells=requested), threads=1
         ),
         (coverage).reduce(px.Count(cells=requested)),
     )
@@ -81,7 +81,7 @@ def test_fused_cap_counts_match_covering_then_reducing() -> None:
 def test_cap_counts_agree_on_both_sides_of_the_selected_work_estimate() -> None:
     """Both sides of the fuse/cover decision must return the same counts.
 
-    ``cover_cap(into=Count(cells=...))`` fuses a small request and covers first
+    ``cover_cap(reduce=Count(cells=...))`` fuses a small request and covers first
     for a large one, because fusing costs one cap test per requested cell.
     """
     rng = np.random.default_rng(20240819)
@@ -99,7 +99,7 @@ def test_cap_counts_agree_on_both_sides_of_the_selected_work_estimate() -> None:
     ):
         np.testing.assert_array_equal(
             px.cover_cap(
-                centers, radii, resolution, into=px.Count(cells=requested), threads=1
+                centers, radii, resolution, reduce=px.Count(cells=requested), threads=1
             ),
             coverage.reduce(px.Count(cells=requested)),
         )
@@ -109,7 +109,7 @@ def test_fused_cap_counts_stay_available_for_caps_too_large_to_store() -> None:
     """A whole-sphere cap at resolution 29 can only be answered by fusing."""
     requested = np.asarray([12 * 4**29 - 1, 0, 6 * 4**29, 0], dtype=np.uint64)
     np.testing.assert_array_equal(
-        px.cover_cap([-1.0, 0.0, 0.0], math.pi, 29, into=px.Count(cells=requested)),
+        px.cover_cap([-1.0, 0.0, 0.0], math.pi, 29, reduce=px.Count(cells=requested)),
         np.ones(requested.size, dtype=np.int64),
     )
 

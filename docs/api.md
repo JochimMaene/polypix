@@ -35,7 +35,7 @@ cover_convex_polygon(
     vertex_offsets=None,
     candidate_cells=None,
     threads=None,
-    into=None,
+    reduce=None,
 )
 ```
 
@@ -68,7 +68,7 @@ Cover convex spherical polygons by HEALPix cell-center inclusion.
   and larger values set the reusable worker-pool maximum, capped by the
   host.
 
-`into`
+`reduce`
 : *[`Count`](#reducers), [`Sum`](#reducers), or None, default None*. `None`
   returns the segmented `Coverage`. A reducer returns its accumulated array
   instead and lets Polypix skip building the cell lists where it can. See
@@ -119,7 +119,7 @@ for the performance trade-offs.
 ```python
 cover_cap(
     centers_xyz, radii_rad, resolution, *,
-    candidate_cells=None, threads=None, into=None,
+    candidate_cells=None, threads=None, reduce=None,
 )
 ```
 
@@ -138,18 +138,18 @@ Cover exact spherical caps by HEALPix cell-center inclusion.
   center. A length-one array is not broadcast. Radii are in radians and must
   lie in the closed interval `[0, pi]`.
 
-`resolution`, `candidate_cells`, `threads`, `into`
+`resolution`, `candidate_cells`, `threads`, `reduce`
 : As in [`cover_convex_polygon`](#cover_convex_polygon).
 
 **Returns**
 
 `Coverage`
-: With `into=None`, one segment per input cap. A single `(3,)` center retains
+: With `reduce=None`, one segment per input cap. A single `(3,)` center retains
   one segment.
 
 `ndarray`
-: With `into=Count()` or `into=Sum(values)`, the accumulated array described
-  under [reducers](#reducers). `into=Count()` accumulates private RING spans
+: With `reduce=Count()` or `reduce=Sum(values)`, the accumulated array described
+  under [reducers](#reducers). `reduce=Count()` accumulates private RING spans
   without building the per-cap cell lists.
 
 **Raises**
@@ -162,7 +162,7 @@ Cover exact spherical caps by HEALPix cell-center inclusion.
 
 `MemoryError`
 : The explicit segmented result does not fit in memory; use
-  `into=Count()` if counts are the intended result.
+  `reduce=Count()` if counts are the intended result.
 
 **Notes**
 
@@ -177,7 +177,7 @@ thread before the call returns.
 
 Use this function instead of approximating a circular field of view with a
 many-sided polygon. When only the number of caps covering each cell matters,
-[`into=Count()`](#reducers) avoids storing repeated
+[`reduce=Count()`](#reducers) avoids storing repeated
 cap-cell IDs.
 
 ## cover_sweep
@@ -185,7 +185,7 @@ cap-cell IDs.
 ```python
 cover_sweep(
     left_edge_xyz, right_edge_xyz, resolution, *,
-    candidate_cells=None, threads=None, into=None,
+    candidate_cells=None, threads=None, reduce=None,
 )
 ```
 
@@ -200,19 +200,19 @@ called a HEALPix "strip".
 `left_edge_xyz`, `right_edge_xyz`
 : *array_like*. `(samples, 3)` vector arrays of equal length.
 
-`resolution`, `candidate_cells`, `threads`, `into`
+`resolution`, `candidate_cells`, `threads`, `reduce`
 : As in [`cover_convex_polygon`](#cover_convex_polygon).
 
 **Returns**
 
 `Coverage`
-: With `into=None`, `max(N - 1, 0)` segments for `N` paired samples, where
+: With `reduce=None`, `max(N - 1, 0)` segments for `N` paired samples, where
   segment `i` covers the quadrilateral
   `[left[i], right[i], right[i+1], left[i+1]]`. Zero or one paired sample
   yields zero segments.
 
 `ndarray`
-: With `into=Count()` or `into=Sum(values)`, the accumulated array described
+: With `reduce=Count()` or `reduce=Sum(values)`, the accumulated array described
   under [reducers](#reducers).
 
 **Raises**
@@ -247,7 +247,7 @@ is part of the input contract. See
 ## occupancy
 
 ```python
-occupancy(sources, *, minimum_sources=1, into=None)
+occupancy(timelines, *, minimum_sources=1, reduce=None)
 ```
 
 Read one `Coverage`, or aligned coverage belonging to multiple sources, as
@@ -262,17 +262,19 @@ empty separator bin.
 
 **Parameters**
 
-`sources`
-: *Coverage or nonempty sequence of Coverage*. One segmented result per source
-  entry, all with the same resolution and segment count. Sequence positions are
-  counted independently, so source uniqueness is a caller responsibility.
+`timelines`
+: *Coverage or nonempty sequence of Coverage*. One segmented result per source,
+  all with the same resolution and segment count. Each entry's segments are
+  read as consecutive, temporally adjacent bins in ascending order. Sequence
+  positions are counted independently, so source uniqueness is a caller
+  responsibility.
 
 `minimum_sources`
 : *int, default 1*. Positive number of simultaneous source entries required for
   a cell to qualify. A threshold larger than the source count returns an empty
   result.
 
-`into`
+`reduce`
 : *[`Stats`](#reducers) or None, default None*. Selects the result. Omit it to
   get every run. See [Choosing a reducer](#choosing-a-reducer).
 
@@ -285,7 +287,7 @@ empty separator bin.
 **Raises**
 
 `TypeError`
-: `sources` or `into` contains another type, or the resolution is invalid.
+: `timelines` or `reduce` contains another type, or the resolution is invalid.
 
 `ValueError`
 : The sequence is empty, the threshold is not positive, or source grids or
@@ -302,7 +304,7 @@ boundary times are uncertain at the input sampling scale.
 ## Reducers
 
 A reducer names the result you want, and the covering calls and `occupancy()`
-accept one through `into=`. Passing `into=None` returns the full
+accept one through `reduce=`. Passing `reduce=None` returns the full
 `Coverage` or `OccupancyRuns` instead, which is the default.
 
 ```python
@@ -333,13 +335,13 @@ A reducer is a request, not a promise about the algorithm. Polypix fuses the
 accumulation into the geometry kernel where that is faster and builds the
 membership otherwise; the result is identical either way.
 
-`cover_cap(..., into=Count())` is the case where fusing currently wins by a
+`cover_cap(..., reduce=Count())` is the case where fusing currently wins by a
 wide margin, because the cap kernel accumulates private RING spans and never
 allocates cap-cell membership. Pass `candidate_cells` and it falls back to
 building them.
 
 Naming the cells you want is the other large win, and it applies to every
-covering call. `into=Count(cells=...)` and `into=Sum(..., cells=...)` say the
+covering call. `reduce=Count(cells=...)` and `reduce=Sum(..., cells=...)` say the
 result depends on those cells and no others, so a small selection is restricted
 to before the scan rather than gathered from a complete result. There is nothing
 to pass: supplying the same set as `candidate_cells` by hand gains nothing, and
@@ -495,7 +497,7 @@ coverage = px.Coverage.from_arrays(
 
 `reduce(reducer)`
 : Accumulate this coverage with a [`Count`](#reducers) or [`Sum`](#reducers),
-  returning the same array a fused `into=` call would have produced. Use it to
+  returning the same array a fused `reduce=` call would have produced. Use it to
   take several reductions from one stored coverage.
 
 `segment_indices()`
@@ -589,7 +591,7 @@ represented cells.
 
 ## OccupancyStats
 
-`OccupancyStats` values are produced only by `occupancy(..., into=Stats())`;
+`OccupancyStats` values are produced only by `occupancy(..., reduce=Stats())`;
 manual
 construction is intentionally disabled.
 
