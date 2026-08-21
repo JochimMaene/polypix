@@ -776,66 +776,44 @@ def test_count_coverage_selected_sparse_high_resolution(
     assert int(counts.sum()) == coverage.cells.size
 
 
-def test_occupancy_runs_many_sources_eo_shape(
+def test_occupancy_many_sources_eo_shape(
     benchmark,
     eo_shaped_coverage: px.Coverage,
 ) -> None:
-    runs = benchmark(px.occupancy, [eo_shaped_coverage] * 10)
+    """The statistics pass must not build the runs it summarizes.
 
-    assert runs.segment_count == 14_400
-    assert runs.cells.dtype == np.int64
-    assert runs.starts.dtype == np.int64
-    assert runs.cells.size == 49_152
-    assert runs.starts.size == 921_600
-    assert int(runs.run_counts.sum()) == 921_600
+    This shape is why: 9.28 million hits produce 921,600 runs, almost one
+    boundary pair per represented cell per source.
+    """
+    stats = benchmark(px.occupancy, [eo_shaped_coverage] * 10)
+
+    assert stats.segment_count == 14_400
+    assert stats.cells.dtype == np.int64
+    assert stats.run_counts.dtype == np.int64
+    assert stats.cells.size == 49_152
+    assert int(stats.run_counts.sum()) == 921_600
 
 
-def test_occupancy_runs_output_heavy_eo_shape(
+def test_occupancy_output_heavy_eo_shape(
     benchmark,
     eo_shaped_coverage: px.Coverage,
 ) -> None:
-    runs = benchmark(px.occupancy, eo_shaped_coverage)
-
-    assert runs.cells.size == 49_152
-    assert runs.starts.size == 921_600
-    assert int(runs.run_counts.sum()) == 921_600
-
-
-def test_occupancy_stats_many_sources_eo_shape(
-    benchmark,
-    eo_shaped_coverage: px.Coverage,
-) -> None:
-    """The fused statistics pass must not build the runs it summarizes."""
-    stats = benchmark(px.occupancy, [eo_shaped_coverage] * 10, reduce=px.Stats())
+    stats = benchmark(px.occupancy, eo_shaped_coverage)
 
     assert stats.cells.size == 49_152
-    assert stats.run_counts.dtype == np.int64
     assert int(stats.run_counts.sum()) == 921_600
-    np.testing.assert_array_equal(
-        stats.run_counts,
-        px.occupancy([eo_shaped_coverage] * 10).run_counts,
-    )
 
 
-def test_occupancy_stats_sparse_high_resolution(
+def test_occupancy_sparse_high_resolution(
     benchmark,
     many_sparse_sources: list[px.Coverage],
 ) -> None:
-    stats = benchmark(px.occupancy, many_sparse_sources, reduce=px.Stats())
+    stats = benchmark(px.occupancy, many_sparse_sources)
 
     np.testing.assert_array_equal(stats.cells, [123])
     np.testing.assert_array_equal(stats.run_counts, [1])
-
-
-def test_occupancy_runs_many_sparse_sources(
-    benchmark,
-    many_sparse_sources: list[px.Coverage],
-) -> None:
-    runs = benchmark(px.occupancy, many_sparse_sources)
-
-    np.testing.assert_array_equal(runs.cells, [123])
-    np.testing.assert_array_equal(runs.starts, [0])
-    np.testing.assert_array_equal(runs.stops, [1])
+    np.testing.assert_array_equal(stats.first_start, [0])
+    np.testing.assert_array_equal(stats.last_stop, [1])
 
 
 def test_centers(benchmark, cells: np.ndarray) -> None:

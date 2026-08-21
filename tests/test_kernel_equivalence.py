@@ -475,10 +475,10 @@ def test_sum_adds_in_segment_order_and_reports_overflow() -> None:
 def test_occupancy_agrees_across_memory_profiles(minimum_sources: int) -> None:
     """The dense and sparse accumulators must be interchangeable.
 
-    Runs and statistics depend only on cell identity and segment order, so the
-    same cell lists reduced at a dense resolution and at a sparse one must
-    agree on everything but the reported resolution. Resolution 6 always fits
-    the dense accumulator; resolution 10 never does.
+    Statistics depend only on cell identity and segment order, so the same cell
+    lists reduced at a dense resolution and at a sparse one must agree on
+    everything but the reported resolution. Resolution 6 always fits the dense
+    accumulator; resolution 10 never does.
     """
     rng = np.random.default_rng(20260825 + minimum_sources)
     sources = []
@@ -501,15 +501,6 @@ def test_occupancy_agrees_across_memory_profiles(minimum_sources: int) -> None:
         )
 
     dense, sparse = occupancy(6), occupancy(10)
-    for name in ["cells", "offsets", "starts", "stops"]:
-        np.testing.assert_array_equal(
-            getattr(dense, name), getattr(sparse, name), err_msg=name
-        )
-
-    dense_stats, sparse_stats = (
-        occupancy(6, reduce=px.Stats()),
-        occupancy(10, reduce=px.Stats()),
-    )
     for name in [
         "cells",
         "run_counts",
@@ -519,7 +510,7 @@ def test_occupancy_agrees_across_memory_profiles(minimum_sources: int) -> None:
         "last_stop",
     ]:
         np.testing.assert_array_equal(
-            getattr(dense_stats, name), getattr(sparse_stats, name), err_msg=name
+            getattr(dense, name), getattr(sparse, name), err_msg=name
         )
 
 

@@ -1,6 +1,9 @@
 # Coverage Reductions and Ordinal Occupancy Runs
 
-Status: **accepted; pre-1.0 API consolidation**
+Status: **accepted; pre-1.0 API consolidation**. Amended: the argument is
+spelled `reduce=` rather than `into=`, cell selection moved from the reducer
+tokens onto the operations, and lossless runs were withdrawn. See
+[Amendments](#amendments).
 
 ## Decision
 
@@ -410,3 +413,64 @@ intersection coverage.
   which point a dense count stops enumerating hits at all - range endpoints and
   one prefix sum - and becomes asymptotically better rather than a constant
   factor.
+
+
+## Amendments
+
+### `into=` is spelled `reduce=`
+
+`into` reads as NumPy's `out=` - write the result into this preallocated buffer
+- but nothing is ever written into a `Count()`. The argument selects a
+reduction and changes the return type, which is what `Coverage.reduce()`
+already called it, so the same operation had two names depending on where it
+was written. Renamed; nothing else about the design above changes.
+
+### Cell selection belongs to the operation, not the reducer
+
+`Count(cells=...)` and `candidate_cells` reached the same native `selected`
+argument by different routes, and the routing was backwards: supplying
+`candidate_cells` *disabled* the fused cap counter while `Count(cells=...)`
+enabled it, for the same set of cells. Supplying both was worse - the selection
+governed the output while the candidates governed the scan, so a genuinely
+covered site outside the candidate set reported zero, indistinguishable from
+uncovered.
+
+`candidate_cells` is now the only spelling, and what it means follows the
+operation. Without a reducer the selection is the result, so it restricts the
+scan unconditionally and keeps set semantics. With one it fixes the output's
+index space - one value per requested cell, in query order, duplicates
+preserved - and the restriction becomes the internal choice this decision
+already justified, taken only below the size bound measured above. A stored
+coverage spells the same selection as `Coverage.reduce(reducer, cells=...)`.
+
+Two consequences are load-bearing rather than cosmetic. The cap fusion gate had
+to move off `candidate_cells is None`, or every selected query would lose the
+fused kernel. And a selection under a reducer had to switch the output to
+positional, or `candidate_cells` with `reduce=Count()` at resolution 29 would
+raise `MemoryError` allocating the dense grid, taking the selected
+high-resolution query - answerable no other way - with it.
+
+### Lossless runs withdrawn
+
+`OccupancyRuns` and the `Stats` token are gone; `occupancy()` returns
+`OccupancyStats` unconditionally.
+
+The evidence is the history of the only caller. The Earth-observation example
+went `summarize_occupancy()` -> `occupancy_runs()` -> `occupancy(...,
+Stats())`: it started at a summary, was moved to lossless runs, and came back
+to a summary. Nothing in the repository consumed the boundaries themselves. The
+performance case above already favoured statistics on that shape - 208 ms and
+132 MiB against 476 ms and 413 MiB - because the runs approach one boundary
+pair per hit when cells are observed briefly and revisited later.
+
+The uses that would justify runs are real and named above: percentiles,
+minimum-duration filtering, short-gap merging, arbitrary per-run timestamps. If
+one arrives, re-adding a return type behind a new argument breaks no caller,
+where carrying an unused one to 1.0 fixes it permanently. Pre-1.0, removals are
+breaking and additions are not, so the smaller surface is the reversible
+choice.
+
+The Rust unit tests that came with the runs accumulator covered the shared
+source validation as well, so they were ported to `occupancy_stats()` rather
+than deleted, and the statistics gained the independent reference oracle they
+had lacked - previously they were only ever checked against runs.

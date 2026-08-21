@@ -29,13 +29,6 @@ type PyOccupancyStats<'py> = (
     Bound<'py, PyArray1<u64>>,
 );
 
-type PyOccupancyRuns<'py> = (
-    Bound<'py, numpy::PyArray1<u64>>,
-    Bound<'py, numpy::PyArray1<u64>>,
-    Bound<'py, numpy::PyArray1<u64>>,
-    Bound<'py, numpy::PyArray1<u64>>,
-);
-
 fn validate_resolution(resolution: u8) -> PyResult<()> {
     if resolution > MAX_RESOLUTION {
         return Err(PyValueError::new_err(format!(
@@ -209,28 +202,6 @@ fn _sum_coverage_per_cell<'py>(
 }
 
 #[pyfunction(signature = (cell_arrays, offset_arrays, resolution, minimum_sources))]
-fn _occupancy_runs<'py>(
-    py: Python<'py>,
-    cell_arrays: Vec<PyReadonlyArray1<'py, u64>>,
-    offset_arrays: Vec<PyReadonlyArray1<'py, u64>>,
-    resolution: u8,
-    minimum_sources: usize,
-) -> PyResult<PyOccupancyRuns<'py>> {
-    validate_resolution(resolution)?;
-    let cells = slices(&cell_arrays, "Coverage cells")?;
-    let offsets = slices(&offset_arrays, "Coverage offsets")?;
-    let runs = py
-        .detach(|| access::occupancy_runs(&cells, &offsets, resolution, minimum_sources))
-        .map_err(native_error)?;
-    Ok((
-        readonly_vec(runs.cells, py),
-        readonly_vec(runs.cell_offsets, py),
-        readonly_vec(runs.run_starts, py),
-        readonly_vec(runs.run_stops, py),
-    ))
-}
-
-#[pyfunction(signature = (cell_arrays, offset_arrays, resolution, minimum_sources))]
 fn _occupancy_stats<'py>(
     py: Python<'py>,
     cell_arrays: Vec<PyReadonlyArray1<'py, u64>>,
@@ -363,7 +334,6 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_cover_sweep, module)?)?;
     module.add_function(wrap_pyfunction!(_count_caps_per_cell, module)?)?;
     module.add_function(wrap_pyfunction!(_count_coverage_per_cell, module)?)?;
-    module.add_function(wrap_pyfunction!(_occupancy_runs, module)?)?;
     module.add_function(wrap_pyfunction!(_occupancy_stats, module)?)?;
     module.add_function(wrap_pyfunction!(_sum_coverage_per_cell, module)?)?;
     module.add_function(wrap_pyfunction!(_validate_coverage, module)?)?;

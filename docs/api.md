@@ -22,7 +22,6 @@ HEALPix and NumPy handoff conventions see
 | [`cell_corners`](#cell_corners) | Cell corner vectors |
 | [`cell_count`](#cell_count) | Number of cells at a resolution |
 | [`Coverage`](#coverage) | Segmented result of the coverage calls |
-| [`OccupancyRuns`](#occupancyruns) | Sparse cell-major ordinal windows |
 | [`OccupancyStats`](#occupancystats) | Per-cell occupancy statistics on one axis |
 
 ## cover_convex_polygon
@@ -247,7 +246,7 @@ is part of the input contract. See
 ## occupancy
 
 ```python
-occupancy(timelines, *, minimum_sources=1, reduce=None)
+occupancy(timelines, *, minimum_sources=1)
 ```
 
 Read one `Coverage`, or aligned coverage belonging to multiple sources, as
@@ -274,20 +273,15 @@ empty separator bin.
   a cell to qualify. A threshold larger than the source count returns an empty
   result.
 
-`reduce`
-: *[`Stats`](#reducers) or None, default None*. Selects the result. Omit it to
-  get every run. See [Choosing a reducer](#choosing-a-reducer).
-
 **Returns**
 
-`OccupancyRuns` or `OccupancyStats`
-: Ascending qualifying cells, with either every half-open run grouped by cell,
-  or one statistic per cell.
+`OccupancyStats`
+: Ascending qualifying cells, with one statistic per cell.
 
 **Raises**
 
 `TypeError`
-: `timelines` or `reduce` contains another type, or the resolution is invalid.
+: `timelines` contains another type, or the resolution is invalid.
 
 `ValueError`
 : The sequence is empty, the threshold is not positive, or source grids or
@@ -303,19 +297,17 @@ boundary times are uncertain at the input sampling scale.
 
 ## Reducers
 
-A reducer names the result you want, and the covering calls and `occupancy()`
-accept one through `reduce=`. Passing `reduce=None` returns the full
-`Coverage` or `OccupancyRuns` instead, which is the default.
+A reducer names the result you want, and the covering calls accept one through
+`reduce=`. Passing `reduce=None` returns the full `Coverage` instead, which is
+the default.
 
 ```python
 Count()
 Sum(values)
-Stats()
 ```
 
 `Count` and `Sum` are accepted by `cover_convex_polygon()`, `cover_cap()`,
-`cover_sweep()`, and [`Coverage.reduce()`](#coverage). `Stats` is accepted by
-`occupancy()`.
+`cover_sweep()`, and [`Coverage.reduce()`](#coverage).
 
 A reducer names the accumulation and nothing else. Which cells are reported is
 chosen by the operation being reduced: `candidate_cells` on a covering call, or
@@ -349,12 +341,10 @@ rather than gathered from a complete result. A selection large enough that
 scanning wins is scanned instead, at the same answer. A large selection is
 therefore not a mistake, just a different shape of query.
 
-For `occupancy()`, the default keeps every boundary and so costs memory
-proportional to the run count, which approaches the hit count when cells are
-occupied briefly and repeatedly. `Stats()` accumulates per-cell counts and
-complete internal gaps in one pass and allocates by represented cell instead.
-Keep the default when the boundaries themselves are the answer: percentiles,
-minimum-duration filtering, short-gap merging, or arbitrary per-run timestamps.
+`occupancy()` takes no reducer. It accumulates per-cell counts and complete
+internal gaps in one pass and allocates by represented cell, never by run,
+because materializing every boundary approaches the hit count when cells are
+occupied briefly and repeatedly.
 
 
 ## cell_at
@@ -507,9 +497,6 @@ coverage = px.Coverage.from_arrays(
 `segment_indices()`
 : Return the segment index aligned with every flat cell hit.
 
-`filter_hits(mask)`
-: Return coverage containing only the flat hits selected by a boolean mask.
-
 **Attributes**
 
 `cells`
@@ -531,10 +518,6 @@ coverage = px.Coverage.from_arrays(
 
 `segment_indices()`
 : Return one `int64` segment index aligned with every flat cell hit.
-
-`filter_hits(mask)`
-: Return new coverage with a boolean mask applied to flat hits while retaining
-  the original number and ordering of segments.
 
 Indexing returns a zero-copy, read-only view of one segment and supports
 negative integer indices:
@@ -562,40 +545,9 @@ security boundary or a promise of deep immutability against deliberate NumPy
 flag manipulation. Imported arrays are still copied, so later changes to the
 caller's inputs cannot change a `Coverage`.
 
-## OccupancyRuns
-
-`OccupancyRuns` values are produced only by `occupancy()`; manual
-construction is intentionally disabled.
-
-**Attributes**
-
-`cells`
-: *ndarray*. Ascending qualifying RING IDs, dtype `int64`.
-
-`offsets`
-: *ndarray*. `int64` boundaries grouping flattened runs by cell.
-
-`starts`, `stops`
-: *ndarray*. Matching `int64` half-open segment boundaries. Runs for cell `i`
-  are in `starts[offsets[i]:offsets[i + 1]]` and the corresponding `stops`.
-
-`run_counts`
-: *ndarray*. Derived `int64` run count per cell, equal to `np.diff(offsets)`.
-
-`resolution`, `segment_count`
-: *int*. Common grid resolution and number of ordered input segments.
-
-`minimum_sources`, `source_count`
-: *int*. Threshold used to produce the runs and number of source entries that
-  were supplied.
-
-`OccupancyRuns` uses identity equality for the same reason as `Coverage`. Its
-arrays follow the same read-only contract, and `len(runs)` is the number of
-represented cells.
-
 ## OccupancyStats
 
-`OccupancyStats` values are produced only by `occupancy(..., reduce=Stats())`;
+`OccupancyStats` values are produced only by `occupancy()`;
 manual
 construction is intentionally disabled.
 
@@ -624,7 +576,7 @@ construction is intentionally disabled.
 : *int*. Threshold used and number of source entries supplied.
 
 `OccupancyStats` follows the same identity-equality and read-only array
-contracts as `OccupancyRuns`, and `len(stats)` is the number of represented
+contracts as `Coverage`, and `len(stats)` is the number of represented
 cells.
 
 ## Geometry contract

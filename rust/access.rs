@@ -1,21 +1,10 @@
-//! Reduction of segmented cell coverage into ordinal runs.
+//! Reduction of segmented cell coverage into ordinal occupancy statistics.
 
 use std::collections::HashMap;
 use std::mem::size_of;
 
 use crate::error::{NativeError, NativeResult};
 use crate::ring;
-
-pub(crate) struct OccupancyRuns {
-    pub(crate) cells: Vec<u64>,
-    pub(crate) cell_offsets: Vec<u64>,
-    pub(crate) run_starts: Vec<u64>,
-    pub(crate) run_stops: Vec<u64>,
-}
-
-fn runs_out_of_memory_error() -> NativeError {
-    NativeError::out_of_memory("Occupancy runs are too large to fit in memory.")
-}
 
 fn validate_run_sources(
     cell_arrays: &[&[u64]],
@@ -74,66 +63,20 @@ fn validate_run_sources(
     Ok(segment_count)
 }
 
-fn push_run(runs: &mut Vec<(u64, u64, u64)>, cell: u64, start: u64, stop: u64) -> NativeResult<()> {
-    if runs.len() == runs.capacity() {
-        runs.try_reserve(1)
-            .map_err(|_| runs_out_of_memory_error())?;
-    }
-    runs.push((cell, start, stop));
-    Ok(())
-}
-
-fn empty_runs() -> OccupancyRuns {
-    OccupancyRuns {
-        cells: Vec::new(),
-        cell_offsets: vec![0],
-        run_starts: Vec::new(),
-        run_stops: Vec::new(),
-    }
-}
-
 // This cap covers the fixed state array, measured against the accumulator the
 // caller actually allocates. Because HEALPix cell counts quadruple, the largest
-// admitted grid is resolution 9 for both accumulators: 48 MiB of 16-byte run
-// state or 72 MiB of 24-byte statistics state, leaving headroom for the
-// touched-cell indices (at most one per cell).
+// admitted grid is resolution 9: 72 MiB of 24-byte statistics state, leaving
+// headroom for the touched-cell indices (at most one per cell).
 const DENSE_STATE_MAX_BYTES: usize = 128 * 1024 * 1024;
 const DENSE_STATE_ALWAYS_BYTES: usize = 8 * 1024 * 1024;
 const DENSE_MINIMUM_WORK_DIVISOR: usize = 8;
 const NEVER_SEGMENT: u32 = u32::MAX;
-
-#[derive(Clone, Copy)]
-struct DenseCellState {
-    interval_count: u32,
-    last_segment: u32,
-    run_count_or_cursor: usize,
-}
-
-impl DenseCellState {
-    const EMPTY: Self = Self {
-        interval_count: 0,
-        last_segment: NEVER_SEGMENT,
-        run_count_or_cursor: 0,
-    };
-}
 
 /// Dense per-cell accumulator whose interval counter the shared segment pass
 /// owns. Everything else in the state belongs to the reduction using it.
 trait IntervalCounted: Copy {
     fn interval_count(&self) -> u32;
     fn set_interval_count(&mut self, count: u32);
-}
-
-impl IntervalCounted for DenseCellState {
-    #[inline]
-    fn interval_count(&self) -> u32 {
-        self.interval_count
-    }
-
-    #[inline]
-    fn set_interval_count(&mut self, count: u32) {
-        self.interval_count = count;
-    }
 }
 
 fn dense_state_length(resolution: u8, total_hits: usize, element_bytes: usize) -> Option<usize> {
@@ -158,15 +101,6 @@ fn try_dense_states<S: Copy>(cell_count: usize, empty: S) -> Option<Vec<S>> {
     states.try_reserve_exact(cell_count).ok()?;
     states.resize(cell_count, empty);
     Some(states)
-}
-
-fn zeroed_run_vector(length: usize) -> NativeResult<Vec<u64>> {
-    let mut values = Vec::new();
-    values
-        .try_reserve_exact(length)
-        .map_err(|_| runs_out_of_memory_error())?;
-    values.resize(length, 0);
-    Ok(values)
 }
 
 /// The validated coverage sources, addressed one segment at a time.
@@ -293,600 +227,6 @@ fn count_sparse_segment(
         }
     }
     Ok(())
-}
-
-fn occupancy_runs_dense(
-    cell_arrays: &[&[u64]],
-    offset_arrays: &[&[u64]],
-    segment_count: usize,
-    minimum_sources: usize,
-    resolution: u8,
-    mut states: Vec<DenseCellState>,
-) -> NativeResult<OccupancyRuns> {
-    let minimum_sources = minimum_sources as u32;
-    let sources = SegmentedSources::new(cell_arrays, offset_arrays);
-    let mut touched = Vec::new();
-
-    // Count maximal runs per cell. Remembering only the most recent qualifying
-    // segment is sufficient: a later segment either extends it or starts a run.
-    for segment in 0..segment_count {
-        accumulate_dense_segment(
-            sources,
-            segment,
-            minimum_sources,
-            &mut states,
-            &mut touched,
-            resolution,
-            runs_out_of_memory_error,
-        )?;
-        let segment = segment as u32;
-        for &cell in &touched {
-            let state = &mut states[cell];
-            if state.interval_count >= minimum_sources {
-                if state.last_segment == NEVER_SEGMENT || state.last_segment + 1 != segment {
-                    state.run_count_or_cursor = state
-                        .run_count_or_cursor
-                        .checked_add(1)
-                        .ok_or_else(runs_out_of_memory_error)?;
-                }
-                state.last_segment = segment;
-            }
-            state.interval_count = 0;
-        }
-        touched.clear();
-    }
-
-    let mut output_cell_count = 0usize;
-    let mut total_run_count = 0usize;
-    for state in &states {
-        if state.run_count_or_cursor != 0 {
-            output_cell_count = output_cell_count
-                .checked_add(1)
-                .ok_or_else(runs_out_of_memory_error)?;
-            total_run_count = total_run_count
-                .checked_add(state.run_count_or_cursor)
-                .ok_or_else(runs_out_of_memory_error)?;
-        }
-    }
-    if total_run_count == 0 {
-        return Ok(empty_runs());
-    }
-
-    let cell_offset_count = output_cell_count
-        .checked_add(1)
-        .ok_or_else(runs_out_of_memory_error)?;
-    let mut cells = Vec::new();
-    cells
-        .try_reserve_exact(output_cell_count)
-        .map_err(|_| runs_out_of_memory_error())?;
-    let mut cell_offsets = Vec::new();
-    cell_offsets
-        .try_reserve_exact(cell_offset_count)
-        .map_err(|_| runs_out_of_memory_error())?;
-    cell_offsets.push(0);
-
-    let mut run_cursor = 0usize;
-    for (cell, state) in states.iter_mut().enumerate() {
-        let run_count = state.run_count_or_cursor;
-        state.last_segment = NEVER_SEGMENT;
-        if run_count == 0 {
-            continue;
-        }
-        cells.push(cell as u64);
-        state.run_count_or_cursor = run_cursor;
-        run_cursor = run_cursor
-            .checked_add(run_count)
-            .ok_or_else(runs_out_of_memory_error)?;
-        cell_offsets.push(u64::try_from(run_cursor).map_err(|_| runs_out_of_memory_error())?);
-    }
-    debug_assert_eq!(run_cursor, total_run_count);
-
-    let mut run_starts = zeroed_run_vector(total_run_count)?;
-    let mut run_stops = zeroed_run_vector(total_run_count)?;
-
-    // Replay the inputs and fill the exact cell-major allocation directly.
-    // This replaces the old global Vec<(cell, start, stop)> and tuple sort.
-    for segment in 0..segment_count {
-        accumulate_dense_segment(
-            sources,
-            segment,
-            minimum_sources,
-            &mut states,
-            &mut touched,
-            resolution,
-            runs_out_of_memory_error,
-        )?;
-        let segment = segment as u32;
-        let stop = u64::from(segment) + 1;
-        for &cell in &touched {
-            let state = &mut states[cell];
-            if state.interval_count >= minimum_sources {
-                if state.last_segment == NEVER_SEGMENT || state.last_segment + 1 != segment {
-                    let run = state.run_count_or_cursor;
-                    run_starts[run] = u64::from(segment);
-                    run_stops[run] = stop;
-                    state.run_count_or_cursor += 1;
-                } else {
-                    run_stops[state.run_count_or_cursor - 1] = stop;
-                }
-                state.last_segment = segment;
-            }
-            state.interval_count = 0;
-        }
-        touched.clear();
-    }
-
-    debug_assert!(cells
-        .iter()
-        .zip(&cell_offsets[1..])
-        .all(|(&cell, &stop)| { states[cell as usize].run_count_or_cursor == stop as usize }));
-    Ok(OccupancyRuns {
-        cells,
-        cell_offsets,
-        run_starts,
-        run_stops,
-    })
-}
-
-fn occupancy_runs_sparse(
-    cell_arrays: &[&[u64]],
-    offset_arrays: &[&[u64]],
-    segment_count: usize,
-    minimum_sources: usize,
-    resolution: u8,
-) -> NativeResult<OccupancyRuns> {
-    // Each source-entry segment is unique by validation, so an interval count
-    // is exactly the number of source entries containing the cell.
-    let minimum_sources = minimum_sources as u32;
-    let grid_cell_count = ring::raw_cell_count(resolution);
-    let sources = SegmentedSources::new(cell_arrays, offset_arrays);
-    let mut interval_counts: HashMap<u64, u32> = HashMap::new();
-    let mut open_runs: HashMap<u64, (u64, u64)> = HashMap::new();
-    let mut runs = Vec::new();
-    for segment in 0..segment_count {
-        count_sparse_segment(
-            sources,
-            segment,
-            &mut interval_counts,
-            grid_cell_count,
-            resolution,
-            runs_out_of_memory_error,
-        )?;
-
-        let segment = segment as u64;
-        for (cell, count) in interval_counts.drain() {
-            if count < minimum_sources {
-                continue;
-            }
-            if open_runs.len() == open_runs.capacity() && !open_runs.contains_key(&cell) {
-                open_runs
-                    .try_reserve(1)
-                    .map_err(|_| runs_out_of_memory_error())?;
-            }
-            match open_runs.entry(cell) {
-                std::collections::hash_map::Entry::Occupied(mut entry) => {
-                    let (start, last_segment) = entry.get_mut();
-                    if *last_segment + 1 != segment {
-                        push_run(&mut runs, cell, *start, *last_segment + 1)?;
-                        *start = segment;
-                    }
-                    *last_segment = segment;
-                }
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert((segment, segment));
-                }
-            }
-        }
-    }
-    for (cell, (start, last_segment)) in open_runs {
-        push_run(&mut runs, cell, start, last_segment + 1)?;
-    }
-    runs.sort_unstable();
-    if runs.is_empty() {
-        return Ok(empty_runs());
-    }
-
-    let cell_count = 1 + runs
-        .windows(2)
-        .filter(|pair| pair[0].0 != pair[1].0)
-        .count();
-    let cell_offset_count = cell_count
-        .checked_add(1)
-        .ok_or_else(runs_out_of_memory_error)?;
-    let mut result = OccupancyRuns {
-        cells: Vec::new(),
-        cell_offsets: Vec::new(),
-        run_starts: Vec::new(),
-        run_stops: Vec::new(),
-    };
-    result
-        .cells
-        .try_reserve_exact(cell_count)
-        .map_err(|_| runs_out_of_memory_error())?;
-    result
-        .cell_offsets
-        .try_reserve_exact(cell_offset_count)
-        .map_err(|_| runs_out_of_memory_error())?;
-    result
-        .run_starts
-        .try_reserve_exact(runs.len())
-        .map_err(|_| runs_out_of_memory_error())?;
-    result
-        .run_stops
-        .try_reserve_exact(runs.len())
-        .map_err(|_| runs_out_of_memory_error())?;
-
-    result.cell_offsets.push(0);
-    let mut previous_cell = None;
-    for (cell, start, stop) in runs {
-        if previous_cell.is_some_and(|previous| previous != cell) {
-            result.cell_offsets.push(result.run_starts.len() as u64);
-        }
-        if previous_cell != Some(cell) {
-            result.cells.push(cell);
-            previous_cell = Some(cell);
-        }
-        result.run_starts.push(start);
-        result.run_stops.push(stop);
-    }
-    result.cell_offsets.push(result.run_starts.len() as u64);
-    Ok(result)
-}
-
-pub(crate) fn occupancy_runs(
-    cell_arrays: &[&[u64]],
-    offset_arrays: &[&[u64]],
-    resolution: u8,
-    minimum_sources: usize,
-) -> NativeResult<OccupancyRuns> {
-    let segment_count =
-        validate_run_sources(cell_arrays, offset_arrays, resolution, minimum_sources)?;
-    if minimum_sources > cell_arrays.len() || segment_count == 0 {
-        return Ok(empty_runs());
-    }
-    let total_hits = cell_arrays
-        .iter()
-        .fold(0usize, |total, cells| total.saturating_add(cells.len()));
-    if total_hits == 0 {
-        return Ok(empty_runs());
-    }
-
-    if let Some(cell_count) =
-        dense_state_length(resolution, total_hits, size_of::<DenseCellState>())
-    {
-        if let Some(states) = try_dense_states(cell_count, DenseCellState::EMPTY) {
-            return occupancy_runs_dense(
-                cell_arrays,
-                offset_arrays,
-                segment_count,
-                minimum_sources,
-                resolution,
-                states,
-            );
-        }
-    }
-    occupancy_runs_sparse(
-        cell_arrays,
-        offset_arrays,
-        segment_count,
-        minimum_sources,
-        resolution,
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::{BTreeMap, HashMap};
-
-    use super::{
-        dense_state_length, occupancy_runs, occupancy_runs_dense, occupancy_runs_sparse,
-        try_dense_states, DenseCellState, OccupancyRuns,
-    };
-    use crate::ring;
-
-    fn assert_runs(
-        actual: OccupancyRuns,
-        cells: &[u64],
-        cell_offsets: &[u64],
-        run_starts: &[u64],
-        run_stops: &[u64],
-    ) {
-        assert_eq!(actual.cells, cells);
-        assert_eq!(actual.cell_offsets, cell_offsets);
-        assert_eq!(actual.run_starts, run_starts);
-        assert_eq!(actual.run_stops, run_stops);
-    }
-
-    fn error_message(
-        cell_arrays: &[&[u64]],
-        offset_arrays: &[&[u64]],
-        resolution: u8,
-        minimum_sources: usize,
-    ) -> String {
-        match occupancy_runs(cell_arrays, offset_arrays, resolution, minimum_sources) {
-            Ok(_) => panic!("expected occupancy() to reject the input"),
-            Err(error) => error.to_string(),
-        }
-    }
-
-    fn reference_runs(
-        cell_arrays: &[&[u64]],
-        offset_arrays: &[&[u64]],
-        minimum_sources: usize,
-    ) -> OccupancyRuns {
-        let segment_count = offset_arrays[0].len() - 1;
-        let mut qualifying_segments: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
-        for segment in 0..segment_count {
-            let mut counts = HashMap::new();
-            for (&cells, &offsets) in cell_arrays.iter().zip(offset_arrays) {
-                for &cell in &cells[offsets[segment] as usize..offsets[segment + 1] as usize] {
-                    *counts.entry(cell).or_insert(0usize) += 1;
-                }
-            }
-            for (cell, count) in counts {
-                if count >= minimum_sources {
-                    qualifying_segments
-                        .entry(cell)
-                        .or_default()
-                        .push(segment as u64);
-                }
-            }
-        }
-
-        let mut result = OccupancyRuns {
-            cells: Vec::new(),
-            cell_offsets: vec![0],
-            run_starts: Vec::new(),
-            run_stops: Vec::new(),
-        };
-        for (cell, segments) in qualifying_segments {
-            result.cells.push(cell);
-            let mut start = segments[0];
-            let mut last = start;
-            for segment in segments.into_iter().skip(1) {
-                if segment != last + 1 {
-                    result.run_starts.push(start);
-                    result.run_stops.push(last + 1);
-                    start = segment;
-                }
-                last = segment;
-            }
-            result.run_starts.push(start);
-            result.run_stops.push(last + 1);
-            result.cell_offsets.push(result.run_starts.len() as u64);
-        }
-        result
-    }
-
-    fn performance_shaped_sources() -> (Vec<Vec<u64>>, Vec<Vec<u64>>) {
-        const SOURCE_COUNT: usize = 4;
-        const SEGMENT_COUNT: usize = 384;
-        const HITS_PER_SEGMENT: usize = 48;
-        const SHARED_HITS: usize = 8;
-
-        let mut cell_arrays = Vec::with_capacity(SOURCE_COUNT);
-        let mut offset_arrays = Vec::with_capacity(SOURCE_COUNT);
-        for source in 0..SOURCE_COUNT {
-            let mut cells = Vec::with_capacity(SEGMENT_COUNT * HITS_PER_SEGMENT);
-            let mut offsets = Vec::with_capacity(SEGMENT_COUNT + 1);
-            offsets.push(0);
-            for segment in 0..SEGMENT_COUNT {
-                let mut segment_cells = Vec::with_capacity(HITS_PER_SEGMENT);
-                for hit in 0..SHARED_HITS {
-                    segment_cells.push(((segment * 17 + hit) % 8_192) as u64);
-                }
-                for hit in SHARED_HITS..HITS_PER_SEGMENT {
-                    segment_cells.push(
-                        (8_192 + source * 8_192 + (segment * 53 + hit - SHARED_HITS) % 8_192)
-                            as u64,
-                    );
-                }
-                segment_cells.sort_unstable();
-                cells.extend(segment_cells);
-                offsets.push(cells.len() as u64);
-            }
-            cell_arrays.push(cells);
-            offset_arrays.push(offsets);
-        }
-        (cell_arrays, offset_arrays)
-    }
-
-    #[test]
-    fn returns_maximal_union_runs_grouped_by_cell() {
-        let cells_a = [1, 3, 1, 1, 3, 3, 1, 3, 1, 3];
-        let offsets_a = [0, 2, 3, 5, 6, 6, 8, 10];
-        let cells_b = [3, 3, 1, 3, 1, 1];
-        let offsets_b = [0, 0, 1, 2, 4, 5, 6, 6];
-
-        let actual =
-            occupancy_runs(&[&cells_a, &cells_b], &[&offsets_a, &offsets_b], 0, 1).unwrap();
-
-        assert_runs(actual, &[1, 3], &[0, 1, 3], &[0, 0, 5], &[7, 4, 7]);
-    }
-
-    #[test]
-    fn minimum_sources_counts_simultaneous_distinct_sources() {
-        let cells_a = [1, 3, 1, 1, 3, 3, 1, 3, 1, 3];
-        let offsets_a = [0, 2, 3, 5, 6, 6, 8, 10];
-        let cells_b = [3, 3, 1, 3, 1, 1];
-        let offsets_b = [0, 0, 1, 2, 4, 5, 6, 6];
-
-        let actual =
-            occupancy_runs(&[&cells_a, &cells_b], &[&offsets_a, &offsets_b], 0, 2).unwrap();
-
-        assert_runs(actual, &[1, 3], &[0, 1, 2], &[5, 2], &[6, 4]);
-    }
-
-    #[test]
-    fn performance_shaped_result_matches_independent_reference() {
-        let (cell_arrays, offset_arrays) = performance_shaped_sources();
-        let cell_slices: Vec<&[u64]> = cell_arrays.iter().map(Vec::as_slice).collect();
-        let offset_slices: Vec<&[u64]> = offset_arrays.iter().map(Vec::as_slice).collect();
-        let segment_count = offset_slices[0].len() - 1;
-        let total_hits = cell_slices.iter().map(|cells| cells.len()).sum();
-
-        for minimum_sources in [1, 2] {
-            let expected = reference_runs(&cell_slices, &offset_slices, minimum_sources);
-            let state_length =
-                dense_state_length(6, total_hits, size_of::<DenseCellState>()).unwrap();
-            let implementations = [
-                occupancy_runs(&cell_slices, &offset_slices, 6, minimum_sources).unwrap(),
-                occupancy_runs_dense(
-                    &cell_slices,
-                    &offset_slices,
-                    segment_count,
-                    minimum_sources,
-                    6,
-                    try_dense_states(state_length, DenseCellState::EMPTY).unwrap(),
-                )
-                .unwrap(),
-                occupancy_runs_sparse(
-                    &cell_slices,
-                    &offset_slices,
-                    segment_count,
-                    minimum_sources,
-                    6,
-                )
-                .unwrap(),
-            ];
-            for actual in implementations {
-                assert_runs(
-                    actual,
-                    &expected.cells,
-                    &expected.cell_offsets,
-                    &expected.run_starts,
-                    &expected.run_stops,
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn sparse_resolution_29_fallback_preserves_cell_major_runs() {
-        let final_cell = (12_u64 << (2 * ring::MAX_RESOLUTION)) - 1;
-        let cells = [final_cell, 0, final_cell];
-        let offsets = [0, 1, 2, 3];
-
-        assert!(dense_state_length(
-            ring::MAX_RESOLUTION,
-            cells.len(),
-            size_of::<DenseCellState>()
-        )
-        .is_none());
-        let actual = occupancy_runs(&[&cells], &[&offsets], ring::MAX_RESOLUTION, 1).unwrap();
-
-        assert_runs(actual, &[0, final_cell], &[0, 1, 3], &[1, 0, 2], &[2, 1, 3]);
-    }
-
-    #[test]
-    fn returns_canonical_empty_result_when_threshold_cannot_be_met() {
-        let cells = [1];
-        let offsets = [0, 1];
-
-        let actual = occupancy_runs(&[&cells], &[&offsets], 0, 2).unwrap();
-
-        assert_runs(actual, &[], &[0], &[], &[]);
-    }
-
-    #[test]
-    fn rejects_zero_threshold_and_invalid_source_structure() {
-        let cells = [1];
-        let offsets = [0, 1];
-        assert!(error_message(&[&cells], &[&offsets], 0, 0).contains("at least 1"));
-
-        let empty_cells: [u64; 0] = [];
-        let two_segments = [0, 0, 0];
-        let one_segment = [0, 0];
-        assert!(error_message(
-            &[&empty_cells, &empty_cells],
-            &[&two_segments, &one_segment],
-            0,
-            1,
-        )
-        .contains("same number of segments"));
-
-        let no_offsets: [u64; 0] = [];
-        assert!(error_message(&[&empty_cells], &[&no_offsets], 0, 1)
-            .contains("at least the initial zero"));
-        assert!(
-            error_message(&[&empty_cells], &[&[0]], ring::MAX_RESOLUTION + 1, 1)
-                .contains("resolution must be between")
-        );
-    }
-
-    #[test]
-    fn malformed_offsets_are_rejected_rather_than_panicking() {
-        // `segment_slices` indexes the offsets directly, so a caller reaching
-        // the native entry point with arrays no `Coverage` produced must get an
-        // error. Every case below either panicked on the slice index or, for a
-        // nonzero initial offset, silently dropped the leading hits.
-        let cells = [1_u64, 2, 3, 4];
-        for (offsets, expected) in [
-            (vec![0_u64, 9], "offsets[-1] must equal"),
-            (vec![4, 0], "must start at zero"),
-            (vec![0, 4, 2], "must be nondecreasing"),
-            (vec![2, 4], "must start at zero"),
-            (vec![0, 2], "offsets[-1] must equal"),
-        ] {
-            let message = error_message(&[&cells], &[offsets.as_slice()], 4, 1);
-            assert!(
-                message.contains(expected) && message.starts_with("sources[0]: "),
-                "offsets {offsets:?} produced {message:?}"
-            );
-        }
-
-        let valid = [0_u64, 2, 4];
-        assert!(occupancy_runs(&[&cells], &[&valid], 4, 1).is_ok());
-    }
-
-    #[test]
-    fn a_mutated_source_is_rejected_rather_than_panicking() {
-        // `Coverage` arrays own their data, so Python can reset the read-only
-        // flag and write a cell that no grid contains. Both accumulators must
-        // report that as invalid input on both memory profiles.
-        for (resolution, label) in [(6_u8, "dense"), (ring::MAX_RESOLUTION, "sparse")] {
-            // The first index the grid cannot hold, for that grid.
-            let out_of_range = ring::raw_cell_count(resolution);
-            let cells: Vec<u64> = vec![0, out_of_range];
-            let offsets: Vec<u64> = vec![0, 2];
-            let cell_slices: Vec<&[u64]> = vec![cells.as_slice()];
-            let offset_slices: Vec<&[u64]> = vec![offsets.as_slice()];
-
-            let runs = error_message(&cell_slices, &offset_slices, resolution, 1);
-            let stats = match super::occupancy_stats(&cell_slices, &offset_slices, resolution, 1) {
-                Ok(_) => panic!("{label}: expected occupancy statistics to reject the input"),
-                Err(error) => error.to_string(),
-            };
-            for error in [runs, stats] {
-                assert!(
-                    error.starts_with("sources must contain"),
-                    "{label}: {error}"
-                );
-            }
-        }
-
-        // A negative public index arrives as a u64 above 1 << 63 and is named.
-        let negative = vec![u64::MAX];
-        let offsets = vec![0_u64, 1];
-        assert_eq!(
-            error_message(&[negative.as_slice()], &[offsets.as_slice()], 6, 1),
-            "sources must contain non-negative integers."
-        );
-    }
-
-    #[test]
-    fn coverage_construction_owns_the_per_hit_invariants() {
-        // `occupancy_*` trusts its sources because every one is a `Coverage`,
-        // which rejects duplicate and out-of-range cells when it is built.
-        let duplicate = ring::validate_coverage_arrays(&[1, 1], &[0, 2], 0).unwrap_err();
-        assert!(duplicate.contains("must be unique"), "{duplicate}");
-
-        let out_of_range = ring::validate_coverage_arrays(&[12], &[0, 1], 0).unwrap_err();
-        assert!(
-            out_of_range.contains("valid RING indices"),
-            "{out_of_range}"
-        );
-    }
 }
 
 pub(crate) struct OccupancyStats {
@@ -1091,4 +431,299 @@ pub(crate) fn occupancy_stats(
         push_stats(&mut out, *cell, state);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, HashMap};
+
+    use super::{occupancy_stats, OccupancyStats};
+    use crate::ring;
+
+    fn assert_stats(actual: &OccupancyStats, expected: &OccupancyStats) {
+        assert_eq!(actual.cells, expected.cells);
+        assert_eq!(actual.run_counts, expected.run_counts);
+        assert_eq!(
+            actual.internal_gap_steps_sum,
+            expected.internal_gap_steps_sum
+        );
+        assert_eq!(
+            actual.maximum_internal_gap_steps,
+            expected.maximum_internal_gap_steps
+        );
+        assert_eq!(actual.first_start, expected.first_start);
+        assert_eq!(actual.last_stop, expected.last_stop);
+    }
+
+    fn error_message(
+        cell_arrays: &[&[u64]],
+        offset_arrays: &[&[u64]],
+        resolution: u8,
+        minimum_sources: usize,
+    ) -> String {
+        match occupancy_stats(cell_arrays, offset_arrays, resolution, minimum_sources) {
+            Ok(_) => panic!("expected occupancy() to reject the input"),
+            Err(error) => error.to_string(),
+        }
+    }
+
+    /// Independent statistics, built from qualifying segments rather than from
+    /// the accumulator under test.
+    fn reference_stats(
+        cell_arrays: &[&[u64]],
+        offset_arrays: &[&[u64]],
+        minimum_sources: usize,
+    ) -> OccupancyStats {
+        let segment_count = offset_arrays[0].len() - 1;
+        let mut qualifying: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
+        for segment in 0..segment_count {
+            let mut counts = HashMap::new();
+            for (&cells, &offsets) in cell_arrays.iter().zip(offset_arrays) {
+                for &cell in &cells[offsets[segment] as usize..offsets[segment + 1] as usize] {
+                    *counts.entry(cell).or_insert(0usize) += 1;
+                }
+            }
+            for (cell, count) in counts {
+                if count >= minimum_sources {
+                    qualifying.entry(cell).or_default().push(segment as u64);
+                }
+            }
+        }
+
+        let mut out = OccupancyStats {
+            cells: Vec::new(),
+            run_counts: Vec::new(),
+            internal_gap_steps_sum: Vec::new(),
+            maximum_internal_gap_steps: Vec::new(),
+            first_start: Vec::new(),
+            last_stop: Vec::new(),
+        };
+        for (cell, segments) in qualifying {
+            let mut runs: Vec<(u64, u64)> = Vec::new();
+            let mut start = segments[0];
+            let mut last = start;
+            for segment in segments.into_iter().skip(1) {
+                if segment != last + 1 {
+                    runs.push((start, last + 1));
+                    start = segment;
+                }
+                last = segment;
+            }
+            runs.push((start, last + 1));
+
+            let gaps: Vec<u64> = runs.windows(2).map(|pair| pair[1].0 - pair[0].1).collect();
+            out.cells.push(cell);
+            out.run_counts.push(runs.len() as u64);
+            out.internal_gap_steps_sum.push(gaps.iter().sum());
+            out.maximum_internal_gap_steps
+                .push(gaps.into_iter().max().unwrap_or(0));
+            out.first_start.push(runs[0].0);
+            out.last_stop.push(runs[runs.len() - 1].1);
+        }
+        out
+    }
+
+    fn performance_shaped_sources() -> (Vec<Vec<u64>>, Vec<Vec<u64>>) {
+        const SOURCE_COUNT: usize = 4;
+        const SEGMENT_COUNT: usize = 384;
+        const HITS_PER_SEGMENT: usize = 48;
+        const SHARED_HITS: usize = 8;
+
+        let mut cell_arrays = Vec::with_capacity(SOURCE_COUNT);
+        let mut offset_arrays = Vec::with_capacity(SOURCE_COUNT);
+        for source in 0..SOURCE_COUNT {
+            let mut cells = Vec::with_capacity(SEGMENT_COUNT * HITS_PER_SEGMENT);
+            let mut offsets = Vec::with_capacity(SEGMENT_COUNT + 1);
+            offsets.push(0);
+            for segment in 0..SEGMENT_COUNT {
+                let mut segment_cells = Vec::with_capacity(HITS_PER_SEGMENT);
+                for hit in 0..SHARED_HITS {
+                    segment_cells.push(((segment * 17 + hit) % 8_192) as u64);
+                }
+                for hit in SHARED_HITS..HITS_PER_SEGMENT {
+                    segment_cells.push(
+                        (8_192 + source * 8_192 + (segment * 53 + hit - SHARED_HITS) % 8_192)
+                            as u64,
+                    );
+                }
+                segment_cells.sort_unstable();
+                cells.extend(segment_cells);
+                offsets.push(cells.len() as u64);
+            }
+            cell_arrays.push(cells);
+            offset_arrays.push(offsets);
+        }
+        (cell_arrays, offset_arrays)
+    }
+
+    #[test]
+    fn minimum_sources_counts_simultaneous_distinct_sources() {
+        let cells_a = [1, 3, 1, 1, 3, 3, 1, 3, 1, 3];
+        let offsets_a = [0, 2, 3, 5, 6, 6, 8, 10];
+        let cells_b = [3, 3, 1, 3, 1, 1];
+        let offsets_b = [0, 0, 1, 2, 4, 5, 6, 6];
+        let cells: [&[u64]; 2] = [&cells_a, &cells_b];
+        let offsets: [&[u64]; 2] = [&offsets_a, &offsets_b];
+
+        for minimum_sources in [1, 2] {
+            let actual = occupancy_stats(&cells, &offsets, 0, minimum_sources).unwrap();
+            assert_stats(&actual, &reference_stats(&cells, &offsets, minimum_sources));
+        }
+
+        // Thresholding is not a filter on the single-source answer: requiring
+        // two simultaneous sources splits cell 1 into a later, shorter window.
+        let union = occupancy_stats(&cells, &offsets, 0, 1).unwrap();
+        let both = occupancy_stats(&cells, &offsets, 0, 2).unwrap();
+        assert_eq!(union.first_start, [0, 0]);
+        assert_eq!(both.first_start, [5, 2]);
+        assert_eq!(both.last_stop, [6, 4]);
+    }
+
+    #[test]
+    fn performance_shaped_result_matches_independent_reference() {
+        let (cell_arrays, offset_arrays) = performance_shaped_sources();
+        let cells: Vec<&[u64]> = cell_arrays.iter().map(Vec::as_slice).collect();
+        let offsets: Vec<&[u64]> = offset_arrays.iter().map(Vec::as_slice).collect();
+
+        for minimum_sources in [1, 2] {
+            let expected = reference_stats(&cells, &offsets, minimum_sources);
+            let actual = occupancy_stats(&cells, &offsets, 6, minimum_sources).unwrap();
+            assert_stats(&actual, &expected);
+        }
+
+        // The two thresholds exercise different shapes, and the workload is
+        // only worth its runtime if it reaches both. Unioned, most cells are
+        // revisited with gaps between; requiring two simultaneous sources
+        // leaves only the shared cells, each occupied in one unbroken run.
+        let union = occupancy_stats(&cells, &offsets, 6, 1).unwrap();
+        assert!(union.run_counts.iter().filter(|&&count| count > 1).count() > 20_000);
+        assert!(union.maximum_internal_gap_steps.iter().any(|&gap| gap > 0));
+
+        let both = occupancy_stats(&cells, &offsets, 6, 2).unwrap();
+        assert!(both.run_counts.iter().all(|&count| count == 1));
+        assert!(both.internal_gap_steps_sum.iter().all(|&sum| sum == 0));
+    }
+
+    #[test]
+    fn the_dense_and_sparse_accumulators_agree() {
+        // The choice between them is made on resolution and hit count alone,
+        // and these cell IDs are valid on both grids, so the two paths must
+        // return byte-identical statistics for identical input.
+        let (cell_arrays, offset_arrays) = performance_shaped_sources();
+        let cells: Vec<&[u64]> = cell_arrays.iter().map(Vec::as_slice).collect();
+        let offsets: Vec<&[u64]> = offset_arrays.iter().map(Vec::as_slice).collect();
+
+        let dense = occupancy_stats(&cells, &offsets, 6, 1).unwrap();
+        let sparse = occupancy_stats(&cells, &offsets, ring::MAX_RESOLUTION, 1).unwrap();
+
+        assert_stats(&sparse, &dense);
+        assert!(!dense.cells.is_empty());
+        assert!(dense.cells.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn returns_canonical_empty_result_when_threshold_cannot_be_met() {
+        let cells = [1];
+        let offsets = [0, 1];
+
+        let actual = occupancy_stats(&[&cells], &[&offsets], 0, 2).unwrap();
+
+        assert!(actual.cells.is_empty());
+        assert!(actual.run_counts.is_empty());
+        assert!(actual.first_start.is_empty());
+        assert!(actual.last_stop.is_empty());
+    }
+
+    #[test]
+    fn rejects_zero_threshold_and_invalid_source_structure() {
+        let cells = [1];
+        let offsets = [0, 1];
+        assert!(error_message(&[&cells], &[&offsets], 0, 0).contains("at least 1"));
+
+        let empty_cells: [u64; 0] = [];
+        let two_segments = [0, 0, 0];
+        let one_segment = [0, 0];
+        assert!(error_message(
+            &[&empty_cells, &empty_cells],
+            &[&two_segments, &one_segment],
+            0,
+            1,
+        )
+        .contains("same number of segments"));
+
+        let no_offsets: [u64; 0] = [];
+        assert!(error_message(&[&empty_cells], &[&no_offsets], 0, 1)
+            .contains("at least the initial zero"));
+        assert!(
+            error_message(&[&empty_cells], &[&[0]], ring::MAX_RESOLUTION + 1, 1)
+                .contains("resolution must be between")
+        );
+    }
+
+    #[test]
+    fn malformed_offsets_are_rejected_rather_than_panicking() {
+        // `segment_slices` indexes the offsets directly, so a caller reaching
+        // the native entry point with arrays no `Coverage` produced must get an
+        // error. Every case below either panicked on the slice index or, for a
+        // nonzero initial offset, silently dropped the leading hits.
+        let cells = [1_u64, 2, 3, 4];
+        for (offsets, expected) in [
+            (vec![0_u64, 9], "offsets[-1] must equal"),
+            (vec![4, 0], "must start at zero"),
+            (vec![0, 4, 2], "must be nondecreasing"),
+            (vec![2, 4], "must start at zero"),
+            (vec![0, 2], "offsets[-1] must equal"),
+        ] {
+            let message = error_message(&[&cells], &[offsets.as_slice()], 4, 1);
+            assert!(
+                message.contains(expected) && message.starts_with("sources[0]: "),
+                "offsets {offsets:?} produced {message:?}"
+            );
+        }
+
+        let valid = [0_u64, 2, 4];
+        assert!(occupancy_stats(&[&cells], &[&valid], 4, 1).is_ok());
+    }
+
+    #[test]
+    fn a_mutated_source_is_rejected_rather_than_panicking() {
+        // `Coverage` arrays own their data, so Python can reset the read-only
+        // flag and write a cell that no grid contains. The accumulator must
+        // report that as invalid input on both memory profiles.
+        for (resolution, label) in [(6_u8, "dense"), (ring::MAX_RESOLUTION, "sparse")] {
+            // The first index the grid cannot hold, for that grid.
+            let out_of_range = ring::raw_cell_count(resolution);
+            let cells: Vec<u64> = vec![0, out_of_range];
+            let offsets: Vec<u64> = vec![0, 2];
+
+            let error = error_message(&[cells.as_slice()], &[offsets.as_slice()], resolution, 1);
+            assert!(
+                error.starts_with("sources must contain"),
+                "{label}: {error}"
+            );
+        }
+
+        // A negative public index arrives as a u64 above 1 << 63 and is named.
+        let negative = vec![u64::MAX];
+        let offsets = vec![0_u64, 1];
+        assert_eq!(
+            error_message(&[negative.as_slice()], &[offsets.as_slice()], 6, 1),
+            "sources must contain non-negative integers."
+        );
+    }
+
+    #[test]
+    fn coverage_construction_owns_the_per_hit_invariants() {
+        // `occupancy_stats` trusts its sources because every one is a
+        // `Coverage`, which rejects duplicate and out-of-range cells when it
+        // is built.
+        let duplicate = ring::validate_coverage_arrays(&[1, 1], &[0, 2], 0).unwrap_err();
+        assert!(duplicate.contains("must be unique"), "{duplicate}");
+
+        let out_of_range = ring::validate_coverage_arrays(&[12], &[0, 1], 0).unwrap_err();
+        assert!(
+            out_of_range.contains("valid RING indices"),
+            "{out_of_range}"
+        );
+    }
 }

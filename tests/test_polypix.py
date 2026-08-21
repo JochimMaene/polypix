@@ -1280,11 +1280,9 @@ class PolypixTests(unittest.TestCase):
                 "Coverage",
                 "CoverageReducer",
                 "EdgesLike",
-                "OccupancyRuns",
                 "OccupancyStats",
                 "OffsetsLike",
                 "PolygonsLike",
-                "Stats",
                 "Sum",
                 "ValuesLike",
                 "VectorsLike",
@@ -1300,7 +1298,10 @@ class PolypixTests(unittest.TestCase):
             ],
         )
         for name in [
+            "OccupancyRuns",
             "OccupancySummary",
+            "Stats",
+            "filter_hits",
             "cell_area_from_resolution",
             "cell_boundary",
             "cell_center",

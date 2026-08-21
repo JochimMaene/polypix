@@ -94,18 +94,9 @@ def test_coverage_helpers_preserve_segment_alignment() -> None:
     np.testing.assert_array_equal(coverage.segment_sizes, [2, 0, 1, 2])
     np.testing.assert_array_equal(coverage.segment_indices(), [0, 0, 2, 3, 3])
 
-    filtered = coverage.filter_hits([True, False, True, False, True])
-    np.testing.assert_array_equal(filtered.cells, [1, 4, 7])
-    np.testing.assert_array_equal(filtered.offsets, [0, 1, 1, 2, 3])
-    assert filtered.resolution == coverage.resolution
-
-    with pytest.raises(ValueError, match="one value per covered cell"):
-        coverage.filter_hits([True])
-    with pytest.raises(TypeError, match="boolean"):
-        coverage.filter_hits([1, 0, 1, 0, 1])
     empty = px.Coverage.from_arrays([], [0], resolution=1)
-    with pytest.raises(TypeError, match="boolean"):
-        empty.filter_hits(np.empty(0, dtype=np.int64))
+    np.testing.assert_array_equal(empty.segment_sizes, [])
+    np.testing.assert_array_equal(empty.segment_indices(), [])
 
 
 def test_empty_cap_batches_validate_scalar_radii() -> None:
@@ -121,7 +112,6 @@ def test_reducer_tokens_use_identity_equality() -> None:
     for first, second in (
         (px.Count(), px.Count()),
         (px.Sum(np.asarray([1.0, 2.0])), px.Sum(np.asarray([1.0, 2.0]))),
-        (px.Stats(), px.Stats()),
     ):
         assert first == first
         assert first != second

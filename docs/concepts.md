@@ -121,7 +121,7 @@ end-to-start, start-to-start, a finite-horizon edge gap, or a cyclic gap.
 
 Runs are often only an intermediate. If all you need per cell is how many times
 it was occupied, the total and largest complete internal gap, and the bounds of
-its observed window, `occupancy(..., reduce=px.Stats())` computes exactly that
+its observed window, `occupancy()` computes exactly that
 in one pass and
 never builds the runs. It reports the same thresholded, source-unioned axis for
 every field, and leaves the leading, trailing, and cyclic policies to you by

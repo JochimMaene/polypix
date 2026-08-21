@@ -21,7 +21,6 @@ Public output storage, ignoring temporary native chunks:
 | `cell_centers()` | 24 bytes per cell |
 | `cell_corners()` | 96 bytes per cell |
 | Dense cap counts | `8 * cell_count` bytes |
-| Sparse `OccupancyRuns` | `8 * (2 * represented_cell_count + 2 * run_count + 1)` bytes |
 | `OccupancyStats` | `48 * represented_cell_count` bytes |
 
 Parallel coverage builds ordered worker chunks and merges them, so peak native
@@ -45,8 +44,7 @@ Concatenating all chunks recreates the original memory requirement.
 | Membership per region | `cover_cap()`, `cover_convex_polygon()`, `cover_sweep()` | nothing; membership is the point |
 | Counts or weighted values per cell | `reduce=Count()`, `reduce=Sum(values)` | sorting, Python accumulation, one repeated value per hit |
 | Caps per cell | `cover_cap(..., reduce=Count())` | one cell ID per cap-cell hit, plus a `bincount()` |
-| Complete occupied-bin runs | `occupancy()` | expanding and sorting every hit as an event |
-| Per-cell counts and internal gaps | `occupancy(..., reduce=Stats())` | building every run just to reduce it away |
+| Per-cell counts and internal gaps | `occupancy()` | expanding every hit as an event, then building every run just to reduce it away |
 
 ## Choosing a dense or selected reduction
 
@@ -70,19 +68,17 @@ under [choosing a reducer](api.md#choosing-a-reducer). The
 [architecture decisions](development.md#architecture-decisions) carry the
 benchmark evidence.
 
-`OccupancyRuns` is lossless, so it is not guaranteed to be smaller than its
-input. A cell hit in alternating bins creates one run per hit. Moderate grids
-use bounded dense state and write the exact cell-major result directly; sparse
-high-resolution grids use a map-backed path rather than allocating by global
-cell count. Size the unavoidable output with the table above.
+`occupancy()` allocates by represented cell, never by run. That matters because
+materializing the runs themselves is not guaranteed to be smaller than the
+input: a cell hit in alternating bins creates one run per hit. This is the
+common case for a scanning constellation, where a cell is observed briefly and
+revisited hours later, so the run count approaches the hit count and runs
+compress nothing. Accumulating counts and complete internal gaps in one pass
+instead is smaller by orders of magnitude on that shape of workload.
 
-This is the common case for a scanning constellation: a cell is observed
-briefly and revisited hours later, so the run count approaches the hit count and
-runs compress nothing. When the runs only feed per-cell counts and complete
-internal gaps, `occupancy(..., reduce=Stats())` accumulates them in one pass and
-allocates by represented cell instead, which is smaller by orders of magnitude
-on that shape of workload. Keep the default result when the boundaries
-themselves are the answer.
+Moderate grids use bounded dense state; sparse high-resolution grids use a
+map-backed path rather than allocating by global cell count. Size the output
+with the table above.
 
 ## Dense counts versus selected cells
 

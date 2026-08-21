@@ -7,31 +7,30 @@
 - Added scale-invariant batch direction-to-RING indexing through `cell_at()`,
   including automatic parallelism for large inputs.
 - Added exact spherical-cap coverage through `cover_cap()`.
-- Added `Count`, `Sum`, and `Stats` reducers, accepted as `into=` by every
-  covering call and by `occupancy()`, and by `Coverage.reduce()` for cell lists
-  that are already built. A reducer names the result; Polypix fuses the
-  accumulation into the geometry kernel where that is faster. Omitting `into=`
-  keeps the full result: a `Coverage`, or every occupancy run.
-- Added `occupancy(sources, *, minimum_sources=1, into=None)`, returning
-  lossless half-open runs by default or, with `into=Stats()`, per-cell run
+- Added `Count` and `Sum` reducers, accepted as `reduce=` by every covering
+  call and by `Coverage.reduce()` for cell lists that are already built. A
+  reducer names the accumulation; Polypix fuses it into the geometry kernel
+  where that is faster. Omitting `reduce=` keeps the full `Coverage`.
+- Added `occupancy(timelines, *, minimum_sources=1)`, returning per-cell run
   counts, complete internal gap sums and maxima, and observed window bounds
-  computed in a single pass without building the runs.
+  computed in a single pass without ever building the runs.
 - Added packed ragged convex polygons through `vertex_offsets=`,
-  `Coverage.segment_indices()`, `Coverage.filter_hits()`, and
-  `cell_count()`.
+  `Coverage.segment_indices()`, and `cell_count()`.
+- Added exported argument-shape aliases `CellsLike`, `OffsetsLike`,
+  `VectorsLike`, `PolygonsLike`, `EdgesLike`, and `ValuesLike`.
 
 ### Changed
 
 - Answered a reduction over a small cell selection by testing those cells
-  instead of covering everything and gathering. `into=Count(cells=...)` and
-  `into=Sum(..., cells=...)` name the only cells the result depends on, so the
-  selection is itself a candidate set. Below a size bound the covering calls now
+  instead of covering everything and gathering. Under a reducer,
+  `candidate_cells` names the only cells the result depends on, so the
+  selection is itself a candidate set. Below a size bound the covering calls
   hand it to the kernel as one, which measured 220x faster for polygons at
   resolution 10, 870x for sums at resolution 11 with a third of the peak
   memory, and 30x for a sweep - all bitwise-identical results. Larger
   selections keep scanning once and gathering, which stays faster for them.
-  Passing `candidate_cells` explicitly is unchanged: it remains the caller's
-  restriction, not a hint.
+  Without a reducer `candidate_cells` is unchanged: the caller's restriction on
+  the coverage itself, not a hint.
 - Validated the offsets every segmented cell array carries in one shared place,
   so the occupancy entry points check them too. They index
   `cells[offsets[i]..offsets[i + 1]]` directly, but only checked that the
@@ -55,27 +54,26 @@
 
 - Replaced `count_caps_per_cell()`, `count_coverage_per_cell()`,
   `sum_coverage_per_cell()`, `occupancy_runs()`, and `occupancy_stats()` with
-  the `into=` reducer form, removing the geometry-specific reducer asymmetry
+  the `reduce=` reducer form, removing the geometry-specific reducer asymmetry
   and the two-verb occupancy split. The fused cap kernel is retained behind
-  `cover_cap(..., into=Count())`.
+  `cover_cap(..., reduce=Count())`.
 - Chose between the fused cap kernel and covering-then-reducing for
-  `cover_cap(..., into=Count(cells=...))` by comparing their estimated costs.
+  `cover_cap(..., candidate_cells=..., reduce=Count())` by comparing their
+  estimated costs.
   A fused selected count tests every cap against every requested cell, so it is
   kept for small requests and for caps too large to store; large requests
   now cover once and reduce. Always fusing was measured at up to 47x the cost.
   The comparison lives in the kernel, next to the code whose cost it weighs,
   and declines before preparing anything so that falling back stays cheap.
 - Added typed `@overload` signatures to `cover_convex_polygon()`,
-  `cover_cap()`, `cover_sweep()`, and `occupancy()`, so an `into=` call site
-  resolves to `Coverage`, `OccupancyRuns`, `OccupancyStats`, or the accumulated
-  array under `mypy --strict` instead of `Any`.
+  `cover_cap()`, and `cover_sweep()`, so a `reduce=` call site resolves to
+  `Coverage` or the accumulated array under `mypy --strict` instead of `Any`.
 - Narrowed the per-cell occupancy statistics accumulator from 32 to 24 bytes,
   which the existing segment-count bound already permits, recovering 9 to 16
-  percent on `occupancy(..., into=Stats())` across the dense and sparse paths.
+  percent on `occupancy()` across the dense and sparse paths.
 - Budgeted the dense occupancy state array against the accumulator actually
-  allocated, so `into=Stats()` no longer admits a grid sized for the smaller
-  run accumulator, and rejected segment and source counts that would truncate
-  through `u32` rather than returning a silently wrong result.
+  allocated, and rejected segment and source counts that would truncate through
+  `u32` rather than returning a silently wrong result.
 - Skipped the redundant per-hit revalidation of an already-validated,
   read-only `Coverage` inside `occupancy()` and the reductions, cutting
   two of four full passes over the hits.
@@ -107,17 +105,17 @@
   cell transforms to `cell_centers()` and `cell_corners()`.
 - Made zero- and one-sample sweeps consistently return empty segmented
   coverage.
-- Replaced the mixed source-local/source-unioned occupancy summary with complete
-  `OccupancyRuns`.
+- Replaced the mixed source-local/source-unioned occupancy summary with
+  thresholded per-cell occupancy statistics.
 - Cached scan-ring geometry at common resolutions, reused sweep sample
   normalization, and removed repeated polygon-longitude transforms.
 - Reworked the executable Starlink example around exact caps and the
-  Earth-observation example around native ordinal occupancy runs.
+  Earth-observation example around native ordinal occupancy statistics.
 
 ### Fixed
 
 - Declined to parallelize a dense cap count when its per-worker buffers cost
-  more than the scan they divide. `cover_cap(..., into=Count())` gives each
+  more than the scan they divide. `cover_cap(..., reduce=Count())` gives each
   worker a grid-sized accumulator and merges them by addition, and that buffer
   spans the whole grid however few caps a worker's chunk holds - so unlike
   coverage chunking, more workers neither shrinks it nor amortizes the merge
@@ -139,8 +137,7 @@
   use `cover_convex_polygon()`, `cell_centers()`, and `cell_corners()`.
 - Removed the ambiguous `Coverage.counts` property; use `segment_sizes`.
 - Removed the lossy `summarize_occupancy()` and `OccupancySummary`; use
-  `occupancy(..., into=Stats())`, or `occupancy()` for the runs themselves, and
-  calculate the required gap policy downstream.
+  `occupancy()` and calculate the required gap policy downstream.
 
 ## 0.3.0 — 2026-07-28
 

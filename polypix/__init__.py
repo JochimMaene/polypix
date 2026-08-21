@@ -21,7 +21,6 @@ from ._core import (
     _cover,
     _cover_cap,
     _cover_sweep,
-    _occupancy_runs,
     _occupancy_stats,
     _sum_coverage_per_cell,
     _validate_coverage,
@@ -174,90 +173,6 @@ class Coverage:
             None if cells is None else _coverage_cells(cells, self.resolution, "cells")
         )
         return _reduce_coverage(self, reducer, requested)
-
-    def filter_hits(
-        self,
-        mask: Sequence[bool] | npt.NDArray[np.bool_],
-    ) -> Coverage:
-        """Return coverage containing only flat hits selected by a boolean mask."""
-        selected = np.asarray(mask)
-        if selected.ndim != 1:
-            raise ValueError("mask must be a one-dimensional boolean array.")
-        if selected.size != self.cells.size:
-            raise ValueError("mask must contain one value per covered cell.")
-        if not np.issubdtype(selected.dtype, np.bool_):
-            # An empty Python sequence carries no dtype to honour, so accept it.
-            # Anything else reaching here was explicitly typed as non-boolean.
-            if selected.size or isinstance(mask, np.ndarray):
-                raise TypeError("mask must contain boolean values.")
-            selected = np.empty(0, dtype=np.bool_)
-
-        cumulative = np.empty(selected.size + 1, dtype=np.int64)
-        cumulative[0] = 0
-        np.cumsum(selected, dtype=np.int64, out=cumulative[1:])
-        # Dropping hits keeps cells in range, keeps offsets nondecreasing, and
-        # keeps each segment's cells unique, so the result needs no rescan.
-        return Coverage._from_owned(
-            self.cells[selected],
-            cumulative[self.offsets],
-            self.resolution,
-        )
-
-
-@dataclass(frozen=True, eq=False, init=False, slots=True)
-class OccupancyRuns:
-    """Read-only cell-major ordinal occupancy runs.
-
-    For cell ``i``, ``starts[offsets[i]:offsets[i + 1]]`` and the matching
-    ``stops`` form maximal half-open segment intervals ``[start, stop)``.
-    """
-
-    cells: npt.NDArray[np.int64]
-    offsets: npt.NDArray[np.int64]
-    starts: npt.NDArray[np.int64]
-    stops: npt.NDArray[np.int64]
-    resolution: int
-    segment_count: int
-    minimum_sources: int
-    source_count: int
-
-    def __init__(self, *_args: Never, **_kwargs: Never) -> None:
-        raise TypeError("OccupancyRuns values are constructed by Polypix.")
-
-    @classmethod
-    def _from_native(
-        cls,
-        cells: npt.NDArray[np.uint64],
-        offsets: npt.NDArray[np.uint64],
-        starts: npt.NDArray[np.uint64],
-        stops: npt.NDArray[np.uint64],
-        resolution: int,
-        segment_count: int,
-        minimum_sources: int,
-        source_count: int,
-    ) -> OccupancyRuns:
-        result = object.__new__(cls)
-        for name, array in (
-            ("cells", cells),
-            ("offsets", offsets),
-            ("starts", starts),
-            ("stops", stops),
-        ):
-            object.__setattr__(result, name, _signed_view(array))
-        object.__setattr__(result, "resolution", resolution)
-        object.__setattr__(result, "segment_count", segment_count)
-        object.__setattr__(result, "minimum_sources", minimum_sources)
-        object.__setattr__(result, "source_count", source_count)
-        return result
-
-    def __len__(self) -> int:
-        """Return the number of cells having at least one qualifying run."""
-        return self.cells.size
-
-    @property
-    def run_counts(self) -> npt.NDArray[np.int64]:
-        """Number of qualifying runs for each cell."""
-        return np.diff(self.offsets)
 
 
 @dataclass(frozen=True, eq=False, init=False, slots=True)
@@ -628,11 +543,6 @@ class Sum:
     """
 
     values: ValuesLike
-
-
-@dataclass(frozen=True, eq=False, slots=True)
-class Stats:
-    """Accumulate per-cell occupancy statistics without building the runs."""
 
 
 CoverageReducer = Count | Sum
@@ -1073,67 +983,29 @@ def _prepared_timelines(
     )
 
 
-@overload
 def occupancy(
     timelines: Coverage | Sequence[Coverage],
     *,
     minimum_sources: int = 1,
-    reduce: None = None,
-) -> OccupancyRuns: ...
-
-
-@overload
-def occupancy(
-    timelines: Coverage | Sequence[Coverage],
-    *,
-    minimum_sources: int = 1,
-    reduce: Stats,
-) -> OccupancyStats: ...
-
-
-def occupancy(
-    timelines: Coverage | Sequence[Coverage],
-    *,
-    minimum_sources: int = 1,
-    reduce: Stats | None = None,
-) -> OccupancyRuns | OccupancyStats:
+) -> OccupancyStats:
     """Read aligned coverage segments as ordered occupancy bins.
 
-    Each sequence entry is counted as one source. A cell is occupied in a
-    segment when at least ``minimum_sources`` entries cover it. Callers must
-    supply unique sources with identical, temporally adjacent bin boundaries
-    when those semantics matter. The result stays ordinal; callers decide how
-    boundaries map to physical time and how leading, trailing, or cyclic gaps
-    should be treated.
+    Each timeline is a coverage whose segments are consecutive, temporally
+    adjacent bins in ascending order. Each sequence entry is counted as one
+    source, and a cell is occupied in a segment when at least
+    ``minimum_sources`` entries cover it. Callers must supply unique timelines
+    with identical bin boundaries when those semantics matter. The result stays
+    ordinal; callers decide how boundaries map to physical time and how
+    leading, trailing, or cyclic gaps should be treated.
 
-    By default every maximal half-open run is kept, which costs memory in
-    proportion to the run count; that approaches the hit count when cells are
-    occupied briefly and repeatedly. ``reduce=Stats()`` instead accumulates
-    per-cell counts and complete internal gaps in one pass, without building
-    the runs at all. Keep the default when the boundaries themselves are the
-    answer: percentiles, minimum-duration filtering, short-gap merging, or
-    arbitrary per-run timestamps.
+    Per-cell counts and complete internal gaps accumulate in one pass, without
+    ever building the individual runs.
     """
-    if reduce is not None and not isinstance(reduce, Stats):
-        raise TypeError("reduce must be a Stats reducer, or None.")
     cells, offsets, resolution, segment_count, threshold, count = _prepared_timelines(
         timelines, minimum_sources, "occupancy"
     )
-    native_threshold = min(threshold, count + 1)
-    if isinstance(reduce, Stats):
-        return OccupancyStats._from_native(
-            _occupancy_stats(cells, offsets, resolution, native_threshold),
-            resolution=resolution,
-            segment_count=segment_count,
-            minimum_sources=threshold,
-            source_count=count,
-        )
-    result = _occupancy_runs(cells, offsets, resolution, native_threshold)
-    return OccupancyRuns._from_native(
-        cells=result[0],
-        offsets=result[1],
-        starts=result[2],
-        stops=result[3],
+    return OccupancyStats._from_native(
+        _occupancy_stats(cells, offsets, resolution, min(threshold, count + 1)),
         resolution=resolution,
         segment_count=segment_count,
         minimum_sources=threshold,
@@ -1195,11 +1067,9 @@ __all__ = [
     "Coverage",
     "CoverageReducer",
     "EdgesLike",
-    "OccupancyRuns",
     "OccupancyStats",
     "OffsetsLike",
     "PolygonsLike",
-    "Stats",
     "Sum",
     "ValuesLike",
     "VectorsLike",

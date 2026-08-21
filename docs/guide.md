@@ -252,33 +252,14 @@ exposure, duration, probability, or capacity instead of one count. The native
 reducer reads `Coverage.offsets` directly rather than repeating one value per
 hit.
 
-## Preserve occupied-bin runs
+## Summarize revisit over a timeline
 
-For revisit analysis, keep complete ordinal runs and apply time afterward:
-
-```{doctest}
->>> runs = px.occupancy(swath_coverage)
->>> bool(np.all(runs.starts < runs.stops))
-True
->>> time_edges_s = np.arange(swath_coverage.segment_count + 1) * 60
->>> run_starts_s = time_edges_s[runs.starts]
->>> run_stops_s = time_edges_s[runs.stops]
-```
-
-With multiple aligned source coverages, pass the sequence together. Matching
-segment indices must have identical time boundaries, and consecutive bins must
-be temporally adjacent. Set `minimum_sources=2` for simultaneous two-entry
-occupancy; source uniqueness is your responsibility. Polypix leaves maximum,
-percentile, leading/trailing, and cyclic gap definitions to the analysis layer
-because they are policy choices, not geometry. For sweeps, the result is an
-occupied-bin approximation whose physical boundary precision is limited by the
-sampling cadence.
-
-When runs are only a step on the way to per-cell revisit numbers, skip
-building them:
+When a coverage's segments are consecutive time bins, `occupancy()` reads them
+as a timeline and returns per-cell revisit statistics. Bins are ordinal, so
+apply your own time base afterward:
 
 ```{doctest}
->>> stats = px.occupancy(swath_coverage, reduce=px.Stats())
+>>> stats = px.occupancy(swath_coverage)
 >>> observed_once = stats.run_counts == 1
 >>> bool(np.all(stats.maximum_internal_gap_steps[observed_once] == 0))
 True
@@ -289,7 +270,17 @@ True
 
 Every field describes the same thresholded axis, so `run_counts`,
 `internal_gap_steps_sum`, and `maximum_internal_gap_steps` can be combined
-directly. `first_start` and `last_stop` let you add horizon-edge gaps yourself.
+directly. `first_start` and `last_stop` bound the observed window, so you can
+add horizon-edge gaps yourself.
+
+With multiple aligned timelines, pass the sequence together. Matching segment
+indices must have identical time boundaries, and consecutive bins must be
+temporally adjacent. Set `minimum_sources=2` for simultaneous two-source
+occupancy; source uniqueness is your responsibility. Polypix leaves percentile,
+leading/trailing, and cyclic gap definitions to the analysis layer because they
+are policy choices, not geometry. For sweeps, the result is an occupied-bin
+approximation whose physical boundary precision is limited by the sampling
+cadence.
 
 ## Count overlaps without building membership
 

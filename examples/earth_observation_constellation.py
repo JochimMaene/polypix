@@ -107,7 +107,7 @@ def reduce_coverage(
     # never build run boundaries. Physical time and the choice of which
     # gaps to summarize remain downstream of the ordinal occupancy operation.
     # --8<-- [start:eo-reduce]
-    stats = px.occupancy(coverages, reduce=px.Stats())
+    stats = px.occupancy(coverages)
     observations = np.zeros(cell_count, dtype=np.int64)
     gap_counts = np.zeros(cell_count, dtype=np.int64)
     mean_internal_gap_s = np.full(cell_count, np.nan, dtype=np.float64)
