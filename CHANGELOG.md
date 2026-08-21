@@ -11,7 +11,7 @@
   call and by `Coverage.reduce()` for cell lists that are already built. A
   reducer names the accumulation; Polypix fuses it into the geometry kernel
   where that is faster. Omitting `reduce=` keeps the full `Coverage`.
-- Added `occupancy(timelines, *, minimum_sources=1)`, returning per-cell run
+- Added `revisit(timelines, *, minimum_sources=1)`, returning per-cell run
   counts, complete internal gap sums and maxima, and observed window bounds
   computed in a single pass without ever building the runs. The result carries
   those six arrays and nothing else: every one of them needs that pass, and
@@ -19,8 +19,6 @@
   caller supplied.
 - Added ragged convex polygon batches, passed as a sequence of
   `(vertices, 3)` arrays, and `cell_count()`.
-- Added exported argument-shape aliases `CellsLike`, `OffsetsLike`,
-  `VectorsLike`, `PolygonsLike`, `EdgesLike`, and `ValuesLike`.
 
 ### Changed
 
@@ -44,7 +42,7 @@
   Without a reducer `candidate_cells` is unchanged: the caller's restriction on
   the coverage itself, not a hint.
 - Validated the offsets every segmented cell array carries in one shared place,
-  so the occupancy entry points check them too. They index
+  so the revisit entry point checks them too. They index
   `cells[offsets[i]..offsets[i + 1]]` directly, but only checked that the
   offsets were nonempty and agreed on a segment count. Offsets no `Coverage`
   produced - reachable through the native functions, which take any arrays -
@@ -70,10 +68,9 @@
   alignment. The declared `rust-version` stays 1.87, which the crate needs for
   `is_multiple_of`, and is above the 1.83 both dependencies require.
 
-- Replaced `count_caps_per_cell()`, `count_coverage_per_cell()`,
-  `sum_coverage_per_cell()`, `occupancy_runs()`, and `revisit_stats()` with
-  the `reduce=` reducer form, removing the geometry-specific reducer asymmetry
-  and the two-verb occupancy split. The fused cap kernel is retained behind
+- Replaced `count_caps_per_cell()`, `count_coverage_per_cell()`, and
+  `sum_coverage_per_cell()` with the `reduce=` reducer form, removing the
+  geometry-specific reducer asymmetry. The fused cap kernel is retained behind
   `cover_cap(..., reduce=Count())`.
 - Chose between the fused cap kernel and covering-then-reducing for
   `cover_cap(..., candidate_cells=..., reduce=Count())` by comparing their
@@ -86,14 +83,14 @@
 - Added typed `@overload` signatures to `cover_convex_polygon()`,
   `cover_cap()`, and `cover_sweep()`, so a `reduce=` call site resolves to
   `Coverage` or the accumulated array under `mypy --strict` instead of `Any`.
-- Narrowed the per-cell occupancy statistics accumulator from 32 to 24 bytes,
+- Narrowed the per-cell revisit statistics accumulator from 32 to 24 bytes,
   which the existing segment-count bound already permits, recovering 9 to 16
-  percent on `occupancy()` across the dense and sparse paths.
-- Budgeted the dense occupancy state array against the accumulator actually
+  percent on `revisit()` across the dense and sparse paths.
+- Budgeted the dense revisit state array against the accumulator actually
   allocated, and rejected segment and source counts that would truncate through
   `u32` rather than returning a silently wrong result.
 - Skipped the redundant per-hit revalidation of an already-validated,
-  read-only `Coverage` inside `occupancy()` and the reductions, cutting
+  read-only `Coverage` inside `revisit()` and the reductions, cutting
   two of four full passes over the hits.
 - Removed two redundant validation passes when importing an integer array,
   which the move to signed public indices had put on the path of feeding any
@@ -115,22 +112,28 @@
   hash path and its flat memory profile.
 - Made `Coverage` a validated, read-only segmented interchange type with
   `from_arrays()`, segment indexing, `len()`, and zero-copy native results.
-- Standardized public cell IDs, offsets, segment indices, and occupancy-run
-  indices on signed `int64`; renamed the canonical per-segment size property to
-  `segment_sizes`.
+- Standardized public cell IDs, offsets, and revisit window bounds on signed
+  `int64`.
 - Renamed the paired-edge operation from `cover_strip()` to `cover_sweep()` and
   the canonical convex-region operation to `cover_convex_polygon()`. Renamed
   cell transforms to `cell_centers()` and `cell_corners()`.
 - Made zero- and one-sample sweeps consistently return empty segmented
   coverage.
 - Replaced the mixed source-local/source-unioned occupancy summary with
-  thresholded per-cell occupancy statistics.
+  thresholded per-cell revisit statistics.
 - Cached scan-ring geometry at common resolutions, reused sweep sample
   normalization, and removed repeated polygon-longitude transforms.
 - Reworked the executable Starlink example around exact caps and the
-  Earth-observation example around native ordinal occupancy statistics.
+  Earth-observation example around native ordinal revisit statistics.
 
 ### Fixed
+
+- Selected reductions over large footprints no longer scan the whole grid when
+  testing the selection is cheaper. The choice was made in Python from the
+  selection size alone, which cannot see the scan cost, so it inverted for large
+  footprints: 400 quads of 1.5 degrees at resolution 11 with 50,000 selected
+  cells took 69 ms instead of 11 ms. The kernel decides now, using the scan
+  estimate it already computes. Results were identical either way.
 
 - Declined to parallelize a dense cap count when its per-worker buffers cost
   more than the scan they divide. `cover_cap(..., reduce=Count())` gives each
@@ -153,9 +156,16 @@
 
 - Removed the pre-1.0 `cover_footprint()`, `centers()`, and `corners()` names;
   use `cover_convex_polygon()`, `cell_centers()`, and `cell_corners()`.
-- Removed the ambiguous `Coverage.counts` property; use `segment_sizes`.
 - Removed the lossy `summarize_occupancy()` and `OccupancySummary`; use
-  `occupancy()` and calculate the required gap policy downstream.
+  `revisit()` and calculate the required gap policy downstream.
+- Removed the derivable `Coverage` members `counts`, `segment_sizes`,
+  `segment_indices()`, `segment_count`, and `filter_hits()`. None is cheaper
+  inside Polypix than outside it: use `np.diff(coverage.offsets)`,
+  `np.repeat(np.arange(len(coverage)), np.diff(coverage.offsets))`, and
+  `len(coverage)`. `len()` and segment indexing remain.
+- Removed `cover_convex_polygon(..., vertex_offsets=...)`. A caller holding a
+  packed buffer passes a sequence of slices into it and pays one `concatenate`,
+  which measured within noise of building the offsets by hand.
 
 ## 0.3.0 — 2026-07-28
 

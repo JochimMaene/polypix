@@ -8,12 +8,13 @@ use std::f64::consts::TAU;
 use std::ops::Range;
 use std::sync::OnceLock;
 
-use crate::error::{NativeError, NativeResult};
+use crate::error::NativeResult;
 use crate::geometry::{
     contains_center, dot, nearly_equal, normalize, polygon_contains, prepare_polygon,
     validate_polygon, Polygon, Vec3, CONTAINMENT_EPSILON,
 };
 
+use super::cover::push_coverage_cell;
 use super::grid::{raw_cell_count, ring_info, ring_range, Ring};
 
 pub(super) const ROTATION_RESYNC_STEPS: u64 = 64;
@@ -64,29 +65,23 @@ pub(super) fn longitude_bounds(
     }
 
     // Common quads and 16-gons stay entirely on the stack. Each longitude is
-    // evaluated once, then the active slice is sorted in place. Keeping equal
-    // longitudes is important: thin north/south edges commonly have two
-    // vertices at the same longitude.
-    let mut inline_vertex_longitudes = [0.0_f64; 16];
-    let mut allocated_vertex_longitudes = Vec::new();
-    let vertex_longitudes = if vertices.len() <= inline_vertex_longitudes.len() {
-        &mut inline_vertex_longitudes[..vertices.len()]
+    // evaluated once into the first half of one scratch buffer, then copied
+    // into the second half and sorted there. Keeping equal longitudes is
+    // important: thin north/south edges commonly have two vertices at the same
+    // longitude.
+    let mut inline_scratch = [0.0_f64; 32];
+    let mut spilled_scratch = Vec::new();
+    let scratch: &mut [f64] = if 2 * vertices.len() <= inline_scratch.len() {
+        &mut inline_scratch[..2 * vertices.len()]
     } else {
-        allocated_vertex_longitudes.resize(vertices.len(), 0.0);
-        &mut allocated_vertex_longitudes
+        spilled_scratch.resize(2 * vertices.len(), 0.0);
+        &mut spilled_scratch
     };
+    let (vertex_longitudes, sorted_longitudes) = scratch.split_at_mut(vertices.len());
     for (longitude, vertex) in vertex_longitudes.iter_mut().zip(vertices) {
         *longitude = vertex[1].atan2(vertex[0]).rem_euclid(TAU);
     }
 
-    let mut inline_sorted_longitudes = [0.0_f64; 16];
-    let mut allocated_sorted_longitudes = Vec::new();
-    let sorted_longitudes = if vertices.len() <= inline_sorted_longitudes.len() {
-        &mut inline_sorted_longitudes[..vertices.len()]
-    } else {
-        allocated_sorted_longitudes.resize(vertices.len(), 0.0);
-        &mut allocated_sorted_longitudes
-    };
     sorted_longitudes.copy_from_slice(vertex_longitudes);
     sorted_longitudes.sort_unstable_by(f64::total_cmp);
     let mut largest_gap = -1.0;
@@ -422,21 +417,6 @@ pub(super) fn visit_cap_ranges(cap: &Cap, resolution: u8, mut visit: impl FnMut(
     }
 }
 
-/// Push a scanned cell onto a materialized result, growing in batches.
-///
-/// A batch of 1024 amortizes the reserve check across many cheap pushes. Split
-/// out so `cover_centers` can take it as a closure rather than owning the
-/// `Vec` it grows.
-fn push_scanned_cell(cells: &mut Vec<u64>, cell: u64) -> NativeResult<()> {
-    if cells.len() == cells.capacity() {
-        cells.try_reserve(1024).map_err(|_| {
-            NativeError::out_of_memory("Coverage result is too large to fit in memory.")
-        })?;
-    }
-    cells.push(cell);
-    Ok(())
-}
-
 pub(super) fn cover_centers(
     vertices: &[Vec3],
     edge_normals: &[Vec3],
@@ -614,7 +594,7 @@ impl PreparedFootprint {
     }
 
     pub(super) fn cover(&self, resolution: u8, cells: &mut Vec<u64>) -> NativeResult<()> {
-        let visit = |cell| push_scanned_cell(cells, cell);
+        let visit = |cell| push_coverage_cell(cells, cell, 1024);
         match self {
             Self::Quad(quad) => cover_centers(
                 &quad.vertices[..quad.len],

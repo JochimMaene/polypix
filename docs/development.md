@@ -11,7 +11,8 @@ rust/
   revisit.rs          segmented revisit and gap reduction
   geometry.rs         convex spherical-polygon validation
   lib.rs              PyO3 bindings and native-buffer safety
-  ring.rs             HEALPix RING coverage and threading
+  ring/               HEALPix RING coverage, planning, and threading
+  reduce.rs           dense and selected coverage reductions
 tests/                behavior tests and independent geometry fixtures
 benchmarks/           CodSpeed public-call regression benchmarks
 examples/             the two documented case studies and their shared helpers
@@ -146,4 +147,4 @@ rather than user instructions:
 - [Owned HEALPix kernel](https://github.com/JochimMaene/polypix/blob/main/decisions/owned-healpix-kernel.md)
 - [Exact caps and segmented occupancy](https://github.com/JochimMaene/polypix/blob/main/decisions/cap-and-occupancy-primitives.md)
 - [API surface beyond constellation examples](https://github.com/JochimMaene/polypix/blob/main/decisions/api-surface-beyond-constellations.md)
-- [Coverage reductions and ordinal occupancy runs](https://github.com/JochimMaene/polypix/blob/main/decisions/coverage-reductions-and-occupancy-runs.md)
+- [Coverage reductions and revisit statistics](https://github.com/JochimMaene/polypix/blob/main/decisions/coverage-reductions-and-revisit-statistics.md)

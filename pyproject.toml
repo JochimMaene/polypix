@@ -41,6 +41,7 @@ test = ["pytest>=8"]
 bindings = "pyo3"
 module-name = "polypix._core"
 python-source = "."
+strip = true
 
 [tool.pixi.workspace]
 channels = ["conda-forge"]

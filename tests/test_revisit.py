@@ -11,9 +11,9 @@ import polypix as px
 
 
 def _expected_stats(qualifying: np.ndarray) -> dict[str, list[int]]:
-    """Statistics for a ``(segments, cells)`` boolean occupancy matrix.
+    """Statistics for a ``(segments, cells)`` boolean coverage matrix.
 
-    Derived from the occupancy itself rather than from anything Polypix
+    Derived from the coverage itself rather than from anything Polypix
     returns, so the kernel's own run bookkeeping is never the reference.
     """
     expected: dict[str, list[int]] = {
@@ -43,7 +43,7 @@ def _expected_stats(qualifying: np.ndarray) -> dict[str, list[int]]:
     return expected
 
 
-def test_occupancy_summarizes_complete_ordinal_windows() -> None:
+def test_revisit_summarizes_complete_ordinal_windows() -> None:
     first = px.Coverage.from_arrays(
         cells=[1, 1, 2, 2, 1],
         offsets=[0, 1, 3, 4, 4, 5],
@@ -96,7 +96,7 @@ def test_occupancy_summarizes_complete_ordinal_windows() -> None:
     np.testing.assert_array_equal(repeated.cells, [1, 2])
 
 
-def test_occupancy_validates_alignment_and_threshold() -> None:
+def test_revisit_validates_alignment_and_threshold() -> None:
     one = px.Coverage.from_arrays([1], [0, 1], resolution=1)
     two_segments = px.Coverage.from_arrays([1], [0, 1, 1], resolution=1)
     other_resolution = px.Coverage.from_arrays([1], [0, 1], resolution=2)
@@ -117,16 +117,16 @@ def test_occupancy_validates_alignment_and_threshold() -> None:
         px.revisit([one, object()])  # type: ignore[list-item]
 
 
-def test_occupancy_matches_random_boolean_oracle() -> None:
+def test_revisit_matches_random_boolean_oracle() -> None:
     random = np.random.default_rng(20260819)
     for _ in range(60):
         source_count = int(random.integers(1, 5))
         segment_count = int(random.integers(0, 11))
-        occupancy = random.random((source_count, segment_count, 12)) < 0.22
+        covered = random.random((source_count, segment_count, 12)) < 0.22
         sources: list[px.Coverage] = []
-        for source_occupancy in occupancy:
+        for source_covered in covered:
             segments = [
-                np.flatnonzero(segment).astype(np.int64) for segment in source_occupancy
+                np.flatnonzero(segment).astype(np.int64) for segment in source_covered
             ]
             sizes = np.asarray([segment.size for segment in segments], dtype=np.int64)
             offsets = np.concatenate(
@@ -139,14 +139,14 @@ def test_occupancy_matches_random_boolean_oracle() -> None:
 
         threshold = int(random.integers(1, source_count + 2))
         actual = px.revisit(sources, minimum_sources=threshold)
-        expected = _expected_stats(occupancy.sum(axis=0) >= threshold)
+        expected = _expected_stats(covered.sum(axis=0) >= threshold)
 
         for name, values in expected.items():
             np.testing.assert_array_equal(getattr(actual, name), values, err_msg=name)
 
 
 @pytest.mark.parametrize("resolution", [0, 2, 29], ids=["r0", "r2", "r29_sparse"])
-def test_occupancy_matches_the_oracle_on_both_memory_profiles(
+def test_revisit_matches_the_oracle_on_both_memory_profiles(
     resolution: int,
 ) -> None:
     """Resolution 29 cannot hold a dense state array, so it takes the hash path."""
@@ -155,12 +155,12 @@ def test_occupancy_matches_the_oracle_on_both_memory_profiles(
     for _ in range(40):
         segments = int(rng.integers(1, 12))
         source_count = int(rng.integers(1, 4))
-        occupancy = rng.random((source_count, segments, cell_count)) < 0.4
+        covered = rng.random((source_count, segments, cell_count)) < 0.4
         sources = []
-        for source_occupancy in occupancy:
+        for source_covered in covered:
             cells: list[int] = []
             offsets = [0]
-            for segment in source_occupancy:
+            for segment in source_covered:
                 cells.extend(int(cell) for cell in np.flatnonzero(segment))
                 offsets.append(len(cells))
             sources.append(
@@ -172,13 +172,13 @@ def test_occupancy_matches_the_oracle_on_both_memory_profiles(
             )
         threshold = int(rng.integers(1, source_count + 2))
         stats = px.revisit(sources, minimum_sources=threshold)
-        expected = _expected_stats(occupancy.sum(axis=0) >= threshold)
+        expected = _expected_stats(covered.sum(axis=0) >= threshold)
 
         for name, values in expected.items():
             np.testing.assert_array_equal(getattr(stats, name), values, err_msg=name)
 
 
-def test_occupancy_accepts_unsorted_hits_and_all_empty_segments() -> None:
+def test_revisit_accepts_unsorted_hits_and_all_empty_segments() -> None:
     shuffled = px.Coverage.from_arrays(
         cells=[7, 2, 7, 2],
         offsets=[0, 2, 4],
@@ -196,7 +196,7 @@ def test_occupancy_accepts_unsorted_hits_and_all_empty_segments() -> None:
     np.testing.assert_array_equal(empty.cells, [])
 
 
-def test_occupancy_preserves_resolution_29_cell_ids() -> None:
+def test_revisit_preserves_resolution_29_cell_ids() -> None:
     final_cell = px.cell_count(29) - 1
     coverage = px.Coverage.from_arrays(
         [final_cell, 0, final_cell],
@@ -226,7 +226,7 @@ def test_occupancy_preserves_resolution_29_cell_ids() -> None:
         ([0, 2], "offsets[-1] must equal"),
     ],
 )
-def test_native_occupancy_rejects_malformed_offsets(
+def test_native_revisit_rejects_malformed_offsets(
     offsets: list[int], expected: str
 ) -> None:
     """The native entry point indexes offsets directly, so it must check them.

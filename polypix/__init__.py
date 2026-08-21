@@ -517,10 +517,6 @@ def _as_polygons(
     # Identical shapes pack into one dense array. Anything else - differing
     # vertex counts, and differing widths, which would otherwise reach
     # ``np.asarray`` as a ragged nested sequence and leak its message - takes
-    # the per-entry path, where a failure can be named.
-    # Identical shapes pack into one dense array. Anything else - differing
-    # vertex counts, and differing widths, which would otherwise reach
-    # ``np.asarray`` as a ragged nested sequence and leak its message - takes
     # the per-entry path, where a failure can be named. Comparing against the
     # first shape short-circuits on a ragged batch, where hashing every shape
     # into a set would not.
@@ -641,6 +637,7 @@ def cover_convex_polygon(
             offsets,
             resolved,
             candidates,
+            reducer is None,
             _as_threads(threads),
         ),
         resolved,
@@ -724,7 +721,9 @@ def cover_cap(
         if counts is not None:
             return counts
     coverage = Coverage._from_native(
-        *_cover_cap(centers, radii, resolved, candidates, requested_threads),
+        *_cover_cap(
+            centers, radii, resolved, candidates, reducer is None, requested_threads
+        ),
         resolved,
     )
     if reducer is None:
@@ -756,54 +755,28 @@ def _coverage_cells(
     return cells
 
 
-# Reducing over a selection asks about those cells and no others, so the
-# selection is itself a candidate set: the kernel can test each selected cell
-# against each footprint instead of scanning every ring the footprints cross
-# and discarding nearly everything it finds. Testing costs one cell decode plus
-# one predicate per selected cell per footprint, so it wins only while the
-# selection stays small. Measured against covering then gathering, it is worth
-# between 1.4x and 380x below the two bounds here, and loses by up to 50x well
-# above them; at the bounds themselves the worst case measured was a 9% loss on
-# a one-millisecond call. The proportional bound keeps the trade comparable
-# across resolutions, and the absolute bound stops a resolution-11 grid from
-# admitting fifty thousand cells merely because they are a small share of it.
-_SELECTED_CANDIDATE_GRID_DIVISOR = 1000
-_SELECTED_CANDIDATE_MAXIMUM = 4096
-
-
-def _restriction_is_cheaper(
-    requested: npt.NDArray[np.uint64],
-    resolution: int,
-) -> bool:
-    """Whether testing a selection beats scanning the rings and gathering."""
-    limit = min(
-        cell_count(resolution) // _SELECTED_CANDIDATE_GRID_DIVISOR,
-        _SELECTED_CANDIDATE_MAXIMUM,
-    )
-    return bool(requested.size <= limit)
-
-
 def _reduction_plan(
     candidate_cells: CellsLike | None,
     reducer: CoverageReducer | None,
     resolution: int,
 ) -> tuple[npt.NDArray[np.uint64] | None, npt.NDArray[np.uint64] | None]:
-    """Split ``candidate_cells`` into a scan restriction and an output request.
+    """Validate ``candidate_cells`` and say whether it also restricts the scan.
 
-    Without a reducer the selection *is* the result, so it always restricts the
-    scan and there is nothing to request. With one it fixes the output's index
-    space instead, and restricting the scan becomes a free choice: a cell
-    outside the selection contributes to no selected cell's count, and to no
-    selected cell's sum either, so :class:`Sum` keeps both its value and its
-    addition order. Take the restriction only while it is the cheaper plan.
+    Without a reducer the selection *is* the result, so the kernel must restrict
+    the scan to it. With one it fixes the output's index space instead, and
+    restricting the scan becomes a free choice: a cell outside the selection
+    contributes to no selected cell's count, and to no selected cell's sum
+    either, so :class:`Sum` keeps both its value and its addition order. The
+    selection is then passed as a hint, and the kernel takes it only while
+    testing it is cheaper than scanning -- a comparison that needs the scan
+    cost, which only the kernel can estimate.
     """
     if candidate_cells is None:
         return None, None
     if reducer is None:
         return _as_candidates(candidate_cells), None
     requested = _coverage_cells(candidate_cells, resolution, "candidate_cells")
-    restriction = requested if _restriction_is_cheaper(requested, resolution) else None
-    return restriction, requested
+    return requested, requested
 
 
 def _as_segment_values(
@@ -920,7 +893,9 @@ def cover_sweep(
     requested_threads = _as_threads(threads)
     candidates, requested = _reduction_plan(candidate_cells, reducer, resolved)
     coverage = Coverage._from_native(
-        *_cover_sweep(left, right, resolved, candidates, requested_threads),
+        *_cover_sweep(
+            left, right, resolved, candidates, reducer is None, requested_threads
+        ),
         resolved,
     )
     if reducer is None:

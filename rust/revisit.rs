@@ -72,13 +72,6 @@ const DENSE_STATE_ALWAYS_BYTES: usize = 8 * 1024 * 1024;
 const DENSE_MINIMUM_WORK_DIVISOR: usize = 8;
 const NEVER_SEGMENT: u32 = u32::MAX;
 
-/// Dense per-cell accumulator whose interval counter the shared segment pass
-/// owns. Everything else in the state belongs to the reduction using it.
-trait IntervalCounted: Copy {
-    fn interval_count(&self) -> u32;
-    fn set_interval_count(&mut self, count: u32);
-}
-
 fn dense_state_length(resolution: u8, total_hits: usize, element_bytes: usize) -> Option<usize> {
     let cell_count = usize::try_from(ring::raw_cell_count(resolution)).ok()?;
     let state_bytes = cell_count.checked_mul(element_bytes)?;
@@ -150,17 +143,16 @@ fn invalid_source_cell(cell: u64, resolution: u8) -> NativeError {
 /// Fold one segment of every source into the dense interval counters, listing
 /// every cell the segment touched.
 ///
-/// This is the hit-rate-bound half of both dense reductions and the only half
-/// they share: what a qualifying cell then means is reduction-specific, so
-/// callers walk `touched` themselves and clear it. `touched` is caller-owned
-/// scratch so a two-pass caller keeps its capacity across passes. The counter
-/// stops climbing once the threshold is reached, so it cannot overflow however
-/// many sources repeat a cell.
-fn accumulate_dense_segment<S: IntervalCounted>(
+/// This is the hit-rate-bound half of the dense reduction: what a qualifying
+/// cell then means is reduction-specific, so the caller walks `touched` itself
+/// and clears it. `touched` is caller-owned scratch so a two-pass caller keeps
+/// its capacity across passes. The counter stops climbing once the threshold is
+/// reached, so it cannot overflow however many sources repeat a cell.
+fn accumulate_dense_segment(
     sources: SegmentedSources<'_>,
     segment: usize,
     minimum_sources: u32,
-    states: &mut [S],
+    states: &mut [StatsState],
     touched: &mut Vec<usize>,
     resolution: u8,
     out_of_memory: fn() -> NativeError,
@@ -175,7 +167,7 @@ fn accumulate_dense_segment<S: IntervalCounted>(
                 return Err(invalid_source_cell(cell, resolution));
             };
             let cell = index;
-            let count = state.interval_count();
+            let count = state.interval_count;
             if count == 0 {
                 if touched.len() == touched.capacity() {
                     touched.try_reserve(1).map_err(|_| out_of_memory())?;
@@ -183,7 +175,7 @@ fn accumulate_dense_segment<S: IntervalCounted>(
                 touched.push(cell);
             }
             if count < minimum_sources {
-                state.set_interval_count(count + 1);
+                state.interval_count = count + 1;
             }
         }
     }
@@ -200,8 +192,13 @@ fn accumulate_dense_segment<S: IntervalCounted>(
 /// A map-keyed accumulator has no bound of its own to lean on, so unlike the
 /// dense path it must compare against the grid explicitly. One comparison per
 /// hit is negligible beside the hash probe that follows it, and without it a
-/// mutated `Coverage` would produce a silently wrong result rather than an
-/// error.
+/// mutated `Coverage` would index outside the grid rather than report an error.
+///
+/// That check bounds the keys, not the counts. A `Coverage` mutated to repeat a
+/// cell within one source would inflate that cell's count here, and detecting it
+/// would cost a per-source set on every segment. `Coverage` forbids it, so this
+/// is where the trust stops: mutation is caught when it would corrupt memory or
+/// escape the grid, not when it would only make a count wrong.
 fn count_sparse_segment(
     sources: SegmentedSources<'_>,
     segment: usize,
@@ -284,20 +281,8 @@ impl StatsState {
     }
 }
 
-impl IntervalCounted for StatsState {
-    #[inline]
-    fn interval_count(&self) -> u32 {
-        self.interval_count
-    }
-
-    #[inline]
-    fn set_interval_count(&mut self, count: u32) {
-        self.interval_count = count;
-    }
-}
-
 fn stats_out_of_memory_error() -> NativeError {
-    NativeError::out_of_memory("Occupancy statistics are too large to fit in memory.")
+    NativeError::out_of_memory("Revisit statistics are too large to fit in memory.")
 }
 
 fn push_stats(out: &mut RevisitStats, cell: u64, state: &StatsState) {

@@ -2,17 +2,10 @@ use std::collections::HashMap;
 use std::mem::size_of;
 
 use crate::error::{NativeError, NativeResult};
-use crate::ring::{self, MAX_RESOLUTION};
+use crate::ring;
 
 const COUNT_OVERFLOW: &str = "Too many coverage hits to represent counts as int64.";
 const SUM_OVERFLOW: &str = "Coverage values overflowed float64 during summation.";
-
-fn raw_cell_count(resolution: u8) -> NativeResult<u64> {
-    if resolution > MAX_RESOLUTION {
-        return Err(format!("resolution must be between 0 and {MAX_RESOLUTION}.").into());
-    }
-    Ok(ring::raw_cell_count(resolution))
-}
 
 // A dense scratch grid beats one hash probe per hit while the grid stays
 // small. Above this the hash path keeps memory flat for the sparse
@@ -23,7 +16,7 @@ const DENSE_SCRATCH_MAX_BYTES: usize = 8 * 1024 * 1024;
 // while a hash probe costs tens of nanoseconds per item, so the grid only pays
 // for itself once the call touches a reasonable share of it. Without this a
 // four-cell query at resolution 8 zeroes 6 MiB and loses to the hash path by an
-// order of magnitude. Mirrors `DENSE_MINIMUM_WORK_DIVISOR` in `access.rs`.
+// order of magnitude. Mirrors `DENSE_MINIMUM_WORK_DIVISOR` in `revisit.rs`.
 const DENSE_SCRATCH_MINIMUM_WORK_DIVISOR: u64 = 32;
 
 fn dense_scratch_fits(cell_count: u64, element_bytes: usize, work: usize) -> bool {
@@ -142,7 +135,7 @@ pub(crate) fn count_coverage_per_cell(
     resolution: u8,
     requested_cells: Option<&[u64]>,
 ) -> NativeResult<Vec<i64>> {
-    let cell_count = raw_cell_count(resolution)?;
+    let cell_count = ring::raw_cell_count(resolution);
     if cells.len() > i64::MAX as usize {
         return Err(COUNT_OVERFLOW.to_owned().into());
     }
@@ -160,7 +153,7 @@ fn validate_weighted_coverage(
     values: &[f64],
     resolution: u8,
 ) -> NativeResult<u64> {
-    let cell_count = raw_cell_count(resolution)?;
+    let cell_count = ring::raw_cell_count(resolution);
     let cells_length = u64::try_from(cells.len())
         .map_err(|_| NativeError::out_of_memory("Coverage is too large to address."))?;
     ring::validate_offsets(offsets, cells_length, "")?;

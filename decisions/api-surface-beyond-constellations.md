@@ -162,7 +162,7 @@ Fused cap counting remains because direct RING-span accumulation is materially
 faster than cap coverage followed by reduction. Polygon- or sweep-specific
 fused reducers require the same end-to-end evidence; naming symmetry does not
 admit them. See
-[Coverage Reductions and Ordinal Occupancy Runs](coverage-reductions-and-occupancy-runs.md).
+[Coverage Reductions and Revisit Statistics](coverage-reductions-and-revisit-statistics.md).
 
 ### Counts without cell materialization
 

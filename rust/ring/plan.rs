@@ -56,12 +56,12 @@ pub(super) const DENSE_ACCUMULATOR_PARALLEL_MAX_BYTES: usize = 256 * 1024 * 1024
 // a prime candidate for re-measurement on new hardware.
 pub(super) const DENSE_ACCUMULATOR_PARALLEL_WORK_RATIO: usize = 8;
 
-// The two ways to answer a selected cap count, priced in units of one
-// cap-containment test. Testing every cap against every requested cell also
-// decodes each cell centre from its RING index, which costs about 90 tests.
-// Building coverage once and counting it instead costs about 21 tests per hit
-// emitted and per cell gathered. Caps too wide to build coverage for keep the
-// testing path, because their hit estimate dwarfs the test count.
+// The two ways to answer any selected query, priced in units of one
+// containment test. Testing every item against every selected cell also decodes
+// each cell centre from its RING index, which costs about 90 tests. Scanning the
+// rings once instead costs about 21 tests per hit emitted and per cell gathered.
+// Footprints too wide to scan keep the testing path, because their hit estimate
+// dwarfs the test count.
 pub(super) const CELL_DECODE_TESTS: f64 = 90.0;
 
 pub(super) const COVERAGE_HIT_TESTS: f64 = 21.0;
@@ -111,12 +111,22 @@ pub(super) struct CandidatePlan {
 }
 
 /// Summarize per-item candidate ranges into one plan.
+///
+/// Empty ranges are excluded from the cached-centre span. An item whose
+/// latitude band misses the candidate set entirely yields `0..0`, which would
+/// otherwise drag `center_start` to zero and inflate the span to the whole
+/// set — suppressing the cache for every other item in the batch.
 pub(super) fn plan_from_ranges(ranges: Vec<Range<usize>>) -> CandidatePlan {
     let total_visits = ranges
         .iter()
         .fold(0_usize, |total, range| total.saturating_add(range.len()));
-    let center_start = ranges.iter().map(|range| range.start).min().unwrap_or(0);
-    let center_end = ranges.iter().map(|range| range.end).max().unwrap_or(0);
+    let mut occupied = ranges.iter().filter(|range| !range.is_empty());
+    let (center_start, center_end) = match occupied.next() {
+        Some(first) => occupied.fold((first.start, first.end), |(start, end), range| {
+            (start.min(range.start), end.max(range.end))
+        }),
+        None => (0, 0),
+    };
     CandidatePlan {
         ranges,
         center_start,
@@ -207,35 +217,42 @@ pub(super) fn estimated_cap_cells(raw: &[f64], resolution: u8) -> usize {
     (sphere_fraction * cell_count) as usize
 }
 
-pub(super) fn accumulated_scan_work(
+/// Extrapolate a per-item estimate over a batch from an evenly spread sample.
+///
+/// Deciding must not cost a pass over every item, so this samples at most
+/// `SCAN_WORK_SAMPLE_SIZE`, always including the first and the last.
+pub(super) fn sampled_total(
     item_count: usize,
-    threads: Option<usize>,
     mut estimate_item: impl FnMut(usize) -> usize,
 ) -> usize {
-    if threads == Some(1) || item_count <= 1 {
+    let sample_count = item_count.min(SCAN_WORK_SAMPLE_SIZE);
+    if sample_count == 0 {
         return 0;
     }
-    let mut work = item_count.saturating_mul(SCAN_PREPARATION_WORK);
-    if work >= SCAN_PARALLEL_MIN_WORK {
-        return work;
-    }
-    let sample_count = item_count.min(SCAN_WORK_SAMPLE_SIZE);
-    let sampled_work = (0..sample_count).fold(0_usize, |sampled_work, sample_index| {
+    let sampled = (0..sample_count).fold(0_usize, |sampled, sample_index| {
         let index = if sample_count == 1 {
             0
         } else {
             sample_index * (item_count - 1) / (sample_count - 1)
         };
-        sampled_work.saturating_add(estimate_item(index))
+        sampled.saturating_add(estimate_item(index))
     });
-    if sample_count > 0 {
-        work = work.saturating_add(
-            sampled_work
-                .saturating_mul(item_count)
-                .div_ceil(sample_count),
-        );
+    sampled.saturating_mul(item_count).div_ceil(sample_count)
+}
+
+pub(super) fn accumulated_scan_work(
+    item_count: usize,
+    threads: Option<usize>,
+    estimate_item: impl FnMut(usize) -> usize,
+) -> usize {
+    if threads == Some(1) || item_count <= 1 {
+        return 0;
     }
-    work
+    let work = item_count.saturating_mul(SCAN_PREPARATION_WORK);
+    if work >= SCAN_PARALLEL_MIN_WORK {
+        return work;
+    }
+    work.saturating_add(sampled_total(item_count, estimate_item))
 }
 
 pub(super) fn expected_cells_per_footprint(resolution: u8) -> usize {
@@ -263,18 +280,33 @@ pub(super) fn expected_total_hits(radii: &[f64], resolution: u8) -> f64 {
     raw_cell_count(resolution) as f64 * fraction
 }
 
-/// Whether covering once and counting beats testing every cap against every
-/// requested cell.
+/// Whether scanning the rings once beats testing every item against every
+/// selected cell, priced in containment tests.
 ///
-/// Reads the raw radii so the caller can decide before preparing anything:
-/// declining has to stay cheap, because the work is then done another way.
-/// Radii that are not finite make this false, so the shared checks in
-/// `prepare_caps` still report them.
-pub(super) fn covering_beats_testing(radii: &[f64], resolution: u8, requested: usize) -> bool {
-    let requested = requested as f64;
-    let testing = requested * (CELL_DECODE_TESTS + radii.len() as f64);
-    let covering = COVERAGE_HIT_TESTS * (expected_total_hits(radii, resolution) + requested);
-    testing > covering
+/// A non-finite `expected_hits` makes this false, so the caller's own
+/// validation reports the bad input rather than this deciding on a NaN.
+pub(super) fn scanning_beats_testing(
+    expected_hits: f64,
+    item_count: usize,
+    selected: usize,
+) -> bool {
+    let selected = selected as f64;
+    let testing = selected * (CELL_DECODE_TESTS + item_count as f64);
+    let scanning = COVERAGE_HIT_TESTS * (expected_hits + selected);
+    testing > scanning
+}
+
+/// Whether to answer from a candidate set rather than a full ring scan.
+///
+/// `restrict_output` means the selection defines the result, so there is no
+/// choice. Otherwise it is a hint: take it only while testing is cheaper.
+pub(super) fn should_test_candidates(
+    restrict_output: bool,
+    expected_hits: f64,
+    item_count: usize,
+    candidate_count: usize,
+) -> bool {
+    restrict_output || !scanning_beats_testing(expected_hits, item_count, candidate_count)
 }
 
 pub(super) fn expected_cells_for_cap(cap: &Cap, resolution: u8) -> usize {
@@ -286,9 +318,9 @@ pub(super) fn expected_cells_for_cap(cap: &Cap, resolution: u8) -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        accumulated_scan_work, candidate_cache_range, expected_total_hits, CandidatePlan,
-        CANDIDATE_CENTER_CACHE_MAX_BYTES, CANDIDATE_CENTER_CACHE_REUSE, SCAN_PREPARATION_WORK,
-        SCAN_WORK_SAMPLE_SIZE,
+        accumulated_scan_work, candidate_cache_range, expected_total_hits, plan_from_ranges,
+        CandidatePlan, CANDIDATE_CENTER_CACHE_MAX_BYTES, CANDIDATE_CENTER_CACHE_REUSE,
+        SCAN_PREPARATION_WORK, SCAN_WORK_SAMPLE_SIZE,
     };
     use crate::ring::fixtures::caps_along_equator;
 
@@ -316,6 +348,20 @@ mod tests {
             Some(0..100)
         );
         assert!(candidate_cache_range(&plan(maximum_centers + 1, usize::MAX)).is_none());
+    }
+
+    #[test]
+    fn an_out_of_band_item_does_not_widen_the_cached_centre_span() {
+        // A footprint whose latitude band misses the candidate set contributes
+        // `0..0`. Taking the span over every range would start it at zero and
+        // suppress the cache for the items that do share candidates.
+        let plan = plan_from_ranges(vec![900..1000, 0..0, 950..1010]);
+        assert_eq!((plan.center_start, plan.center_end), (900, 1010));
+        assert_eq!(plan.total_visits, 160);
+
+        let empty = plan_from_ranges(vec![0..0, 0..0]);
+        assert_eq!((empty.center_start, empty.center_end), (0, 0));
+        assert!(candidate_cache_range(&empty).is_none());
     }
 
     #[test]

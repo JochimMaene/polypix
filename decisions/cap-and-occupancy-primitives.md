@@ -15,7 +15,7 @@ runs returned by `occupancy()` and the fused per-cell statistics returned by
 `occupancy(..., into=Stats())`; the provisional summary API and native
 implementation were removed. Those reducers, the generic `Coverage` count and
 sum reductions, and the consolidated naming and dtype decisions are recorded in
-[Coverage Reductions and Ordinal Occupancy Runs](coverage-reductions-and-occupancy-runs.md),
+[Coverage Reductions and Revisit Statistics](coverage-reductions-and-revisit-statistics.md),
 which also supersedes this record's rejection of a conditional return type.
 
 The remainder of this record preserves the evidence and historical decision

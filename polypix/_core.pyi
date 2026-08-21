@@ -24,6 +24,7 @@ def _cover(
     offsets: npt.NDArray[np.uint64],
     resolution: int,
     candidate_cells: npt.NDArray[np.uint64] | None = None,
+    restrict_output: bool = True,
     threads: int | None = None,
 ) -> tuple[npt.NDArray[np.uint64], npt.NDArray[np.uint64]]: ...
 def _cover_cap(
@@ -31,6 +32,7 @@ def _cover_cap(
     radii_rad: npt.NDArray[np.float64],
     resolution: int,
     candidate_cells: npt.NDArray[np.uint64] | None = None,
+    restrict_output: bool = True,
     threads: int | None = None,
 ) -> tuple[npt.NDArray[np.uint64], npt.NDArray[np.uint64]]: ...
 def _count_caps_per_cell(
@@ -57,6 +59,7 @@ def _cover_sweep(
     right_edge_xyz: npt.NDArray[np.float64],
     resolution: int,
     candidate_cells: npt.NDArray[np.uint64] | None = None,
+    restrict_output: bool = True,
     threads: int | None = None,
 ) -> tuple[npt.NDArray[np.uint64], npt.NDArray[np.uint64]]: ...
 def _revisit_stats(

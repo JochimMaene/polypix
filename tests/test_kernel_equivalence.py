@@ -511,7 +511,7 @@ def test_sum_adds_in_segment_order_and_reports_overflow() -> None:
 
 
 @pytest.mark.parametrize("minimum_sources", [1, 2, 3])
-def test_occupancy_agrees_across_memory_profiles(minimum_sources: int) -> None:
+def test_revisit_agrees_across_memory_profiles(minimum_sources: int) -> None:
     """The dense and sparse accumulators must be interchangeable.
 
     Statistics depend only on cell identity and segment order, so the same cell
@@ -529,7 +529,7 @@ def test_occupancy_agrees_across_memory_profiles(minimum_sources: int) -> None:
             offsets.append(len(cells))
         sources.append((np.asarray(cells, np.int64), np.asarray(offsets, np.int64)))
 
-    def occupancy(resolution: int, **kwargs: object):
+    def summarize(resolution: int, **kwargs: object):
         return px.revisit(
             [
                 px.Coverage.from_arrays(cells, offsets, resolution=resolution)
@@ -539,7 +539,7 @@ def test_occupancy_agrees_across_memory_profiles(minimum_sources: int) -> None:
             **kwargs,
         )
 
-    dense, sparse = occupancy(6), occupancy(10)
+    dense, sparse = summarize(6), summarize(10)
     for name in [
         "cells",
         "run_counts",
@@ -675,21 +675,18 @@ def test_selected_reducers_ignore_how_the_kernel_reaches_the_cells(
 ) -> None:
     """A cell selection may be answered by testing or by scanning, never both ways.
 
-    At or below an internal size bound the selection is handed to the kernel as
-    its candidate set, so it tests those cells directly rather than scanning
-    every ring the footprints cross. That is a dispatch decision and must be
-    invisible: identical counts, and bitwise-identical sums, whichever side of
-    the bound a selection falls on. The sizes are derived from the bound rather
-    than hard-coded so they keep straddling it if it moves.
+    The kernel either hands the selection to the candidate path, testing those
+    cells directly, or scans every ring the footprints cross and lets the
+    reduction pick the selected cells out. It prices the two and takes the
+    cheaper, which must be invisible: identical counts, and bitwise-identical
+    sums, whichever it picks. The sizes span four orders of magnitude so they
+    keep straddling the crossover wherever it sits.
     """
     rng = np.random.default_rng(20260826 + resolution)
     quads = _grid_quads(rng, 400, 1.5)
     values = rng.normal(size=quads.shape[0]) * 1e6
     grid = px.cell_count(resolution)
-    bound = min(
-        grid // px._SELECTED_CANDIDATE_GRID_DIVISOR, px._SELECTED_CANDIDATE_MAXIMUM
-    )
-    sizes = sorted({0, 1, max(bound, 1), bound + 1, min(grid, 4 * bound + 8)})
+    sizes = sorted({0, 1, 64, min(grid, 4096), min(grid, 50_000)})
     for size in sizes:
         selections = {
             "sorted": np.sort(rng.choice(grid, size=size, replace=False)),
@@ -714,6 +711,47 @@ def test_selected_reducers_ignore_how_the_kernel_reaches_the_cells(
                         ),
                         coverage.reduce(reducer, cells=selected),
                     )
+
+
+def test_the_kernel_may_ignore_a_candidate_set_it_prices_as_more_expensive() -> None:
+    """Under a reducer the candidate set is a hint, and both answers must match.
+
+    The kernel either tests the selection directly or scans every ring and lets
+    the reduction pick the selected cells out. Forcing each in turn is what
+    keeps that cost model free to be retuned: it may change which is chosen, but
+    never what is returned.
+    """
+    rng = np.random.default_rng(20260828)
+    quads = _grid_quads(rng, 60, 1.5)
+    values = rng.random(len(quads))
+    vertices, offsets = px._as_polygons(quads)
+
+    declined_somewhere = False
+    for resolution in (6, 8, 10):
+        grid = px.cell_count(resolution)
+        selected = np.sort(rng.choice(grid, size=3000, replace=False)).astype(np.uint64)
+        results = []
+        for restrict_output in (True, False):
+            cells, offs = px._cover(
+                vertices, offsets, resolution, selected, restrict_output, 1
+            )
+            coverage = px.Coverage._from_native(cells, offs, resolution)
+            results.append(
+                (
+                    len(cells),
+                    coverage.reduce(px.Count(), cells=selected),
+                    coverage.reduce(px.Sum(values), cells=selected),
+                )
+            )
+        (tested, count_tested, _), (chosen, count_chosen, _) = results
+        np.testing.assert_array_equal(count_tested, count_chosen)
+        np.testing.assert_array_equal(results[0][2], results[1][2])
+        assert count_tested.sum() > 0
+        declined_somewhere |= tested != chosen
+
+    # Without this the test would still pass if the kernel took the hint every
+    # time, comparing one dispatch against itself.
+    assert declined_somewhere
 
 
 def test_reduced_candidates_are_positional_and_zero_where_uncovered() -> None:

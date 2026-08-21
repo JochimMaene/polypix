@@ -81,13 +81,14 @@ fn slices<'a, T: Element>(
     arrays.iter().map(|array| slice(array, name)).collect()
 }
 
-#[pyfunction(signature = (vertices_xyz, offsets, resolution, candidate_cells=None, threads=None))]
+#[pyfunction(signature = (vertices_xyz, offsets, resolution, candidate_cells=None, restrict_output=true, threads=None))]
 fn _cover<'py>(
     py: Python<'py>,
     vertices_xyz: PyReadonlyArray2<'py, f64>,
     offsets: PyReadonlyArray1<'py, u64>,
     resolution: u8,
     candidate_cells: Option<PyReadonlyArray1<'py, u64>>,
+    restrict_output: bool,
     threads: Option<usize>,
 ) -> PyResult<PyCoverage<'py>> {
     validate_resolution(resolution)?;
@@ -106,7 +107,16 @@ fn _cover<'py>(
     let raw_candidates = optional_slice(candidate_cells.as_ref(), "candidate_cells")?;
 
     let coverage = py
-        .detach(|| ring::cover(vertices, raw_offsets, resolution, raw_candidates, threads))
+        .detach(|| {
+            ring::cover(
+                vertices,
+                raw_offsets,
+                resolution,
+                raw_candidates,
+                restrict_output,
+                threads,
+            )
+        })
         .map_err(native_error)?;
 
     Ok((
@@ -115,13 +125,14 @@ fn _cover<'py>(
     ))
 }
 
-#[pyfunction(signature = (centers_xyz, radii_rad, resolution, candidate_cells=None, threads=None))]
+#[pyfunction(signature = (centers_xyz, radii_rad, resolution, candidate_cells=None, restrict_output=true, threads=None))]
 fn _cover_cap<'py>(
     py: Python<'py>,
     centers_xyz: PyReadonlyArray2<'py, f64>,
     radii_rad: PyReadonlyArray1<'py, f64>,
     resolution: u8,
     candidate_cells: Option<PyReadonlyArray1<'py, u64>>,
+    restrict_output: bool,
     threads: Option<usize>,
 ) -> PyResult<PyCoverage<'py>> {
     validate_resolution(resolution)?;
@@ -133,7 +144,16 @@ fn _cover_cap<'py>(
     let raw_candidates = optional_slice(candidate_cells.as_ref(), "candidate_cells")?;
 
     let coverage = py
-        .detach(|| ring::cover_caps(centers, radii, resolution, raw_candidates, threads))
+        .detach(|| {
+            ring::cover_caps(
+                centers,
+                radii,
+                resolution,
+                raw_candidates,
+                restrict_output,
+                threads,
+            )
+        })
         .map_err(native_error)?;
     Ok((
         readonly_vec(coverage.cells, py),
@@ -225,13 +245,14 @@ fn _revisit_stats<'py>(
     ))
 }
 
-#[pyfunction(signature = (left_edge_xyz, right_edge_xyz, resolution, candidate_cells=None, threads=None))]
+#[pyfunction(signature = (left_edge_xyz, right_edge_xyz, resolution, candidate_cells=None, restrict_output=true, threads=None))]
 fn _cover_sweep<'py>(
     py: Python<'py>,
     left_edge_xyz: PyReadonlyArray2<'py, f64>,
     right_edge_xyz: PyReadonlyArray2<'py, f64>,
     resolution: u8,
     candidate_cells: Option<PyReadonlyArray1<'py, u64>>,
+    restrict_output: bool,
     threads: Option<usize>,
 ) -> PyResult<PyCoverage<'py>> {
     validate_resolution(resolution)?;
@@ -245,7 +266,16 @@ fn _cover_sweep<'py>(
     let right = slice(&right_edge_xyz, "right_edge_xyz")?;
     let raw_candidates = optional_slice(candidate_cells.as_ref(), "candidate_cells")?;
     let coverage = py
-        .detach(|| ring::cover_sweep(left, right, resolution, raw_candidates, threads))
+        .detach(|| {
+            ring::cover_sweep(
+                left,
+                right,
+                resolution,
+                raw_candidates,
+                restrict_output,
+                threads,
+            )
+        })
         .map_err(native_error)?;
 
     Ok((

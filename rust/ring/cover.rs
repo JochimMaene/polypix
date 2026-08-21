@@ -8,26 +8,33 @@ use std::ops::Range;
 
 use rayon::prelude::*;
 
-use crate::error::{NativeError, NativeResult};
+use crate::error::{NativeError, NativeResult, COVERAGE_OUT_OF_MEMORY};
 use crate::geometry::{normalize, Vec3};
 
 use super::grid::{center, raw_cell_count, validate_cell_range, MAX_RESOLUTION};
 use super::parallel::run_with_parallelism;
 use super::plan::*;
 use super::shape::*;
-use super::COVERAGE_TOO_LARGE;
 
 pub(crate) struct Coverage {
     pub(crate) cells: Vec<u64>,
     pub(crate) offsets: Vec<u64>,
 }
 
+/// Push a cell onto a materialized result, growing by `batch` when full.
+///
+/// Scanning pushes many cheap cells in a row and amortizes the reserve check
+/// over a batch; the candidate path pushes far fewer and grows exactly.
 #[inline]
-pub(super) fn push_coverage_cell(cells: &mut Vec<u64>, cell: u64) -> NativeResult<()> {
+pub(super) fn push_coverage_cell(
+    cells: &mut Vec<u64>,
+    cell: u64,
+    batch: usize,
+) -> NativeResult<()> {
     if cells.len() == cells.capacity() {
-        cells.try_reserve(1).map_err(|_| {
-            NativeError::out_of_memory("Coverage result is too large to fit in memory.")
-        })?;
+        cells
+            .try_reserve(batch)
+            .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
     }
     cells.push(cell);
     Ok(())
@@ -41,21 +48,19 @@ pub(super) fn merge_coverages(chunks: Vec<Coverage>) -> NativeResult<Coverage> {
         .iter()
         .try_fold(0_usize, |total, chunk| total.checked_add(chunk.cells.len()));
     let (Some(polygon_count), Some(cell_count)) = (polygon_count, cell_count) else {
-        return Err(NativeError::out_of_memory(
-            "Coverage result is too large to fit in memory.",
-        ));
+        return Err(NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY));
     };
     let mut cells = Vec::new();
-    cells.try_reserve_exact(cell_count).map_err(|_| {
-        NativeError::out_of_memory("Coverage result is too large to fit in memory.")
-    })?;
+    cells
+        .try_reserve_exact(cell_count)
+        .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
     let mut offsets = Vec::new();
-    let offset_count = polygon_count.checked_add(1).ok_or_else(|| {
-        NativeError::out_of_memory("Coverage result is too large to fit in memory.")
-    })?;
-    offsets.try_reserve_exact(offset_count).map_err(|_| {
-        NativeError::out_of_memory("Coverage result is too large to fit in memory.")
-    })?;
+    let offset_count = polygon_count
+        .checked_add(1)
+        .ok_or_else(|| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
+    offsets
+        .try_reserve_exact(offset_count)
+        .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
     let mut coverage = Coverage { cells, offsets };
     coverage.offsets.push(0);
 
@@ -176,22 +181,19 @@ pub(super) fn compute_mixed_chunk(
     let expected_cells = range
         .len()
         .checked_mul(expected_cells_per_footprint(resolution))
-        .ok_or_else(|| {
-            NativeError::out_of_memory("Coverage result is too large to fit in memory.")
-        })?;
+        .ok_or_else(|| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
     let mut cells = Vec::new();
-    cells.try_reserve_exact(expected_cells).map_err(|_| {
-        NativeError::out_of_memory("Coverage result is too large to fit in memory.")
-    })?;
+    cells
+        .try_reserve_exact(expected_cells)
+        .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
     let mut offsets_output = Vec::new();
-    let offset_count = range.len().checked_add(1).ok_or_else(|| {
-        NativeError::out_of_memory("Coverage result is too large to fit in memory.")
-    })?;
+    let offset_count = range
+        .len()
+        .checked_add(1)
+        .ok_or_else(|| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
     offsets_output
         .try_reserve_exact(offset_count)
-        .map_err(|_| {
-            NativeError::out_of_memory("Coverage result is too large to fit in memory.")
-        })?;
+        .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
     let mut coverage = Coverage {
         cells,
         offsets: offsets_output,
@@ -214,6 +216,7 @@ pub(super) fn compute_mixed_coverage(
     offsets: &[u64],
     resolution: u8,
     candidates: Option<&[u64]>,
+    restrict_output: bool,
     threads: Option<usize>,
 ) -> NativeResult<Coverage> {
     debug_assert!(vertices.len().is_multiple_of(3));
@@ -224,7 +227,19 @@ pub(super) fn compute_mixed_coverage(
     debug_assert!(offsets.windows(2).all(|pair| pair[0] <= pair[1]));
 
     let polygon_count = offsets.len() - 1;
-    if let Some(candidates) = candidates {
+    let estimated_cells = |index: usize| {
+        let start = offsets[index] as usize * 3;
+        let end = offsets[index + 1] as usize * 3;
+        estimated_cap_cells(&vertices[start..end], resolution)
+    };
+    if let Some(candidates) = candidates.filter(|candidates| {
+        should_test_candidates(
+            restrict_output,
+            sampled_total(polygon_count, estimated_cells) as f64,
+            polygon_count,
+            candidates.len(),
+        )
+    }) {
         return compute_candidate_coverage(
             polygon_count,
             candidates,
@@ -238,11 +253,7 @@ pub(super) fn compute_mixed_coverage(
             },
         );
     }
-    let parallel_work = accumulated_scan_work(polygon_count, threads, |index| {
-        let start = offsets[index] as usize * 3;
-        let end = offsets[index + 1] as usize * 3;
-        estimated_cap_cells(&vertices[start..end], resolution)
-    });
+    let parallel_work = accumulated_scan_work(polygon_count, threads, estimated_cells);
     dispatch_coverage(
         polygon_count,
         parallel_work >= SCAN_PARALLEL_MIN_WORK,
@@ -256,6 +267,7 @@ pub(crate) fn cover(
     offsets: &[u64],
     resolution: u8,
     raw_candidates: Option<&[u64]>,
+    restrict_output: bool,
     threads: Option<usize>,
 ) -> NativeResult<Coverage> {
     debug_assert!(resolution <= MAX_RESOLUTION);
@@ -265,6 +277,7 @@ pub(crate) fn cover(
         offsets,
         resolution,
         candidates.as_deref(),
+        restrict_output,
         threads,
     )
 }
@@ -278,16 +291,17 @@ pub(super) fn compute_cap_chunk(
         total.saturating_add(expected_cells_for_cap(&caps[index], resolution))
     });
     let mut cells = Vec::new();
-    cells.try_reserve_exact(expected_cells).map_err(|_| {
-        NativeError::out_of_memory("Coverage result is too large to fit in memory.")
-    })?;
+    cells
+        .try_reserve_exact(expected_cells)
+        .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
     let mut offsets = Vec::new();
-    let offset_count = range.len().checked_add(1).ok_or_else(|| {
-        NativeError::out_of_memory("Coverage result is too large to fit in memory.")
-    })?;
-    offsets.try_reserve_exact(offset_count).map_err(|_| {
-        NativeError::out_of_memory("Coverage result is too large to fit in memory.")
-    })?;
+    let offset_count = range
+        .len()
+        .checked_add(1)
+        .ok_or_else(|| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
+    offsets
+        .try_reserve_exact(offset_count)
+        .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
     let mut coverage = Coverage { cells, offsets };
     coverage.offsets.push(0);
     for index in range {
@@ -307,9 +321,7 @@ pub(super) fn compute_cap_chunk(
             coverage.cells.extend(cells);
         });
         if allocation_error {
-            return Err(NativeError::out_of_memory(
-                "Coverage result is too large to fit in memory.",
-            ));
+            return Err(NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY));
         }
         coverage.offsets.push(coverage.cells.len() as u64);
     }
@@ -321,12 +333,21 @@ pub(crate) fn cover_caps(
     radii: &[f64],
     resolution: u8,
     raw_candidates: Option<&[u64]>,
+    restrict_output: bool,
     threads: Option<usize>,
 ) -> NativeResult<Coverage> {
     debug_assert!(resolution <= MAX_RESOLUTION);
     let caps = prepare_caps(centers, radii)?;
     let candidates = candidate_cells(raw_candidates, resolution)?;
-    if let Some(candidates) = candidates.as_deref() {
+    // Radii price the batch exactly here, so no sampling is needed.
+    if let Some(candidates) = candidates.as_deref().filter(|candidates| {
+        should_test_candidates(
+            restrict_output,
+            expected_total_hits(radii, resolution),
+            caps.len(),
+            candidates.len(),
+        )
+    }) {
         let plan_for = |parallel| {
             plan_item_candidates(&caps, candidates, resolution, parallel, |cap: &Cap| {
                 (cap.minimum_z, cap.maximum_z)
@@ -418,7 +439,11 @@ pub(crate) fn count_caps_per_cell(
     // Decide before preparing or validating anything, so that declining costs
     // almost nothing: the caller then covers once and counts instead.
     if let Some(cells) = raw_cells {
-        if covering_beats_testing(radii, resolution, cells.len()) {
+        if scanning_beats_testing(
+            expected_total_hits(radii, resolution),
+            radii.len(),
+            cells.len(),
+        ) {
             return Ok(None);
         }
     }
@@ -533,20 +558,18 @@ pub(super) fn compute_sweep_chunk(
     let count = range.len();
     let expected_cells = count
         .checked_mul(expected_cells_per_strip_segment(resolution))
-        .ok_or_else(|| {
-            NativeError::out_of_memory("Coverage result is too large to fit in memory.")
-        })?;
+        .ok_or_else(|| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
     let mut cells = Vec::new();
-    cells.try_reserve_exact(expected_cells).map_err(|_| {
-        NativeError::out_of_memory("Coverage result is too large to fit in memory.")
-    })?;
+    cells
+        .try_reserve_exact(expected_cells)
+        .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
     let mut offsets = Vec::new();
-    let offset_count = count.checked_add(1).ok_or_else(|| {
-        NativeError::out_of_memory("Coverage result is too large to fit in memory.")
-    })?;
-    offsets.try_reserve_exact(offset_count).map_err(|_| {
-        NativeError::out_of_memory("Coverage result is too large to fit in memory.")
-    })?;
+    let offset_count = count
+        .checked_add(1)
+        .ok_or_else(|| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
+    offsets
+        .try_reserve_exact(offset_count)
+        .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
     let mut coverage = Coverage { cells, offsets };
     coverage.offsets.push(0);
     for index in range {
@@ -562,6 +585,7 @@ pub(crate) fn cover_sweep(
     right: &[f64],
     resolution: u8,
     raw_candidates: Option<&[u64]>,
+    restrict_output: bool,
     threads: Option<usize>,
 ) -> NativeResult<Coverage> {
     debug_assert!(resolution <= MAX_RESOLUTION);
@@ -589,7 +613,16 @@ pub(crate) fn cover_sweep(
         });
     }
     let segment_count = sample_count - 1;
-    if let Some(candidates) = candidates.as_deref() {
+    let estimated_cells =
+        |index: usize| estimated_cap_cells(&sweep_quad(left, right, index), resolution);
+    if let Some(candidates) = candidates.as_deref().filter(|candidates| {
+        should_test_candidates(
+            restrict_output,
+            sampled_total(segment_count, estimated_cells) as f64,
+            segment_count,
+            candidates.len(),
+        )
+    }) {
         return compute_candidate_coverage(
             segment_count,
             candidates,
@@ -598,9 +631,7 @@ pub(crate) fn cover_sweep(
             |index| prepare_sweep_footprint(&normalized_left, &normalized_right, index),
         );
     }
-    let parallel_work = accumulated_scan_work(segment_count, threads, |index| {
-        estimated_cap_cells(&sweep_quad(left, right, index), resolution)
-    });
+    let parallel_work = accumulated_scan_work(segment_count, threads, estimated_cells);
     dispatch_coverage(
         segment_count,
         parallel_work >= SCAN_PARALLEL_MIN_WORK,
@@ -620,9 +651,9 @@ pub(super) fn candidate_centers(
     };
     let cells = &candidates[range];
     let mut centers = Vec::new();
-    centers.try_reserve_exact(cells.len()).map_err(|_| {
-        NativeError::out_of_memory("Coverage result is too large to fit in memory.")
-    })?;
+    centers
+        .try_reserve_exact(cells.len())
+        .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
     if parallel {
         centers.resize(cells.len(), [0.0; 3]);
         centers
@@ -655,10 +686,10 @@ pub(super) fn compute_candidate_chunk_with(
     let offset_count = range
         .len()
         .checked_add(1)
-        .ok_or_else(|| NativeError::out_of_memory(COVERAGE_TOO_LARGE))?;
+        .ok_or_else(|| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
     offsets
         .try_reserve_exact(offset_count)
-        .map_err(|_| NativeError::out_of_memory(COVERAGE_TOO_LARGE))?;
+        .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
     let mut coverage = Coverage { cells, offsets };
     coverage.offsets.push(0);
     for index in range {
@@ -667,14 +698,14 @@ pub(super) fn compute_candidate_chunk_with(
             for candidate_index in candidate_range {
                 let point = centers[candidate_index - plan.center_start];
                 if contains(index, point) {
-                    push_coverage_cell(&mut coverage.cells, candidates[candidate_index])?;
+                    push_coverage_cell(&mut coverage.cells, candidates[candidate_index], 1)?;
                 }
             }
         } else {
             for candidate_index in candidate_range {
                 let point = center(candidates[candidate_index], resolution);
                 if contains(index, point) {
-                    push_coverage_cell(&mut coverage.cells, candidates[candidate_index])?;
+                    push_coverage_cell(&mut coverage.cells, candidates[candidate_index], 1)?;
                 }
             }
         }

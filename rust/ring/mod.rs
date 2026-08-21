@@ -30,8 +30,6 @@ pub(crate) use grid::{
     validate_coverage_arrays, validate_offsets, MAX_RESOLUTION,
 };
 
-const COVERAGE_TOO_LARGE: &str = "Coverage result is too large to fit in memory.";
-
 /// Test input two layers need: `plan` prices a cap batch, `cover` answers one.
 #[cfg(test)]
 mod fixtures {

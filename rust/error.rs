@@ -10,6 +10,9 @@ pub(crate) enum NativeError {
     OutOfMemory(&'static str),
 }
 
+/// The message every coverage-building allocation failure reports.
+pub(crate) const COVERAGE_OUT_OF_MEMORY: &str = "Coverage result is too large to fit in memory.";
+
 impl NativeError {
     pub(crate) fn out_of_memory(message: &'static str) -> Self {
         Self::OutOfMemory(message)
