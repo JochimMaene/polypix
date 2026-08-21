@@ -22,7 +22,6 @@ HEALPix and NumPy handoff conventions see
 | [`cell_count`](#cell_count) | Number of cells at a resolution |
 | [`Coverage`](#coverage) | Segmented result of the coverage calls |
 | [`OccupancyStats`](#occupancystats) | Per-cell occupancy statistics on one axis |
-| [Type aliases](#type-aliases) | Spellings for the argument shapes in these signatures |
 
 ## cover_convex_polygon
 
@@ -578,26 +577,6 @@ construction is intentionally disabled.
 `OccupancyStats` follows the same identity-equality and read-only array
 contracts as `Coverage`, and `len(stats)` is the number of represented
 cells.
-
-## Type aliases
-
-The signatures above name the argument shapes rather than repeating their
-unions. Each alias is exported and usable in your own annotations.
-
-| Alias | Accepts |
-| --- | --- |
-| `CellsLike` | `int`, a sequence of `int`, or an integer `ndarray`. A scalar cell is meaningful, so it is admitted. |
-| `OffsetsLike` | A sequence of `int` or an integer `ndarray`. No scalar: a lone integer is not a segmentation. |
-| `VectorsLike` | One `(3,)` direction or an `(n, 3)` batch, as a sequence or `ndarray`. |
-| `EdgesLike` | An `(n, 3)` array of paired-edge samples. Unlike `VectorsLike`, a single `(3,)` vector is not a swath edge. |
-| `PolygonsLike` | One `(vertices, 3)` polygon, a dense `(polygons, vertices, 3)` batch, or a sequence of `(vertices, 3)` arrays. |
-| `ValuesLike` | A `float` scalar or a sequence of `float`. |
-| `CoverageReducer` | `Count | Sum`, the reducers the covering calls and `Coverage.reduce()` accept. |
-
-These document intent and do not narrow what is accepted at runtime: every one
-of them admits `npt.ArrayLike`, and the actual shape, dtype, and finiteness
-checks happen on the way in, raising `TypeError` or `ValueError` as described
-under each call.
 
 ## Geometry contract
 

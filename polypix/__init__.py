@@ -31,8 +31,10 @@ _POLYGON_SHAPE_ERROR = (
     "(polygons, vertices, 3), or be a sequence of (vertices, 3) arrays."
 )
 
-# Public spellings for the argument shapes that repeat across this module.
-# They document intent; ``npt.ArrayLike`` already admits everything else.
+# Spellings for the argument shapes that repeat across this module. They are
+# not part of the public API - ``__all__`` is - and exist so that one signature
+# reads as one line. They document intent; ``npt.ArrayLike`` already admits
+# everything else, and the real shape and dtype checks happen on the way in.
 CellsLike = int | Sequence[int] | npt.NDArray[np.integer[Any]]
 # Offsets and imported cell arrays are always sequences; a bare scalar is not
 # a meaningful segmentation, so they do not admit one.
@@ -1062,17 +1064,10 @@ def cell_corners(
 
 
 __all__ = [
-    "CellsLike",
     "Count",
     "Coverage",
-    "CoverageReducer",
-    "EdgesLike",
     "OccupancyStats",
-    "OffsetsLike",
-    "PolygonsLike",
     "Sum",
-    "ValuesLike",
-    "VectorsLike",
     "__version__",
     "cell_at",
     "cell_centers",

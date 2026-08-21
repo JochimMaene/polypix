@@ -1275,17 +1275,10 @@ class PolypixTests(unittest.TestCase):
         self.assertEqual(
             px.__all__,
             [
-                "CellsLike",
                 "Count",
                 "Coverage",
-                "CoverageReducer",
-                "EdgesLike",
                 "OccupancyStats",
-                "OffsetsLike",
-                "PolygonsLike",
                 "Sum",
-                "ValuesLike",
-                "VectorsLike",
                 "__version__",
                 "cell_at",
                 "cell_centers",
