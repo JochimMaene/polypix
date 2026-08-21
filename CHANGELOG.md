@@ -24,6 +24,14 @@
 
 ### Changed
 
+- Validated a ragged polygon batch in one pass rather than one call per
+  polygon. Reading each entry's shape is unavoidable, since the offsets are
+  built from them, but converting and checking entry by entry was not: one
+  `concatenate` and one whole-buffer check replace a per-polygon Python call
+  that cost about five microseconds each. A 200,000-polygon ragged batch fell
+  from 432 to 368 milliseconds, a 10,000-polygon one from 20.4 to 17.1, and
+  small batches did not regress. The offending entry is still named exactly,
+  by rerunning the per-entry path once something has already failed.
 - Answered a reduction over a small cell selection by testing those cells
   instead of covering everything and gathering. Under a reducer,
   `candidate_cells` names the only cells the result depends on, so the

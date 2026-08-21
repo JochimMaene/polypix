@@ -454,16 +454,43 @@ def _require_dense_polygons(values: object) -> tuple[np.ndarray, np.ndarray]:
     return dense
 
 
+def _ragged_vertex_count(polygon: object, index: int) -> int:
+    """Vertex count of one ragged entry, without converting it."""
+    shape: tuple[int, ...] | None = getattr(polygon, "shape", None)
+    if shape is None:
+        shape = np.shape(cast(npt.ArrayLike, polygon))
+    if len(shape) != 2 or shape[1] != 3:
+        raise ValueError(f"polygons_xyz[{index}] must have shape (items, 3).")
+    return int(shape[0])
+
+
 def _ragged_polygons(values: Sequence[object]) -> tuple[np.ndarray, np.ndarray]:
-    polygons = [
-        _as_float_matrix(polygon, 3, f"polygons_xyz[{index}]")
-        for index, polygon in enumerate(values)
-    ]
-    counts = np.asarray([polygon.shape[0] for polygon in polygons], dtype=np.uint64)
+    """Pack a sequence of differing-length polygons into vertices and offsets.
+
+    Reading each entry's shape is unavoidable - the offsets are built from
+    them - but converting and validating entry by entry is not. One
+    ``concatenate`` and one whole-buffer check replace a per-polygon Python
+    call that cost about five microseconds each, which dominated the covering
+    work itself on large batches. Naming the offending entry stays exact by
+    rerunning the per-entry path, but only once something has already failed.
+    """
+    counts = np.asarray(
+        [_ragged_vertex_count(polygon, index) for index, polygon in enumerate(values)],
+        dtype=np.uint64,
+    )
     offsets = np.concatenate(
         (np.zeros(1, dtype=np.uint64), np.cumsum(counts, dtype=np.uint64))
     )
-    vertices = np.ascontiguousarray(np.concatenate(polygons, axis=0))
+    try:
+        vertices = _as_float_matrix(
+            np.concatenate(values, axis=0),  # type: ignore[arg-type]
+            3,
+            "polygons_xyz",
+        )
+    except (TypeError, ValueError):
+        for index, polygon in enumerate(values):
+            _as_float_matrix(polygon, 3, f"polygons_xyz[{index}]")
+        raise
     return vertices, offsets
 
 

@@ -536,3 +536,24 @@ without them the offsets layout would have to be hand-indexed at every call
 site. The guide now introduces `cells`, `offsets`, `len()`, and `np.diff` in
 its first example, which teaches the layout earlier than the convenience
 properties did.
+
+### `vertex_offsets` was measured before it was judged
+
+The packed form had no benchmark and no in-repo caller, which twice looked like
+grounds to remove it. Measured against the only alternative a caller has -
+splitting the buffer into one array per polygon and letting the ragged path
+concatenate it back - it is 1.7x at 10,000 polygons and 2.0x at 200,000, and it
+avoids 62 MiB of peak on the larger batch.
+
+That is the same margin as `Sum`, kept on the same criterion, so it stays. The
+gap does not come from validation: the ragged path was optimized first, which
+took the sequence form from 432 to 368 milliseconds at 200,000 polygons and
+moved the ratio only from 2.3x to 2.0x. What remains is building one Python
+array object per polygon and the concatenate copy, and neither is removable
+while the input is a sequence.
+
+Both sides are now benchmarked, so the next person to ask does not have to
+rediscover this. Worth recording separately: the first measurement of this ran
+under `tracemalloc` and reported 5.4x. It penalizes the allocation-heavy side,
+which is exactly the side under test. Time without it; measure memory in a
+separate run.
