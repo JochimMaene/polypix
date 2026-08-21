@@ -95,28 +95,36 @@ sparse = px.cover_cap(
     centers_xyz,
     radii_rad,
     resolution=20,
-    reduce=px.Count(cells=small_site_cell_list),
+    candidate_cells=small_site_cell_list,
+    reduce=px.Count(),
 )
 ```
 
-Go dense whenever the array fits comfortably. Use `cells=` when the grid would
-be enormous and your query set is genuinely small. Its cost grows with both the
+Go dense whenever the array fits comfortably. Name `candidate_cells` when the
+grid would be enormous and your query set is genuinely small. Its cost grows with both the
 cap count and the number of cells you ask for, so it is not a general-purpose
 escape hatch.
 
 Either way the predicate is evaluated at cell centers. If those IDs came out of
 `cell_at()`, you are testing the cell, not the direction you started with.
 
-## Two arguments that look similar
+## One argument, two readings
 
-| Argument | Semantics | Output |
+`candidate_cells` is the only way to name a subset of the grid, and what it
+means follows the operation it is given to.
+
+| Call | Semantics | Output |
 | --- | --- | --- |
-| `candidate_cells=` | set filter for coverage | native cell order |
-| `cells=` | positional reduction or cap-count query | preserves your order and duplicates |
+| `cover_*(..., candidate_cells=)` | set filter for the coverage | native cell order |
+| `cover_*(..., candidate_cells=, reduce=)` | positional query | your order, duplicates kept |
+| `coverage.reduce(..., cells=)` | positional query | your order, duplicates kept |
 
-They are not interchangeable. Candidate planning also retains normalized
-geometry for the whole batch and may cache a bounded span of candidate centers,
-so chunk very large batches if that retained state starts to matter.
+Only the first restricts the scan unconditionally, because there the selection
+is the result. Under a reducer the restriction cannot change the answer, so
+Polypix takes it only while it is the cheaper plan. Candidate planning also
+retains normalized geometry for the whole batch and may cache a bounded span of
+candidate centers, so chunk very large batches if that retained state starts to
+matter.
 
 ## Geometry shape
 

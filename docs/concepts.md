@@ -166,15 +166,17 @@ coverage = px.cover_sweep(
 )
 ```
 
-Candidates are a set: order and duplicates are discarded. Filtering is still
-center sampled, so it does not become a conservative index, and a dense
+Without a reducer, candidates are a set: order and duplicates are discarded,
+and the restriction always applies because it defines the result. Filtering is
+still center sampled, so it does not become a conservative index, and a dense
 candidate set can end up slower than just scanning the rings.
 
-You do not need this to reduce over a sparse set of cells. `reduce=Count(cells=
-aoi_cells)` already restricts the scan when the selection is small enough to be
-worth it, and keeps the order and duplicates of your query in the result. Reach
-for `candidate_cells` when you want the `Coverage` itself restricted, or when
-you want the restriction regardless of what it costs.
+With a reducer, the same argument fixes the output's index space instead: one
+value per requested cell, in your order, duplicates preserved, and zero where
+nothing covered it. Restricting the scan is then Polypix's choice rather than
+yours — it cannot change the answer, so it is taken only while testing the
+selection beats scanning the rings and gathering. To reduce over a stored
+`Coverage`, pass the same selection as `coverage.reduce(Count(), cells=...)`.
 
 See [Performance and memory](performance.md) for candidate planning, geometry
 shape, chunking, output sizing, and threads.

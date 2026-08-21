@@ -292,7 +292,8 @@ class PolypixTests(unittest.TestCase):
                         empty,
                         radii,
                         resolution=resolution,
-                        reduce=px.Count(cells=[7, 1, 7]),
+                        candidate_cells=[7, 1, 7],
+                        reduce=px.Count(),
                     ),
                     [0, 0, 0],
                 )
@@ -353,7 +354,8 @@ class PolypixTests(unittest.TestCase):
             centers,
             radii,
             resolution=resolution,
-            reduce=px.Count(cells=requested),
+            candidate_cells=requested,
+            reduce=px.Count(),
             threads=1,
         )
         np.testing.assert_array_equal(
@@ -388,12 +390,17 @@ class PolypixTests(unittest.TestCase):
                 [-1.0, 0.0, 0.0],
                 math.pi,
                 resolution=high_resolution,
-                reduce=px.Count(cells=high_cells),
+                candidate_cells=high_cells,
+                reduce=px.Count(),
             ),
             np.ones(high_cells.size, dtype=np.int64),
         )
         queried_empty = px.cover_cap(
-            [1.0, 0.0, 0.0], 0.1, resolution=high_resolution, reduce=px.Count(cells=[])
+            [1.0, 0.0, 0.0],
+            0.1,
+            resolution=high_resolution,
+            candidate_cells=[],
+            reduce=px.Count(),
         )
         self.assertEqual(queried_empty.shape, (0,))
         self.assertEqual(queried_empty.dtype, np.dtype("int64"))
@@ -418,7 +425,13 @@ class PolypixTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "shape"):
             px.cover_cap(np.zeros((2, 2)), 0.1, resolution=3)
         with self.assertRaisesRegex(ValueError, "valid RING indices"):
-            px.cover_cap(center, 0.1, resolution=3, reduce=px.Count(cells=[12 * 4**3]))
+            px.cover_cap(
+                center,
+                0.1,
+                resolution=3,
+                candidate_cells=[12 * 4**3],
+                reduce=px.Count(),
+            )
 
     def test_cover_accepts_dense_and_ragged_batches(self) -> None:
         polygons = [
@@ -985,15 +998,16 @@ class PolypixTests(unittest.TestCase):
             ("cells", lambda: px.cell_corners([-1], resolution=3)),
             ("cells", lambda: px.Coverage.from_arrays(negative, [0, 1], 0)),
             ("offsets", lambda: px.Coverage.from_arrays([0], [0, -1], 0)),
-            ("cells", lambda: coverage.reduce(px.Count(cells=negative))),
-            ("cells", lambda: coverage.reduce(px.Sum(1.0, cells=negative))),
+            ("cells", lambda: coverage.reduce(px.Count(), cells=negative)),
+            ("cells", lambda: coverage.reduce(px.Sum(1.0), cells=negative)),
             (
                 "cells",
                 lambda: px.cover_cap(
                     np.asarray([[1.0, 0.0, 0.0]]),
                     0.1,
                     4,
-                    reduce=px.Count(cells=negative),
+                    candidate_cells=negative,
+                    reduce=px.Count(),
                 ),
             ),
             (
@@ -1023,7 +1037,7 @@ class PolypixTests(unittest.TestCase):
         for call in (
             lambda: px.cell_centers([12 * 4**3], resolution=3),
             lambda: px.Coverage.from_arrays([12], [0, 1], 0),
-            lambda: coverage.reduce(px.Count(cells=[12 * 4**4])),
+            lambda: coverage.reduce(px.Count(), cells=[12 * 4**4]),
         ):
             with self.subTest(kind="out of range"):
                 with self.assertRaisesRegex(ValueError, "valid RING indices"):

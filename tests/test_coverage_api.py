@@ -119,7 +119,7 @@ def test_empty_cap_batches_validate_scalar_radii() -> None:
 
 def test_reducer_tokens_use_identity_equality() -> None:
     for first, second in (
-        (px.Count(np.asarray([1, 2])), px.Count(np.asarray([1, 2]))),
+        (px.Count(), px.Count()),
         (px.Sum(np.asarray([1.0, 2.0])), px.Sum(np.asarray([1.0, 2.0]))),
         (px.Stats(), px.Stats()),
     ):

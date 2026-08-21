@@ -616,13 +616,19 @@ def test_cover_cap_selected_count_small_request(
     centers, radii = constellation_caps
     requested = np.arange(64, dtype=np.int64)
     counts = benchmark(
-        px.cover_cap, centers, radii, 6, reduce=px.Count(cells=requested), threads=1
+        px.cover_cap,
+        centers,
+        radii,
+        6,
+        candidate_cells=requested,
+        reduce=px.Count(),
+        threads=1,
     )
 
     assert counts.shape == requested.shape
     np.testing.assert_array_equal(
         counts,
-        px.cover_cap(centers, radii, 6).reduce(px.Count(cells=requested)),
+        px.cover_cap(centers, radii, 6).reduce(px.Count(), cells=requested),
     )
 
 
@@ -640,14 +646,15 @@ def test_cover_polygon_selected_count_small_request(
         px.cover_convex_polygon,
         footprints,
         9,
-        reduce=px.Count(cells=requested),
+        candidate_cells=requested,
+        reduce=px.Count(),
         threads=1,
     )
 
     assert counts.shape == requested.shape
     np.testing.assert_array_equal(
         counts,
-        px.cover_convex_polygon(footprints, 9).reduce(px.Count(cells=requested)),
+        px.cover_convex_polygon(footprints, 9).reduce(px.Count(), cells=requested),
     )
 
 
@@ -665,14 +672,15 @@ def test_cover_polygon_selected_count_large_request(
         px.cover_convex_polygon,
         footprints,
         9,
-        reduce=px.Count(cells=requested),
+        candidate_cells=requested,
+        reduce=px.Count(),
         threads=1,
     )
 
     assert counts.shape == requested.shape
     np.testing.assert_array_equal(
         counts,
-        px.cover_convex_polygon(footprints, 9).reduce(px.Count(cells=requested)),
+        px.cover_convex_polygon(footprints, 9).reduce(px.Count(), cells=requested),
     )
 
 
@@ -688,14 +696,15 @@ def test_cover_sweep_selected_sum_small_request(
         left,
         right,
         9,
-        reduce=px.Sum(values, cells=requested),
+        candidate_cells=requested,
+        reduce=px.Sum(values),
         threads=1,
     )
 
     assert sums.shape == requested.shape
     np.testing.assert_array_equal(
         sums,
-        px.cover_sweep(left, right, 9).reduce(px.Sum(values, cells=requested)),
+        px.cover_sweep(left, right, 9).reduce(px.Sum(values), cells=requested),
     )
 
 
@@ -711,13 +720,19 @@ def test_cover_cap_selected_count_large_request(
     centers, radii = constellation_caps
     requested = np.arange(100_000, dtype=np.int64)
     counts = benchmark(
-        px.cover_cap, centers, radii, 8, reduce=px.Count(cells=requested), threads=1
+        px.cover_cap,
+        centers,
+        radii,
+        8,
+        candidate_cells=requested,
+        reduce=px.Count(),
+        threads=1,
     )
 
     assert counts.shape == requested.shape
     np.testing.assert_array_equal(
         counts,
-        px.cover_cap(centers, radii, 8).reduce(px.Count(cells=requested)),
+        px.cover_cap(centers, radii, 8).reduce(px.Count(), cells=requested),
     )
 
 
@@ -731,7 +746,7 @@ def test_count_coverage_selected_small_work(
     of probes was measured at 18x the cost of the hash path.
     """
     requested = np.asarray(small_resolution_8_coverage.cells[:4])
-    counts = benchmark(small_resolution_8_coverage.reduce, px.Count(cells=requested))
+    counts = benchmark(small_resolution_8_coverage.reduce, px.Count(), cells=requested)
 
     assert counts.shape == requested.shape
     assert int(counts.sum()) >= 4
@@ -743,7 +758,7 @@ def test_sum_coverage_selected_sparse_high_resolution(
 ) -> None:
     coverage, queried = sparse_high_resolution_reduction
     values = np.linspace(0.25, 1.25, coverage.segment_count)
-    sums = benchmark(coverage.reduce, px.Sum(values, cells=queried))
+    sums = benchmark(coverage.reduce, px.Sum(values), cells=queried)
 
     assert sums.shape == queried.shape
     assert sums.dtype == np.float64
@@ -754,7 +769,7 @@ def test_count_coverage_selected_sparse_high_resolution(
     sparse_high_resolution_reduction: tuple[px.Coverage, np.ndarray],
 ) -> None:
     coverage, queried = sparse_high_resolution_reduction
-    counts = benchmark(coverage.reduce, px.Count(cells=queried))
+    counts = benchmark(coverage.reduce, px.Count(), cells=queried)
 
     assert counts.shape == queried.shape
     assert counts.dtype == np.int64

@@ -35,7 +35,7 @@ def test_coverage_reductions_match_the_cell_lists_they_reduce() -> None:
 
     requested = np.asarray([4, 1, 4, 7, 2], dtype=np.int64)
     np.testing.assert_array_equal(
-        (coverage).reduce(px.Count(cells=requested)),
+        (coverage).reduce(px.Count(), cells=requested),
         [2, 2, 2, 0, 1],
     )
 
@@ -43,7 +43,7 @@ def test_coverage_reductions_match_the_cell_lists_they_reduce() -> None:
     dense_sums = (coverage).reduce(px.Sum(values))
     np.testing.assert_allclose(dense_sums[[1, 2, 4, 7]], [0.25, -0.25, 2.5, 0.0])
     np.testing.assert_allclose(
-        (coverage).reduce(px.Sum(values, cells=requested)),
+        (coverage).reduce(px.Sum(values), cells=requested),
         [2.5, 0.25, 2.5, 0.0, -0.25],
     )
 
@@ -53,11 +53,11 @@ def test_coverage_reductions_match_the_cell_lists_they_reduce() -> None:
     empty = px.Coverage.from_arrays([], [0], resolution=29)
     for invalid in (np.nan, np.inf, -np.inf):
         with pytest.raises(ValueError, match="finite"):
-            (empty).reduce(px.Sum(invalid, cells=[]))
+            (empty).reduce(px.Sum(invalid), cells=[])
     with pytest.raises(ValueError, match="finite"):
-        (coverage).reduce(px.Sum([np.nan, 2.0, 3.0, 4.0], cells=[]))
-    assert (empty).reduce(px.Count(cells=[])).dtype == np.int64
-    assert (empty).reduce(px.Sum(1.0, cells=[])).dtype == np.float64
+        (coverage).reduce(px.Sum([np.nan, 2.0, 3.0, 4.0]), cells=[])
+    assert (empty).reduce(px.Count(), cells=[]).dtype == np.int64
+    assert (empty).reduce(px.Sum(1.0), cells=[]).dtype == np.float64
 
 
 def test_fused_cap_counts_match_covering_then_reducing() -> None:
@@ -72,9 +72,14 @@ def test_fused_cap_counts_match_covering_then_reducing() -> None:
     requested = np.asarray([0, 8, 8, 100, 3000], dtype=np.int64)
     np.testing.assert_array_equal(
         px.cover_cap(
-            centers, radii, resolution=5, reduce=px.Count(cells=requested), threads=1
+            centers,
+            radii,
+            resolution=5,
+            candidate_cells=requested,
+            reduce=px.Count(),
+            threads=1,
         ),
-        (coverage).reduce(px.Count(cells=requested)),
+        (coverage).reduce(px.Count(), cells=requested),
     )
 
 
@@ -99,9 +104,14 @@ def test_cap_counts_agree_on_both_sides_of_the_selected_work_estimate() -> None:
     ):
         np.testing.assert_array_equal(
             px.cover_cap(
-                centers, radii, resolution, reduce=px.Count(cells=requested), threads=1
+                centers,
+                radii,
+                resolution,
+                candidate_cells=requested,
+                reduce=px.Count(),
+                threads=1,
             ),
-            coverage.reduce(px.Count(cells=requested)),
+            coverage.reduce(px.Count(), cells=requested),
         )
 
 
@@ -109,7 +119,9 @@ def test_fused_cap_counts_stay_available_for_caps_too_large_to_store() -> None:
     """A whole-sphere cap at resolution 29 can only be answered by fusing."""
     requested = np.asarray([12 * 4**29 - 1, 0, 6 * 4**29, 0], dtype=np.uint64)
     np.testing.assert_array_equal(
-        px.cover_cap([-1.0, 0.0, 0.0], math.pi, 29, reduce=px.Count(cells=requested)),
+        px.cover_cap(
+            [-1.0, 0.0, 0.0], math.pi, 29, candidate_cells=requested, reduce=px.Count()
+        ),
         np.ones(requested.size, dtype=np.int64),
     )
 
@@ -136,10 +148,10 @@ def test_selected_reductions_agree_on_both_sides_of_the_scratch_grid_choice() ->
         dense_counts = sparse.reduce(px.Count())
         dense_sums = sparse.reduce(px.Sum(values))
         np.testing.assert_array_equal(
-            sparse.reduce(px.Count(cells=requested)), dense_counts[requested]
+            sparse.reduce(px.Count(), cells=requested), dense_counts[requested]
         )
         np.testing.assert_allclose(
-            sparse.reduce(px.Sum(values, cells=requested)), dense_sums[requested]
+            sparse.reduce(px.Sum(values), cells=requested), dense_sums[requested]
         )
 
 
@@ -159,10 +171,10 @@ def test_queried_reductions_match_the_dense_result_across_paths() -> None:
 
     for resolution in (6, 20):
         coverage = px.Coverage.from_arrays(cells, offsets, resolution=resolution)
-        counts = (coverage).reduce(px.Count(cells=queried))
+        counts = (coverage).reduce(px.Count(), cells=queried)
         np.testing.assert_array_equal(counts, expected_counts)
 
-        sums = (coverage).reduce(px.Sum(values, cells=queried))
+        sums = (coverage).reduce(px.Sum(values), cells=queried)
         assert sums.dtype == np.float64
         np.testing.assert_allclose(sums, [0.75, 2.5, 0.0, 2.5, 0.5, 0.5])
 

@@ -308,8 +308,8 @@ accept one through `reduce=`. Passing `reduce=None` returns the full
 `Coverage` or `OccupancyRuns` instead, which is the default.
 
 ```python
-Count(cells=None)
-Sum(values, cells=None)
+Count()
+Sum(values)
 Stats()
 ```
 
@@ -317,12 +317,13 @@ Stats()
 `cover_sweep()`, and [`Coverage.reduce()`](#coverage). `Stats` is accepted by
 `occupancy()`.
 
-`cells`
-: *int, sequence of int, ndarray, or None*. With `None` the result is a dense
-  array indexed by RING cell ID and of length `cell_count(resolution)`.
-  Supplying `cells` returns one value per requested ID, in query order and
-  including duplicates, without a grid-sized result. Small grids still use a
-  dense scratch array internally; large ones accumulate through a hash table.
+A reducer names the accumulation and nothing else. Which cells are reported is
+chosen by the operation being reduced: `candidate_cells` on a covering call, or
+`cells` on [`Coverage.reduce()`](#coverage). With neither, the result is a dense
+array indexed by RING cell ID and of length `cell_count(resolution)`. With
+either, it holds one value per requested ID, in query order and including
+duplicates, without a grid-sized result. Small grids still use a dense scratch
+array internally; large ones accumulate through a hash table.
 
 `values`
 : *float or sequence of float*. A scalar shared by every segment, or one finite
@@ -337,15 +338,15 @@ membership otherwise; the result is identical either way.
 
 `cover_cap(..., reduce=Count())` is the case where fusing currently wins by a
 wide margin, because the cap kernel accumulates private RING spans and never
-allocates cap-cell membership. Pass `candidate_cells` and it falls back to
-building them.
+allocates cap-cell membership. It fuses for the dense grid and for a
+`candidate_cells` selection alike, and falls back to covering and counting when
+the kernel judges that cheaper.
 
 Naming the cells you want is the other large win, and it applies to every
-covering call. `reduce=Count(cells=...)` and `reduce=Sum(..., cells=...)` say the
-result depends on those cells and no others, so a small selection is restricted
-to before the scan rather than gathered from a complete result. There is nothing
-to pass: supplying the same set as `candidate_cells` by hand gains nothing, and
-a selection large enough that scanning wins is scanned. A large selection is
+covering call. `candidate_cells` under a reducer says the result depends on
+those cells and no others, so a small selection is restricted to before the scan
+rather than gathered from a complete result. A selection large enough that
+scanning wins is scanned instead, at the same answer. A large selection is
 therefore not a mistake, just a different shape of query.
 
 For `occupancy()`, the default keeps every boundary and so costs memory
@@ -495,10 +496,13 @@ coverage = px.Coverage.from_arrays(
 
 **Methods**
 
-`reduce(reducer)`
+`reduce(reducer, *, cells=None)`
 : Accumulate this coverage with a [`Count`](#reducers) or [`Sum`](#reducers),
   returning the same array a fused `reduce=` call would have produced. Use it to
-  take several reductions from one stored coverage.
+  take several reductions from one stored coverage. `cells` plays the part
+  `candidate_cells` plays on a covering call: omit it for a dense array indexed
+  by RING cell ID, or supply it for one value per requested ID, in query order
+  and including duplicates.
 
 `segment_indices()`
 : Return the segment index aligned with every flat cell hit.

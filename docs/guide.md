@@ -315,7 +315,8 @@ At high resolution, query only the cells you need:
 ...     unit_vector(cap_lon, cap_lat),
 ...     np.radians(cap_radius_deg),
 ...     resolution=4,
-...     reduce=px.Count(cells=site_cells),
+...     candidate_cells=site_cells,
+...     reduce=px.Count(),
 ... )
 >>> site_counts.shape
 (2,)

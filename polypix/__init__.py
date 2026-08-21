@@ -152,16 +152,28 @@ class Coverage:
     def reduce(
         self,
         reducer: CoverageReducer,
+        *,
+        cells: CellsLike | None = None,
     ) -> npt.NDArray[np.int64] | npt.NDArray[np.float64]:
         """Accumulate this coverage with a :class:`Count` or :class:`Sum`.
 
+        With ``cells=None`` the result is a dense array indexed by RING cell
+        ID. Supplying ``cells`` returns one value per requested ID, in query
+        order and including duplicates, without a grid-sized result. Small
+        grids still use a dense scratch array internally; large ones
+        accumulate through a hash table.
+
         The reducer vocabulary is the one the covering operations accept as
         ``reduce=``, so a stored coverage reduces exactly as a fused call
-        would have.
+        would have; ``cells`` here plays the part ``candidate_cells`` plays
+        there.
         """
         if not isinstance(reducer, (Count, Sum)):
             raise TypeError("reducer must be a Count or Sum reducer.")
-        return _reduce_coverage(self, reducer)
+        requested = (
+            None if cells is None else _coverage_cells(cells, self.resolution, "cells")
+        )
+        return _reduce_coverage(self, reducer, requested)
 
     def filter_hits(
         self,
@@ -601,13 +613,10 @@ def _as_packed_polygons(
 class Count:
     """Count how many segments contain each cell.
 
-    With ``cells=None`` the result is a dense array indexed by RING cell ID.
-    Supplying ``cells`` returns one count per requested ID, in query order and
-    including duplicates, without a grid-sized result. Small grids still use a
-    dense scratch array internally; large ones accumulate through a hash table.
+    Which cells are reported is chosen by the operation being reduced, through
+    ``candidate_cells`` when covering or ``cells`` on :meth:`Coverage.reduce`,
+    never by the reducer itself.
     """
-
-    cells: int | Sequence[int] | npt.NDArray[np.integer[Any]] | None = None
 
 
 @dataclass(frozen=True, eq=False, slots=True)
@@ -615,11 +624,10 @@ class Sum:
     """Accumulate one finite value per segment into the cells it covers.
 
     ``values`` is a scalar shared by every segment or one value per segment.
-    ``cells`` selects the output as for :class:`Count`.
+    The reported cells are selected as for :class:`Count`.
     """
 
-    values: float | Sequence[float] | npt.ArrayLike
-    cells: int | Sequence[int] | npt.NDArray[np.integer[Any]] | None = None
+    values: ValuesLike
 
 
 @dataclass(frozen=True, eq=False, slots=True)
@@ -719,9 +727,7 @@ def cover_convex_polygon(
         else _as_packed_polygons(polygons_xyz, vertex_offsets)
     )
     reducer = _as_coverage_reducer(reduce)
-    candidates = _as_candidates(candidate_cells)
-    if candidates is None:
-        candidates = _selected_candidates(reducer, resolved)
+    candidates, requested = _reduction_plan(candidate_cells, reducer, resolved)
     coverage = Coverage._from_native(
         *_cover(
             vertices,
@@ -732,7 +738,9 @@ def cover_convex_polygon(
         ),
         resolved,
     )
-    return coverage if reducer is None else _reduce_coverage(coverage, reducer)
+    if reducer is None:
+        return coverage
+    return _reduce_coverage(coverage, reducer, requested)
 
 
 @overload
@@ -798,30 +806,29 @@ def cover_cap(
     centers = _as_cap_centers(centers_xyz)
     radii = _as_cap_radii(radii_rad, centers.shape[0])
     requested_threads = _as_threads(threads)
-    if isinstance(reducer, Count) and candidate_cells is None:
-        selected = (
-            None
-            if reducer.cells is None
-            else _as_uint64_vector(reducer.cells, "cells", native_range_checked=True)
-        )
+    candidates, requested = _reduction_plan(candidate_cells, reducer, resolved)
+    if isinstance(reducer, Count):
+        # Counting caps consumes analytic RING spans and never builds the cell
+        # lists, so try it for the dense grid and for a selection alike. The
+        # kernel declines by returning None when covering and counting wins.
         counts = _count_caps_per_cell(
-            centers, radii, resolved, selected, requested_threads
+            centers, radii, resolved, requested, requested_threads
         )
         if counts is not None:
             return counts
-    candidates = _as_candidates(candidate_cells)
-    if candidates is None:
-        candidates = _selected_candidates(reducer, resolved)
     coverage = Coverage._from_native(
         *_cover_cap(centers, radii, resolved, candidates, requested_threads),
         resolved,
     )
-    return coverage if reducer is None else _reduce_coverage(coverage, reducer)
+    if reducer is None:
+        return coverage
+    return _reduce_coverage(coverage, reducer, requested)
 
 
 def _coverage_cells(
-    values: int | Sequence[int] | npt.NDArray[np.integer[Any]],
+    values: CellsLike,
     resolution: int,
+    name: str,
 ) -> npt.NDArray[np.uint64]:
     """Validate a positional reduction query, naming the public argument.
 
@@ -830,14 +837,14 @@ def _coverage_cells(
     classifies both failures: a reinterpreted negative index lands at or above
     ``1 << 63``, above every resolution's cell count.
     """
-    cells = _as_uint64_vector(values, "cells", native_range_checked=True)
+    cells = _as_uint64_vector(values, name, native_range_checked=True)
     if cells.size:
         largest = int(cells.max())
         if largest >= cell_count(resolution):
             if largest >= 1 << 63:
-                raise ValueError("cells must contain non-negative integers.")
+                raise ValueError(f"{name} must contain non-negative integers.")
             raise ValueError(
-                f"cells must contain valid RING indices at resolution {resolution}."
+                f"{name} must contain valid RING indices at resolution {resolution}."
             )
     return cells
 
@@ -857,26 +864,39 @@ _SELECTED_CANDIDATE_GRID_DIVISOR = 1000
 _SELECTED_CANDIDATE_MAXIMUM = 4096
 
 
-def _selected_candidates(
-    reducer: CoverageReducer | None,
+def _restriction_is_cheaper(
+    requested: npt.NDArray[np.uint64],
     resolution: int,
-) -> npt.NDArray[np.uint64] | None:
-    """Return a reducer's cell selection as a candidate set, when that is cheaper.
-
-    Returns ``None`` when there is no selection or it is large enough that
-    scanning and gathering wins, leaving the caller's normal path in place.
-    Restricting the scan cannot change a result: a cell outside the selection
-    never contributes to a selected cell's count, and never to its sum either,
-    so :class:`Sum` keeps both its value and its addition order.
-    """
-    if reducer is None or reducer.cells is None:
-        return None
-    cells = _coverage_cells(reducer.cells, resolution)
+) -> bool:
+    """Whether testing a selection beats scanning the rings and gathering."""
     limit = min(
         cell_count(resolution) // _SELECTED_CANDIDATE_GRID_DIVISOR,
         _SELECTED_CANDIDATE_MAXIMUM,
     )
-    return cells if cells.size <= limit else None
+    return bool(requested.size <= limit)
+
+
+def _reduction_plan(
+    candidate_cells: CellsLike | None,
+    reducer: CoverageReducer | None,
+    resolution: int,
+) -> tuple[npt.NDArray[np.uint64] | None, npt.NDArray[np.uint64] | None]:
+    """Split ``candidate_cells`` into a scan restriction and an output request.
+
+    Without a reducer the selection *is* the result, so it always restricts the
+    scan and there is nothing to request. With one it fixes the output's index
+    space instead, and restricting the scan becomes a free choice: a cell
+    outside the selection contributes to no selected cell's count, and to no
+    selected cell's sum either, so :class:`Sum` keeps both its value and its
+    addition order. Take the restriction only while it is the cheaper plan.
+    """
+    if candidate_cells is None:
+        return None, None
+    if reducer is None:
+        return _as_candidates(candidate_cells), None
+    requested = _coverage_cells(candidate_cells, resolution, "candidate_cells")
+    restriction = requested if _restriction_is_cheaper(requested, resolution) else None
+    return restriction, requested
 
 
 def _as_segment_values(
@@ -899,13 +919,9 @@ def _as_segment_values(
 def _reduce_coverage(
     coverage: Coverage,
     reducer: CoverageReducer,
+    requested: npt.NDArray[np.uint64] | None,
 ) -> npt.NDArray[np.int64] | npt.NDArray[np.float64]:
     """Apply a coverage reducer to cell lists that are already built."""
-    requested = (
-        None
-        if reducer.cells is None
-        else _coverage_cells(reducer.cells, coverage.resolution)
-    )
     if isinstance(reducer, Count):
         if requested is not None and requested.size == 0:
             return np.empty(0, dtype=np.int64)
@@ -995,14 +1011,14 @@ def cover_sweep(
             "left_edge_xyz and right_edge_xyz must contain the same number of samples."
         )
     requested_threads = _as_threads(threads)
-    candidates = _as_candidates(candidate_cells)
-    if candidates is None:
-        candidates = _selected_candidates(reducer, resolved)
+    candidates, requested = _reduction_plan(candidate_cells, reducer, resolved)
     coverage = Coverage._from_native(
         *_cover_sweep(left, right, resolved, candidates, requested_threads),
         resolved,
     )
-    return coverage if reducer is None else _reduce_coverage(coverage, reducer)
+    if reducer is None:
+        return coverage
+    return _reduce_coverage(coverage, reducer, requested)
 
 
 def _as_minimum_sources(value: int) -> int:

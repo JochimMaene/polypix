@@ -432,15 +432,16 @@ def test_fused_reducers_match_materialize_then_reduce(threads: int | None) -> No
         ),
     ]:
         coverage = cover()
-        for reducer in [
-            px.Count(),
-            px.Count(cells=selected),
-            px.Sum(values),
-            px.Sum(values, cells=selected),
+        for reducer, cells in [
+            (px.Count(), None),
+            (px.Count(), selected),
+            (px.Sum(values), None),
+            (px.Sum(values), selected),
         ]:
+            request = {} if cells is None else {"candidate_cells": cells}
             np.testing.assert_array_equal(
-                cover(reduce=reducer),
-                coverage.reduce(reducer),
+                cover(reduce=reducer, **request),
+                coverage.reduce(reducer, cells=cells),
                 err_msg=f"{name} {type(reducer).__name__} threads={threads}",
             )
 
@@ -457,7 +458,7 @@ def test_sum_adds_in_segment_order_and_reports_overflow() -> None:
     coverage = px.Coverage.from_arrays(
         cells=[cell, cell, cell], offsets=[0, 1, 2, 3], resolution=2
     )
-    ordered = coverage.reduce(px.Sum([1e16, 1.0, -1e16], cells=[cell]))
+    ordered = coverage.reduce(px.Sum([1e16, 1.0, -1e16]), cells=[cell])
     assert ordered[0] == 0.0
     assert (1e16 + 1.0) - 1e16 == 0.0
     assert (1e16 - 1e16) + 1.0 == 1.0
@@ -669,43 +670,46 @@ def test_selected_reducers_ignore_how_the_kernel_reaches_the_cells(
         }
         coverage = px.cover_convex_polygon(quads, resolution, threads=1)
         for name, selected in selections.items():
-            for reducer in (px.Count(cells=selected), px.Sum(values, cells=selected)):
+            for reducer in (px.Count(), px.Sum(values)):
                 with subtests.test(
                     size=size, selection=name, reducer=type(reducer).__name__
                 ):
                     np.testing.assert_array_equal(
                         px.cover_convex_polygon(
-                            quads, resolution, threads=1, reduce=reducer
+                            quads,
+                            resolution,
+                            threads=1,
+                            candidate_cells=selected,
+                            reduce=reducer,
                         ),
-                        coverage.reduce(reducer),
+                        coverage.reduce(reducer, cells=selected),
                     )
 
 
-def test_explicit_candidates_still_bound_a_selected_reduction() -> None:
-    """``candidate_cells`` is a restriction the caller asked for, not a hint.
+def test_reduced_candidates_are_positional_and_zero_where_uncovered() -> None:
+    """With a reducer, ``candidate_cells`` fixes the output's index space.
 
-    A selection outside it must stay zero, so the internal substitution has to
-    leave an explicit candidate set alone.
+    One value per requested cell, in query order, duplicates preserved, and an
+    uncovered request reports zero rather than being dropped.
     """
     rng = np.random.default_rng(20260827)
     resolution = 6
     quads = _grid_quads(rng, 200, 2.0)
     dense = px.cover_convex_polygon(quads, resolution, threads=1, reduce=px.Count())
     covered = np.flatnonzero(dense)
-    inside, outside = covered[:8], covered[8:16]
-    selected = np.concatenate([inside, outside])
+    uncovered = np.flatnonzero(dense == 0)
+    requested = np.concatenate([covered[:4], uncovered[:4], covered[:4]])
 
-    restricted = px.cover_convex_polygon(
+    selected = px.cover_convex_polygon(
         quads,
         resolution,
         threads=1,
-        candidate_cells=inside,
-        reduce=px.Count(cells=selected),
+        candidate_cells=requested,
+        reduce=px.Count(),
     )
-    np.testing.assert_array_equal(restricted[: inside.size], dense[inside])
-    np.testing.assert_array_equal(
-        restricted[inside.size :], np.zeros(outside.size, dtype=np.int64)
-    )
+    assert selected.shape == requested.shape
+    np.testing.assert_array_equal(selected, dense[requested])
+    np.testing.assert_array_equal(selected[4:8], np.zeros(4, dtype=np.int64))
 
 
 @pytest.mark.parametrize("resolution", [6, 9])
@@ -746,9 +750,9 @@ def test_selected_cap_and_sweep_reductions_match_materialize_then_reduce(
     ]:
         coverage = cover()
         values = rng.normal(size=segments)
-        for reducer in (px.Count(cells=small), px.Sum(values, cells=small)):
+        for reducer in (px.Count(), px.Sum(values)):
             np.testing.assert_array_equal(
-                cover(reduce=reducer),
-                coverage.reduce(reducer),
+                cover(candidate_cells=small, reduce=reducer),
+                coverage.reduce(reducer, cells=small),
                 err_msg=f"{name} {type(reducer).__name__}",
             )
