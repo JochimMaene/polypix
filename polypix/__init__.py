@@ -454,33 +454,31 @@ def _require_dense_polygons(values: object) -> tuple[np.ndarray, np.ndarray]:
     return dense
 
 
-def _ragged_vertex_count(polygon: object, index: int) -> int:
-    """Vertex count of one ragged entry, without converting it."""
-    shape: tuple[int, ...] | None = getattr(polygon, "shape", None)
-    if shape is None:
-        shape = np.shape(cast(npt.ArrayLike, polygon))
-    if len(shape) != 2 or shape[1] != 3:
-        raise ValueError(f"polygons_xyz[{index}] must have shape (items, 3).")
-    return int(shape[0])
+def _name_ragged_failure(values: Sequence[object]) -> None:
+    """Reraise a ragged batch failure against the entry that caused it."""
+    for index, polygon in enumerate(values):
+        _as_float_matrix(polygon, 3, f"polygons_xyz[{index}]")
 
 
-def _ragged_polygons(values: Sequence[object]) -> tuple[np.ndarray, np.ndarray]:
+def _ragged_polygons(
+    values: Sequence[object],
+    shapes: Sequence[tuple[int, ...]],
+) -> tuple[np.ndarray, np.ndarray]:
     """Pack a sequence of differing-length polygons into vertices and offsets.
 
-    Reading each entry's shape is unavoidable - the offsets are built from
-    them - but converting and validating entry by entry is not. One
-    ``concatenate`` and one whole-buffer check replace a per-polygon Python
-    call that cost about five microseconds each, which dominated the covering
-    work itself on large batches. Naming the offending entry stays exact by
-    rerunning the per-entry path, but only once something has already failed.
+    There is no per-entry work left here: the shapes were already read to
+    choose this path, and the offsets follow from them. Converting, the dtype
+    check, and the width check all happen once over the concatenated buffer.
+    That is safe because the entries have to agree for ``concatenate`` to
+    succeed at all - a wrong rank or width raises there, and a wrong dtype
+    survives to the whole-buffer check - so a shape that misreports its own
+    vertex count is one that fails anyway.
+
+    Anything that does fail reruns the per-entry conversion to name the
+    offending index exactly, which costs nothing on the path that succeeds.
+    Converting entry by entry up front instead cost about five microseconds
+    each, which on large batches exceeded the covering work.
     """
-    counts = np.asarray(
-        [_ragged_vertex_count(polygon, index) for index, polygon in enumerate(values)],
-        dtype=np.uint64,
-    )
-    offsets = np.concatenate(
-        (np.zeros(1, dtype=np.uint64), np.cumsum(counts, dtype=np.uint64))
-    )
     try:
         vertices = _as_float_matrix(
             np.concatenate(values, axis=0),  # type: ignore[arg-type]
@@ -488,9 +486,19 @@ def _ragged_polygons(values: Sequence[object]) -> tuple[np.ndarray, np.ndarray]:
             "polygons_xyz",
         )
     except (TypeError, ValueError):
-        for index, polygon in enumerate(values):
-            _as_float_matrix(polygon, 3, f"polygons_xyz[{index}]")
+        _name_ragged_failure(values)
         raise
+    counts = np.fromiter(
+        (shape[0] for shape in shapes), dtype=np.uint64, count=len(shapes)
+    )
+    if int(counts.sum()) != vertices.shape[0]:
+        # No entry can hide vertices from ``concatenate``, so reaching this
+        # means one reported a length its own data does not have.
+        _name_ragged_failure(values)
+        raise ValueError(_POLYGON_SHAPE_ERROR)
+    offsets = np.concatenate(
+        (np.zeros(1, dtype=np.uint64), np.cumsum(counts, dtype=np.uint64))
+    )
     return vertices, offsets
 
 
@@ -504,13 +512,21 @@ def _as_polygons(
         return np.empty((0, 3), dtype=np.float64), np.zeros(1, dtype=np.uint64)
     if np.ndim(values[0]) != 2:
         return _require_dense_polygons(values)
+    # Identical shapes pack into one dense array. Anything else - differing
+    # vertex counts, and differing widths, which would otherwise reach
+    # ``np.asarray`` as a ragged nested sequence and leak its message - takes
+    # the per-entry path, where a failure can be named.
+    # Identical shapes pack into one dense array. Anything else - differing
+    # vertex counts, and differing widths, which would otherwise reach
+    # ``np.asarray`` as a ragged nested sequence and leak its message - takes
+    # the per-entry path, where a failure can be named. Comparing against the
+    # first shape short-circuits on a ragged batch, where hashing every shape
+    # into a set would not.
     shapes = [np.shape(polygon) for polygon in values]
-    if (
-        all(len(shape) == 2 for shape in shapes)
-        and len({shape[0] for shape in shapes}) == 1
-    ):
+    first = shapes[0]
+    if len(first) == 2 and all(shape == first for shape in shapes):
         return _require_dense_polygons(values)
-    return _ragged_polygons(values)
+    return _ragged_polygons(values, shapes)
 
 
 def _as_packed_polygons(

@@ -545,12 +545,23 @@ splitting the buffer into one array per polygon and letting the ragged path
 concatenate it back - it is 1.7x at 10,000 polygons and 2.0x at 200,000, and it
 avoids 62 MiB of peak on the larger batch.
 
-That is the same margin as `Sum`, kept on the same criterion, so it stays. The
-gap does not come from validation: the ragged path was optimized first, which
-took the sequence form from 432 to 368 milliseconds at 200,000 polygons and
-moved the ratio only from 2.3x to 2.0x. What remains is building one Python
-array object per polygon and the concatenate copy, and neither is removable
-while the input is a sequence.
+The gap does not come from validation. The ragged path was optimized first -
+twice, once to stop converting entry by entry and once to stop reading every
+shape twice - taking the sequence form from 432 to 271 milliseconds at 200,000
+polygons and the ratio from 2.3x to 1.44x. What remains is reading one shape
+per entry and the concatenate copy, neither removable while the input is a
+sequence.
+
+1.44x is a weaker case than `Sum`'s 1.9x, and it only applies to a caller whose
+data *arrives* packed. For a caller holding a list of arrays, building the
+offsets to pass them is now within noise of just passing the list, which is the
+honest test of whether the argument shifts work rather than saving it: before
+these optimizations, doing it by hand was 20% faster, and that 20% was our
+inefficiency rather than a real benefit. So the argument stands or falls on
+columnar interop - GeoArrow, Parquet, and database geometry columns are flat
+coordinates plus offsets, and deconstructing one into 200,000 Python objects to
+hand it over is backwards. Keep it while that interop is wanted; cut it, and
+the 47 lines with it, if no such caller ever appears.
 
 Both sides are now benchmarked, so the next person to ask does not have to
 rediscover this. Worth recording separately: the first measurement of this ran

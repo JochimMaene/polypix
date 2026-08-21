@@ -25,13 +25,14 @@
 ### Changed
 
 - Validated a ragged polygon batch in one pass rather than one call per
-  polygon. Reading each entry's shape is unavoidable, since the offsets are
-  built from them, but converting and checking entry by entry was not: one
-  `concatenate` and one whole-buffer check replace a per-polygon Python call
-  that cost about five microseconds each. A 200,000-polygon ragged batch fell
-  from 432 to 368 milliseconds, a 10,000-polygon one from 20.4 to 17.1, and
-  small batches did not regress. The offending entry is still named exactly,
-  by rerunning the per-entry path once something has already failed.
+  polygon. The shapes already had to be read to choose between the dense and
+  ragged paths, and the offsets follow from them, so converting and checking
+  entry by entry was pure duplication: one `concatenate` and one whole-buffer
+  check now replace a per-polygon Python call that cost about five
+  microseconds each. A 200,000-polygon ragged batch fell from 432 to 271
+  milliseconds and a 10,000-polygon one from 20.4 to 14.1, with no regression
+  on small batches. The offending entry is still named exactly, by rerunning
+  the per-entry path once something has already failed.
 - Answered a reduction over a small cell selection by testing those cells
   instead of covering everything and gathering. Under a reducer,
   `candidate_cells` names the only cells the result depends on, so the
@@ -49,6 +50,12 @@
   produced - reachable through the native functions, which take any arrays -
   therefore panicked, or, when the first offset was not zero, silently dropped
   the leading hits of every segment.
+- Named the entry at fault when a ragged batch mixed vertex *widths*. The
+  dense and ragged paths were chosen by comparing vertex counts alone, so
+  `[(3, 3), (3, 2)]` looked uniform, reached `np.asarray` as a ragged nested
+  sequence, and surfaced its message - "setting an array element with a
+  sequence" - instead of naming `polygons_xyz[1]`. The choice now compares
+  whole shapes.
 - Rejected a `Coverage` whose cells were mutated after construction with a
   `ValueError` instead of a Rust panic. The reductions do not rescan validated
   hits, but a result array owns its data, so Python can reset its read-only
