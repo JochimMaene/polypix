@@ -291,11 +291,13 @@ def _as_uint64_vector(
         return np.asarray([_as_uint64_scalar(array.item(), name)], dtype=np.uint64)
     if array.ndim != 1:
         raise ValueError(f"{name} must be a scalar or one-dimensional integer array.")
-    if np.issubdtype(array.dtype, np.bool_):
+    # ``dtype.kind`` classifies the buffer with one attribute read, where each
+    # ``np.issubdtype`` call costs a type resolution. That matters here: on a
+    # Polypix result array the rest of this function only reinterprets a view,
+    # so the classification would otherwise dominate the conversion.
+    kind = array.dtype.kind
+    if kind == "b":
         raise TypeError(f"{name} must contain integers, not bool.")
-    integer_dtype = np.issubdtype(array.dtype, np.unsignedinteger) or np.issubdtype(
-        array.dtype, np.signedinteger
-    )
     if array.size == 0:
         # An empty ordinary sequence has no values from which NumPy can infer
         # its intended integer dtype. Explicitly typed arrays do, so enforce
@@ -303,12 +305,12 @@ def _as_uint64_vector(
         untyped_sequence = isinstance(values, Sequence) and not isinstance(
             values, np.ndarray
         )
-        if not integer_dtype and not untyped_sequence:
+        if kind not in ("i", "u") and not untyped_sequence:
             raise TypeError(f"{name} must contain integers.")
         return np.empty(0, dtype=np.uint64)
-    if np.issubdtype(array.dtype, np.unsignedinteger):
+    if kind == "u":
         return _aligned(np.ascontiguousarray(array.astype(np.uint64, copy=False)))
-    if np.issubdtype(array.dtype, np.signedinteger):
+    if kind == "i":
         # A reduction reads the array once and allocates nothing, where
         # ``any(array < 0)`` also materializes a full boolean temporary.
         if not native_range_checked and array.min() < 0:
@@ -320,7 +322,7 @@ def _as_uint64_vector(
         ):
             return array.view(np.uint64)
         return _aligned(np.ascontiguousarray(array.astype(np.uint64, copy=False)))
-    if array.dtype == np.dtype("O"):
+    if kind == "O":
         integers = [_as_uint64_scalar(value, name) for value in array.tolist()]
         return np.ascontiguousarray(np.asarray(integers, dtype=np.uint64))
     raise TypeError(f"{name} must contain integers.")
