@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import math
 import unittest
 from concurrent.futures import ThreadPoolExecutor
@@ -1019,12 +1020,6 @@ class PolypixTests(unittest.TestCase):
                     candidate_cells=negative,
                 ),
             ),
-            (
-                "vertex_offsets",
-                lambda: px.cover_convex_polygon(
-                    np.zeros((4, 3)), 4, vertex_offsets=[0, -1]
-                ),
-            ),
         )
         for name, call in cases:
             with self.subTest(argument=name):
@@ -1311,6 +1306,12 @@ class PolypixTests(unittest.TestCase):
             "summarize_occupancy",
         ]:
             self.assertFalse(hasattr(px, name), name)
+
+        # Removed keyword arguments are not module attributes either.
+        self.assertNotIn(
+            "vertex_offsets",
+            inspect.signature(px.cover_convex_polygon).parameters,
+        )
 
         # Coverage members live on the class, so they need their own check.
         coverage = px.Coverage.from_arrays([], [0], resolution=0)

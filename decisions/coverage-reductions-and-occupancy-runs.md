@@ -552,16 +552,23 @@ polygons and the ratio from 2.3x to 1.44x. What remains is reading one shape
 per entry and the concatenate copy, neither removable while the input is a
 sequence.
 
-1.44x is a weaker case than `Sum`'s 1.9x, and it only applies to a caller whose
+1.44x is a weaker case than `Sum`'s 1.9x, and it only applied to a caller whose
 data *arrives* packed. For a caller holding a list of arrays, building the
-offsets to pass them is now within noise of just passing the list, which is the
-honest test of whether the argument shifts work rather than saving it: before
-these optimizations, doing it by hand was 20% faster, and that 20% was our
-inefficiency rather than a real benefit. So the argument stands or falls on
-columnar interop - GeoArrow, Parquet, and database geometry columns are flat
-coordinates plus offsets, and deconstructing one into 200,000 Python objects to
-hand it over is backwards. Keep it while that interop is wanted; cut it, and
-the 47 lines with it, if no such caller ever appears.
+offsets to pass them ended up within noise of just passing the list, which is
+the honest test of whether the argument saved work or merely moved it: before
+these optimizations, doing it by hand was 20% *faster*, and that 20% was our
+inefficiency rather than a real benefit.
+
+So the argument stood or fell on columnar interop - GeoArrow, Parquet, and
+database geometry columns are flat coordinates plus offsets, and deconstructing
+one into 200,000 Python objects to hand it over is backwards. Removed, because
+no such caller exists here or is expected: the geometry this library is built
+for comes out of orbital propagation, not out of Parquet. A caller who does
+hold a packed buffer passes a sequence of slices into it and pays one
+concatenate, the same one they would have written themselves.
+
+Re-adding it would break nobody, and the benchmark that would justify it is now
+written down above rather than left to be rediscovered.
 
 Both sides are now benchmarked, so the next person to ask does not have to
 rediscover this. Worth recording separately: the first measurement of this ran

@@ -135,7 +135,7 @@ counts skip cap-cell membership entirely.
 ## Input layout
 
 Aligned, C-contiguous `float64` arrays are borrowed as-is. Anything else gets
-converted once, and ragged footprint sequences are validated and concatenated
+converted once, and ragged footprint sequences are concatenated and validated
 first. If input preparation shows up in your profile, feed it dense contiguous
 batches. An array viewed out of a packed byte buffer is contiguous but
 unaligned, which the kernel cannot borrow, so it is copied like any other

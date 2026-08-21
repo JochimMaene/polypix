@@ -31,25 +31,20 @@ def test_polygon_api_accepts_packed_and_ragged_vertices() -> None:
         dtype=np.float64,
     )
 
-    ragged = px.cover_convex_polygon([first, second], resolution=4)
-    packed = px.cover_convex_polygon(
-        np.vstack((first, second)),
-        resolution=4,
-        vertex_offsets=[0, len(first), len(first) + len(second)],
-    )
+    # A uniform sequence, a dense array, and a ragged sequence containing the
+    # same two polygons must all agree.
+    sequence = px.cover_convex_polygon([first, second], resolution=4)
+    dense = px.cover_convex_polygon(np.stack((first, second)), resolution=4)
+    triangle = second[:3]
+    ragged = px.cover_convex_polygon([first, triangle], resolution=4)
 
-    np.testing.assert_array_equal(packed.cells, ragged.cells)
-    np.testing.assert_array_equal(packed.offsets, ragged.offsets)
+    np.testing.assert_array_equal(dense.cells, sequence.cells)
+    np.testing.assert_array_equal(dense.offsets, sequence.offsets)
+    assert len(ragged) == 2
+    np.testing.assert_array_equal(ragged[0], sequence[0])
 
     with pytest.raises(ValueError, match="polygons_xyz"):
         px.cover_convex_polygon(np.ones((2, 2)), resolution=1)
-    for invalid_offsets in ([], [1, 8], [0, 9], [0, 6, 5, 8]):
-        with pytest.raises(ValueError, match="vertex_offsets"):
-            px.cover_convex_polygon(
-                np.vstack((first, second)),
-                resolution=4,
-                vertex_offsets=invalid_offsets,
-            )
 
 
 def test_malformed_ragged_polygon_uses_the_public_validation_error() -> None:

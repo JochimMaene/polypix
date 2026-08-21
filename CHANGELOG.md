@@ -17,8 +17,8 @@
   those six arrays and nothing else: every one of them needs that pass, and
   anything omitted is either one NumPy expression away or was an argument the
   caller supplied.
-- Added packed ragged convex polygons through `vertex_offsets=`,
-  `Coverage.segment_indices()`, and `cell_count()`.
+- Added ragged convex polygon batches, passed as a sequence of
+  `(vertices, 3)` arrays, and `cell_count()`.
 - Added exported argument-shape aliases `CellsLike`, `OffsetsLike`,
   `VectorsLike`, `PolygonsLike`, `EdgesLike`, and `ValuesLike`.
 

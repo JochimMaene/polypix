@@ -30,7 +30,6 @@ cover_convex_polygon(
     polygons_xyz,
     resolution,
     *,
-    vertex_offsets=None,
     candidate_cells=None,
     threads=None,
     reduce=None,
@@ -46,15 +45,13 @@ Cover convex spherical polygons by HEALPix cell-center inclusion.
   dense `(polygons, vertices, 3)` batch, or a sequence of `(vertices, 3)`
   arrays for a ragged batch. Vectors are finite, nonzero, and expressed in
   one caller-defined Cartesian frame; magnitudes are normalized internally.
+  Geometry packed as one flat vertex array plus offsets is passed as a
+  sequence of slices into it; Polypix concatenates a ragged sequence once,
+  which costs about the same as doing it yourself.
 
 `resolution`
 : *int*. HEALPix resolution, 0 through 29. Returned cells satisfy `0 <= cell
   < 12 * 4 ** resolution`.
-
-`vertex_offsets`
-: *array_like of int, optional*. Boundaries for a packed ragged batch in one
-  `(total_vertices, 3)` array. Starts at zero and ends at `total_vertices`.
-  Do not combine it with dense or sequence-style polygon grouping.
 
 `candidate_cells`
 : *array_like of int, optional*. RING indices at `resolution` restricting

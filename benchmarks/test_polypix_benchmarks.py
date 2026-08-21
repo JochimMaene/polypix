@@ -372,11 +372,11 @@ def test_cover_convex_polygon_mixed_ragged_batch_automatic(
 
 
 @pytest.fixture(scope="module")
-def packed_ragged_polygons() -> tuple[np.ndarray, np.ndarray]:
-    """A columnar ragged batch: flat vertices plus offsets, mixed 3/4/5-gons.
+def many_ragged_polygons() -> list[np.ndarray]:
+    """A large ragged batch of mixed 3/4/5-gons.
 
-    This is GeoArrow's polygon encoding, and what Arrow, Parquet, and database
-    geometry columns hand over, so it is the shape `vertex_offsets=` exists for.
+    Reading one shape per entry is the only per-entry work the ragged path
+    does, so this is the shape that shows whether it stays that way.
     """
     random = np.random.default_rng(20260821)
     count = 200_000
@@ -399,42 +399,21 @@ def packed_ragged_polygons() -> tuple[np.ndarray, np.ndarray]:
                 ]
             )
         )
-    packed = np.ascontiguousarray(np.concatenate(rows))
-    offsets = np.concatenate(([0], np.cumsum(vertex_counts))).astype(np.int64)
-    return packed, offsets
+    return rows
 
 
-def test_cover_convex_polygon_packed_ragged_batch(
-    benchmark, packed_ragged_polygons: tuple[np.ndarray, np.ndarray]
+def test_cover_convex_polygon_many_ragged_polygons(
+    benchmark, many_ragged_polygons: list[np.ndarray]
 ) -> None:
-    """Columnar input must reach the kernel without being taken apart.
+    """Preparation must not dominate a large ragged batch.
 
-    The alternative a caller has without `vertex_offsets=` is splitting the
-    buffer into one array per polygon, which was measured at 2.0x this call and
-    62 MiB of peak for the concatenate that puts it back together.
+    Converting and checking entry by entry cost about five microseconds each,
+    which on this shape exceeded the covering work; one `concatenate` and one
+    whole-buffer check replaced it.
     """
-    packed, offsets = packed_ragged_polygons
-    coverage = benchmark(
-        px.cover_convex_polygon, packed, 7, vertex_offsets=offsets, threads=1
-    )
+    coverage = benchmark(px.cover_convex_polygon, many_ragged_polygons, 7, threads=1)
 
-    assert coverage.offsets.shape == (offsets.size,)
-
-
-def test_cover_convex_polygon_split_packed_batch(
-    benchmark, packed_ragged_polygons: tuple[np.ndarray, np.ndarray]
-) -> None:
-    """The same geometry taken apart into a sequence, for comparison."""
-    packed, offsets = packed_ragged_polygons
-    coverage = benchmark(
-        lambda: px.cover_convex_polygon(
-            [packed[offsets[i] : offsets[i + 1]] for i in range(offsets.size - 1)],
-            7,
-            threads=1,
-        )
-    )
-
-    assert coverage.offsets.shape == (offsets.size,)
+    assert coverage.offsets.shape == (len(many_ragged_polygons) + 1,)
 
 
 def test_cover_convex_polygon_with_large_sparse_candidate_set(

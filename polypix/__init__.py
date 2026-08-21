@@ -529,28 +529,6 @@ def _as_polygons(
     return _ragged_polygons(values, shapes)
 
 
-def _as_packed_polygons(
-    values: object,
-    vertex_offsets: Sequence[int] | npt.NDArray[np.integer[Any]],
-) -> tuple[np.ndarray, np.ndarray]:
-    vertices = _as_float_matrix(values, 3, "polygons_xyz")
-    raw_offsets = np.asarray(vertex_offsets)
-    if raw_offsets.ndim != 1:
-        raise ValueError("vertex_offsets must be a one-dimensional integer array.")
-    offsets = _as_uint64_vector(vertex_offsets, "vertex_offsets")
-    if offsets.size == 0:
-        raise ValueError("vertex_offsets must contain at least the initial zero.")
-    if offsets[0] != 0:
-        raise ValueError("vertex_offsets must start at zero.")
-    if np.any(offsets[1:] < offsets[:-1]):
-        raise ValueError("vertex_offsets must be monotonically non-decreasing.")
-    if offsets[-1] != vertices.shape[0]:
-        raise ValueError(
-            "vertex_offsets must end at the number of packed polygon vertices."
-        )
-    return vertices, offsets
-
-
 @dataclass(frozen=True, eq=False, slots=True)
 class Count:
     """Count how many segments contain each cell.
@@ -580,7 +558,6 @@ def cover_convex_polygon(
     polygons_xyz: PolygonsLike,
     resolution: int,
     *,
-    vertex_offsets: OffsetsLike | None = None,
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
     reduce: None = None,
@@ -592,7 +569,6 @@ def cover_convex_polygon(
     polygons_xyz: PolygonsLike,
     resolution: int,
     *,
-    vertex_offsets: OffsetsLike | None = None,
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
     reduce: Count,
@@ -604,7 +580,6 @@ def cover_convex_polygon(
     polygons_xyz: PolygonsLike,
     resolution: int,
     *,
-    vertex_offsets: OffsetsLike | None = None,
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
     reduce: Sum,
@@ -615,7 +590,6 @@ def cover_convex_polygon(
     polygons_xyz: PolygonsLike,
     resolution: int,
     *,
-    vertex_offsets: OffsetsLike | None = None,
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
     reduce: CoverageReducer | None = None,
@@ -630,8 +604,6 @@ def cover_convex_polygon(
         arcs.
     resolution
         HEALPix resolution from 0 through 29.
-    vertex_offsets
-        Optional boundaries for a packed ``(vertices, 3)`` ragged batch.
     candidate_cells
         Optional RING indices restricting which cell centers are tested.
     reduce
@@ -658,11 +630,7 @@ def cover_convex_polygon(
         If the explicit segmented result does not fit in memory.
     """
     resolved = _as_resolution(resolution)
-    vertices, offsets = (
-        _as_polygons(polygons_xyz)
-        if vertex_offsets is None
-        else _as_packed_polygons(polygons_xyz, vertex_offsets)
-    )
+    vertices, offsets = _as_polygons(polygons_xyz)
     reducer = _as_coverage_reducer(reduce)
     candidates, requested = _reduction_plan(candidate_cells, reducer, resolved)
     coverage = Coverage._from_native(
