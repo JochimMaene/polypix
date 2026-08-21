@@ -596,17 +596,41 @@ The counterexample is now pinned as
 resolution 5 covers offsets 24-38 and 43-50 of one ring, with eleven uncovered
 cells between them.
 
-What a correct implementation needs is the exact arc arithmetic rather than the
-shortcut. For a ring of radial `r` at height `z`, edge normal `n` admits
-`n_x r cos(phi) + n_y r sin(phi) + n_z z >= 0`, which is `cos(phi - psi) >= -C/R`
-for `R = hypot(n_x r, n_y r)` and `psi = atan2(n_y, n_x)` - one arc per edge in
-closed form, with `R == 0` and `|C/R| > 1` as the degenerate cases. Intersecting
-those arcs as a set on the circle yields one or more arcs, each of which becomes
-a cell range. Endpoints should still be confirmed with the containment
-predicate so the tie behaviour stays bit-identical to today's, which also means
-the arc arithmetic only has to round outward rather than be exact.
+The exact version was then written and measured, and it is **slower**. Do not
+write it again.
 
-That is a day of delicate work whose failure mode is silent over-coverage, so
-it wants the oracle pointed at it from the first commit rather than the last.
-The prize is real - it is the difference between O(cells) and O(edges) per ring
-on the dominant geometry - but the shortcut is not available.
+Per ring, per edge, it computes `cos(phi - psi) >= -C/R` for
+`R = hypot(n_x r, n_y r)` and `psi = atan2(n_y, n_x)`, intersects the resulting
+arcs as cyclic index runs, and confirms both ends of every run against the
+containment predicate. Against the per-cell scan it replaces:
+
+| footprint | cells each | per-cell scan | arc scan |
+| --- | --- | --- | --- |
+| 0.7 x 0.5 degrees, resolution 9 | 23 | 0.5 ms | 28.7 ms |
+| 4 x 3 degrees, resolution 9 | 763 | 4.3 ms | 41.5 ms |
+| 16 x 12 degrees, resolution 9 | 12,272 | 61.1 ms | 100.7 ms |
+| 16 x 12 degrees, resolution 11 | 196,459 | 705 ms | 774 ms |
+
+The O(cells) versus O(edges) argument is right about the asymptotics and wrong
+about the constants. Testing a cell centre is not expensive here: the scan
+advances around a ring by incremental rotation, so a candidate costs one
+rotation step and a few dot products, with no transcendental call at all. The
+analytic span costs an `atan2`, an `acos` and a `hypot` per edge per ring, plus
+a `sin_cos` for each endpoint confirmation - several hundred flops against
+roughly ten. It does not break even at 196,000 cells per footprint.
+
+The correctness work is also worse than it looks. `acos` is ill-conditioned
+exactly where a ring is nearly tangent to an edge plane, which is exactly where
+a cell centre lands on a boundary, so the arc endpoint can be wrong by about a
+cell in an unpredictable direction. Getting the differential suite from 36
+failures down to 2 took a guard term, a clamp at tangency, a bounded outward
+search, and two widened fallbacks - all heuristic, none with a provable bound,
+guarding a kernel whose failure mode is silently wrong cells. A sound version
+would binary-search each edge's run using the predicate itself, which is exact
+but costs `O(log cells)` predicate calls per edge per ring and so is slower
+still on small footprints.
+
+What remains true is narrower: emitting ranges would let a dense count consume
+endpoints and one prefix sum instead of materializing hits. That is a memory
+argument, evaluated in the entry above, and it does not need the scan to be
+faster - only to coalesce the runs it already finds.
