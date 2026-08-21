@@ -787,7 +787,6 @@ def test_occupancy_many_sources_eo_shape(
     """
     stats = benchmark(px.occupancy, [eo_shaped_coverage] * 10)
 
-    assert stats.segment_count == 14_400
     assert stats.cells.dtype == np.int64
     assert stats.run_counts.dtype == np.int64
     assert stats.cells.size == 49_152

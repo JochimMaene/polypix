@@ -113,7 +113,7 @@ def reduce_coverage(
     mean_internal_gap_s = np.full(cell_count, np.nan, dtype=np.float64)
     max_internal_gap_s = np.full(cell_count, np.nan, dtype=np.float64)
     observations[stats.cells] = stats.run_counts
-    observed_gap_counts = stats.internal_gap_counts
+    observed_gap_counts = stats.run_counts - 1
     gap_counts[stats.cells] = observed_gap_counts
     measured = observed_gap_counts > 0
     mean_internal_gap_s[stats.cells[measured]] = (

@@ -66,15 +66,10 @@ def test_occupancy_summarizes_complete_ordinal_windows() -> None:
     ):
         assert values.dtype == np.int64
         assert not values.flags.writeable
-    assert union.resolution == 1
-    assert union.segment_count == 5
-    assert union.minimum_sources == 1
-    assert union.source_count == 2
     # Cell 1 is occupied over [0, 3) and [4, 5), so one internal gap of one
     # segment; cell 2 over [1, 4) alone.
     np.testing.assert_array_equal(union.cells, [1, 2])
     np.testing.assert_array_equal(union.run_counts, [2, 1])
-    np.testing.assert_array_equal(union.internal_gap_counts, [1, 0])
     np.testing.assert_array_equal(union.internal_gap_steps_sum, [1, 0])
     np.testing.assert_array_equal(union.maximum_internal_gap_steps, [1, 0])
     np.testing.assert_array_equal(union.first_start, [0, 1])
@@ -92,17 +87,13 @@ def test_occupancy_summarizes_complete_ordinal_windows() -> None:
     np.testing.assert_array_equal(impossible.cells, [])
     np.testing.assert_array_equal(impossible.run_counts, [])
     np.testing.assert_array_equal(impossible.first_start, [])
-    assert impossible.minimum_sources == 3
-    assert impossible.source_count == 2
 
     enormous = px.occupancy([first, second], minimum_sources=10**100)
     np.testing.assert_array_equal(enormous.cells, [])
-    assert enormous.minimum_sources == 10**100
 
     # Sequence positions are source entries; callers own source uniqueness.
     repeated = px.occupancy([first, first], minimum_sources=2)
     np.testing.assert_array_equal(repeated.cells, [1, 2])
-    assert repeated.source_count == 2
 
 
 def test_occupancy_validates_alignment_and_threshold() -> None:
@@ -152,7 +143,6 @@ def test_occupancy_matches_random_boolean_oracle() -> None:
 
         for name, values in expected.items():
             np.testing.assert_array_equal(getattr(actual, name), values, err_msg=name)
-        np.testing.assert_array_equal(actual.internal_gap_counts, actual.run_counts - 1)
 
 
 @pytest.mark.parametrize("resolution", [0, 2, 29], ids=["r0", "r2", "r29_sparse"])
@@ -186,9 +176,6 @@ def test_occupancy_matches_the_oracle_on_both_memory_profiles(
 
         for name, values in expected.items():
             np.testing.assert_array_equal(getattr(stats, name), values, err_msg=name)
-        assert stats.minimum_sources == threshold
-        assert stats.source_count == source_count
-        assert stats.segment_count == segments
 
 
 def test_occupancy_accepts_unsorted_hits_and_all_empty_segments() -> None:
@@ -205,7 +192,6 @@ def test_occupancy_accepts_unsorted_hits_and_all_empty_segments() -> None:
 
     all_empty = px.Coverage.from_arrays([], [0, 0, 0, 0], resolution=29)
     empty = px.occupancy(all_empty)
-    assert empty.segment_count == 3
     assert len(empty) == 0
     np.testing.assert_array_equal(empty.cells, [])
 

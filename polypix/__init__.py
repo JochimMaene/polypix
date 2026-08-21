@@ -182,9 +182,14 @@ class OccupancyStats:
     """Read-only per-cell occupancy statistics on one thresholded axis.
 
     Every field describes the same source-unioned occupancy of a cell after
-    ``minimum_sources`` thresholding. ``first_start`` and ``last_stop`` bound
-    the observed window so callers can apply their own leading, trailing, or
-    cyclic gap policy; the gap fields cover complete internal gaps only.
+    thresholding, and every one of them needs the single pass over the segment
+    axis: nothing here can be recovered from the rest afterwards. In
+    particular ``maximum_internal_gap_steps`` exists only while a run closes,
+    so reproducing it downstream would mean materializing every run.
+
+    ``first_start`` and ``last_stop`` bound the observed window, so callers can
+    apply their own leading, trailing, or cyclic gap policy against the segment
+    count they passed in; the gap fields cover complete internal gaps only.
     """
 
     cells: npt.NDArray[np.int64]
@@ -193,10 +198,6 @@ class OccupancyStats:
     maximum_internal_gap_steps: npt.NDArray[np.int64]
     first_start: npt.NDArray[np.int64]
     last_stop: npt.NDArray[np.int64]
-    resolution: int
-    segment_count: int
-    minimum_sources: int
-    source_count: int
 
     def __init__(self, *_args: Never, **_kwargs: Never) -> None:
         raise TypeError("OccupancyStats values are constructed by Polypix.")
@@ -205,10 +206,6 @@ class OccupancyStats:
     def _from_native(
         cls,
         arrays: tuple[npt.NDArray[np.uint64], ...],
-        resolution: int,
-        segment_count: int,
-        minimum_sources: int,
-        source_count: int,
     ) -> OccupancyStats:
         result = object.__new__(cls)
         names = (
@@ -221,20 +218,11 @@ class OccupancyStats:
         )
         for name, array in zip(names, arrays, strict=True):
             object.__setattr__(result, name, _signed_view(array))
-        object.__setattr__(result, "resolution", resolution)
-        object.__setattr__(result, "segment_count", segment_count)
-        object.__setattr__(result, "minimum_sources", minimum_sources)
-        object.__setattr__(result, "source_count", source_count)
         return result
 
     def __len__(self) -> int:
         """Return the number of cells having at least one qualifying run."""
         return self.cells.size
-
-    @property
-    def internal_gap_counts(self) -> npt.NDArray[np.int64]:
-        """Number of complete internal gaps for each cell."""
-        return self.run_counts - 1
 
 
 def _as_integer(value: object, name: str, expected: str) -> int:
@@ -950,7 +938,6 @@ def _prepared_timelines(
     int,
     int,
     int,
-    int,
 ]:
     """Validate aligned coverage timelines and view them for the native call."""
     threshold = _as_minimum_sources(minimum_sources)
@@ -979,7 +966,6 @@ def _prepared_timelines(
         [_trusted_uint64(source.cells) for source in normalized],
         [_trusted_uint64(source.offsets) for source in normalized],
         resolution,
-        segment_count,
         threshold,
         len(normalized),
     )
@@ -1003,15 +989,11 @@ def occupancy(
     Per-cell counts and complete internal gaps accumulate in one pass, without
     ever building the individual runs.
     """
-    cells, offsets, resolution, segment_count, threshold, count = _prepared_timelines(
+    cells, offsets, resolution, threshold, count = _prepared_timelines(
         timelines, minimum_sources, "occupancy"
     )
     return OccupancyStats._from_native(
-        _occupancy_stats(cells, offsets, resolution, min(threshold, count + 1)),
-        resolution=resolution,
-        segment_count=segment_count,
-        minimum_sources=threshold,
-        source_count=count,
+        _occupancy_stats(cells, offsets, resolution, min(threshold, count + 1))
     )
 
 

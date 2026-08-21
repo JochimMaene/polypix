@@ -13,7 +13,10 @@
   where that is faster. Omitting `reduce=` keeps the full `Coverage`.
 - Added `occupancy(timelines, *, minimum_sources=1)`, returning per-cell run
   counts, complete internal gap sums and maxima, and observed window bounds
-  computed in a single pass without ever building the runs.
+  computed in a single pass without ever building the runs. The result carries
+  those six arrays and nothing else: every one of them needs that pass, and
+  anything omitted is either one NumPy expression away or was an argument the
+  caller supplied.
 - Added packed ragged convex polygons through `vertex_offsets=`,
   `Coverage.segment_indices()`, and `cell_count()`.
 - Added exported argument-shape aliases `CellsLike`, `OffsetsLike`,

@@ -474,3 +474,32 @@ The Rust unit tests that came with the runs accumulator covered the shared
 source validation as well, so they were ported to `occupancy_stats()` rather
 than deleted, and the statistics gained the independent reference oracle they
 had lacked - previously they were only ever checked against runs.
+
+### The statistics result carries only what the pass can produce
+
+`OccupancyStats` went from eleven members to six, against one test: if a caller
+can compute it in NumPy for free, or already holds it, Polypix should not
+return it.
+
+Removed as derivable: `internal_gap_counts`, which was a property returning
+`run_counts - 1`. Removed as already the caller's: `resolution`,
+`segment_count`, `minimum_sources`, and `source_count`, every one of them an
+echo of an argument just passed in, and used nowhere outside the tests that
+asserted them.
+
+What remains is `cells`, `run_counts`, `internal_gap_steps_sum`,
+`maximum_internal_gap_steps`, `first_start`, and `last_stop`. None of these is
+recoverable from the others. `maximum_internal_gap_steps` is the sharpest case
+and the one that justifies the whole fused pass: an individual gap exists only
+in the instant one run closes and the next opens, so obtaining it downstream
+would mean materializing every run - which is what this decision removed for
+costing one boundary pair per hit. Cutting that field would put `OccupancyRuns`
+straight back.
+
+`first_start` and `last_stop` stay for the same structural reason rather than
+because anything uses them heavily. This decision deliberately delegates
+leading, trailing, and cyclic gap policy to the caller; those bounds are the
+only mechanism that makes the delegation possible, and the trailing gap is
+`segment_count - last_stop` against a segment count the caller already has.
+Unused is a reason to cut. Unused but load-bearing for a delegation the library
+makes on purpose is not.

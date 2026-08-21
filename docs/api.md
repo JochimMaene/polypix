@@ -546,9 +546,16 @@ caller's inputs cannot change a `Coverage`.
 
 ## OccupancyStats
 
-`OccupancyStats` values are produced only by `occupancy()`;
-manual
+`OccupancyStats` values are produced only by `occupancy()`; manual
 construction is intentionally disabled.
+
+Every attribute needs the single pass over the segment axis, and none can be
+recovered from the others afterwards. `maximum_internal_gap_steps` is the
+clearest case: an individual gap exists only while one run closes and the next
+opens, so computing it downstream would mean materializing every run. Anything
+this result does *not* carry is either derivable in one NumPy expression or
+already in the caller's hands - the resolution, segment count, threshold, and
+source count all came from the arguments you passed.
 
 **Attributes**
 
@@ -563,16 +570,10 @@ construction is intentionally disabled.
   in segments. Both are zero for a cell with a single run.
 
 `first_start`, `last_stop`
-: *ndarray*. `int64` half-open bounds of the observed window per cell.
-
-`internal_gap_counts`
-: *ndarray*. Derived `int64` gap count per cell, equal to `run_counts - 1`.
-
-`resolution`, `segment_count`
-: *int*. Common grid resolution and number of ordered input segments.
-
-`minimum_sources`, `source_count`
-: *int*. Threshold used and number of source entries supplied.
+: *ndarray*. `int64` half-open bounds of the observed window per cell. Leading
+  and trailing gaps are policy, so they are yours to apply: the trailing gap is
+  `segment_count - last_stop` against the segment count of the timelines you
+  passed in. The gap count per cell is `run_counts - 1`.
 
 `OccupancyStats` follows the same identity-equality and read-only array
 contracts as `Coverage`, and `len(stats)` is the number of represented
