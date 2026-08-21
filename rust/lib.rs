@@ -6,10 +6,10 @@ use numpy::{
 use pyo3::exceptions::{PyMemoryError, PyValueError};
 use pyo3::prelude::*;
 
-mod revisit;
 mod error;
 mod geometry;
 mod reduce;
+mod revisit;
 mod ring;
 
 use error::NativeError;

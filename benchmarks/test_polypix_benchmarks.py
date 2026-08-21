@@ -821,7 +821,7 @@ def test_count_coverage_selected_sparse_high_resolution(
     assert int(counts.sum()) == coverage.cells.size
 
 
-def test_occupancy_many_sources_eo_shape(
+def test_revisit_many_sources_eo_shape(
     benchmark,
     eo_shaped_coverage: px.Coverage,
 ) -> None:
@@ -830,7 +830,7 @@ def test_occupancy_many_sources_eo_shape(
     This shape is why: 9.28 million hits produce 921,600 runs, almost one
     boundary pair per represented cell per source.
     """
-    stats = benchmark(px.occupancy, [eo_shaped_coverage] * 10)
+    stats = benchmark(px.revisit, [eo_shaped_coverage] * 10)
 
     assert stats.cells.dtype == np.int64
     assert stats.run_counts.dtype == np.int64
@@ -838,21 +838,21 @@ def test_occupancy_many_sources_eo_shape(
     assert int(stats.run_counts.sum()) == 921_600
 
 
-def test_occupancy_output_heavy_eo_shape(
+def test_revisit_output_heavy_eo_shape(
     benchmark,
     eo_shaped_coverage: px.Coverage,
 ) -> None:
-    stats = benchmark(px.occupancy, eo_shaped_coverage)
+    stats = benchmark(px.revisit, eo_shaped_coverage)
 
     assert stats.cells.size == 49_152
     assert int(stats.run_counts.sum()) == 921_600
 
 
-def test_occupancy_sparse_high_resolution(
+def test_revisit_sparse_high_resolution(
     benchmark,
     many_sparse_sources: list[px.Coverage],
 ) -> None:
-    stats = benchmark(px.occupancy, many_sparse_sources)
+    stats = benchmark(px.revisit, many_sparse_sources)
 
     np.testing.assert_array_equal(stats.cells, [123])
     np.testing.assert_array_equal(stats.run_counts, [1])
