@@ -575,3 +575,38 @@ rediscover this. Worth recording separately: the first measurement of this ran
 under `tracemalloc` and reported 5.4x. It penalizes the allocation-heavy side,
 which is exactly the side under test. Time without it; measure memory in a
 separate run.
+
+### The polygon scan cannot emit ranges by assuming contiguity
+
+This decision records that a dense count would become asymptotically better
+"once the scan emits ordered ranges rather than cells". The cheap way to get
+there looks obvious: a cap meets every ring in one arc, a convex polygon is an
+intersection of half-spaces, so surely its ring intersection is one arc too -
+find the two ends with the containment predicate and emit everything between
+without testing it.
+
+It is not. Each half-space admits an arc, and an intersection of arcs on a
+circle can be *two* arcs: the ring circle passes through the polygon on two
+sides without the polygon containing the pole. Attempted, and the differential
+suite rejected it in seconds - 36 failures, all of them extra cells and none
+missing, which is the signature of merging two arcs into one.
+
+The counterexample is now pinned as
+`test_a_convex_polygon_can_meet_one_ring_in_two_arcs`: a quad that at
+resolution 5 covers offsets 24-38 and 43-50 of one ring, with eleven uncovered
+cells between them.
+
+What a correct implementation needs is the exact arc arithmetic rather than the
+shortcut. For a ring of radial `r` at height `z`, edge normal `n` admits
+`n_x r cos(phi) + n_y r sin(phi) + n_z z >= 0`, which is `cos(phi - psi) >= -C/R`
+for `R = hypot(n_x r, n_y r)` and `psi = atan2(n_y, n_x)` - one arc per edge in
+closed form, with `R == 0` and `|C/R| > 1` as the degenerate cases. Intersecting
+those arcs as a set on the circle yields one or more arcs, each of which becomes
+a cell range. Endpoints should still be confirmed with the containment
+predicate so the tie behaviour stays bit-identical to today's, which also means
+the arc arithmetic only has to round outward rather than be exact.
+
+That is a day of delicate work whose failure mode is silent over-coverage, so
+it wants the oracle pointed at it from the first commit rather than the last.
+The prize is real - it is the difference between O(cells) and O(edges) per ring
+on the dominant geometry - but the shortcut is not available.

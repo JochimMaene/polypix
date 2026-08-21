@@ -208,6 +208,45 @@ def test_random_polygon_coverage_matches_brute_force_centers(
             )
 
 
+def test_a_convex_polygon_can_meet_one_ring_in_two_arcs() -> None:
+    """Covered cells on a ring are not always contiguous. Do not assume it.
+
+    A cap meets every ring in exactly one arc, which is why counting caps can
+    consume analytic ring spans. The same is *not* true of a convex polygon: it
+    is an intersection of half-spaces, each of which admits an arc, and an
+    intersection of arcs on a circle can be two arcs. Geometrically the ring
+    circle passes through the polygon on two sides without the polygon
+    containing the pole.
+
+    This quad does it at resolution 5, and it is here because a scan that finds
+    the two ends of a ring's run and emits everything between them - the
+    obvious way to make the polygon kernel emit ranges rather than cells - is
+    wrong. It reported the eleven cells of the gap below as covered.
+    """
+    vertices = np.asarray(
+        [
+            [-0.5918472236434978, 0.6019795288885886, 0.5360387212362147],
+            [-0.7853060121047579, 0.4822228988164928, 0.38827251152913256],
+            [0.07360918257340232, -0.5456308125526849, 0.8347866222179008],
+            [0.1926408859727967, -0.1736374248243327, 0.9657844137031775],
+        ]
+    )
+    resolution = 5
+    covered = px.cover_convex_polygon(vertices[None], resolution).cells
+    heights = np.round(px.cell_centers(covered, resolution)[:, 2], 12)
+
+    split = 0
+    for height in np.unique(heights):
+        on_ring = np.sort(covered[heights == height])
+        if on_ring.size > 1 and np.any(np.diff(on_ring) > 1):
+            split += 1
+    assert split, "expected at least one ring covered in two separate arcs"
+
+    # And the truth agrees, so this is the geometry rather than a kernel bug.
+    margins = _polygon_margins(vertices, resolution)
+    _assert_matches(covered, margins, -CONTAINMENT_EPSILON, "two-arc quad")
+
+
 @pytest.mark.parametrize("resolution", [0, 2, 4, 6])
 def test_cap_coverage_matches_brute_force_centers(resolution: int, subtests) -> None:
     """The analytic cap ranges must agree with the cap predicate everywhere."""
