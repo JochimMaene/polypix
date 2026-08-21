@@ -51,7 +51,7 @@ def _seconds(
     footprints: np.ndarray, candidates: np.ndarray, threads: int | None
 ) -> float:
     started = time.perf_counter()
-    coverage = px.cover_footprint(
+    coverage = px.cover_convex_polygon(
         footprints,
         12,
         candidate_cells=candidates,
@@ -76,10 +76,12 @@ def main() -> None:
     )
 
     # Warm the reusable pool and native code before comparing steady state.
-    serial_result = px.cover_footprint(
+    serial_result = px.cover_convex_polygon(
         footprints, 12, candidate_cells=candidates, threads=1
     )
-    automatic_result = px.cover_footprint(footprints, 12, candidate_cells=candidates)
+    automatic_result = px.cover_convex_polygon(
+        footprints, 12, candidate_cells=candidates
+    )
     np.testing.assert_array_equal(automatic_result.cells, serial_result.cells)
     np.testing.assert_array_equal(automatic_result.offsets, serial_result.offsets)
 

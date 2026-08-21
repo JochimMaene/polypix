@@ -7,16 +7,12 @@ the same product. `docs/_static/polypix.css` mirrors the theme values.
 
 from __future__ import annotations
 
-from typing import Any
-
 # Straight from the logo.
 NAVY_DEEP = "#0c1c3b"
-NAVY = "#162240"
 CYAN = "#2db7d4"
 
 # Link and accent colors, sampled off the navy-to-cyan ramp so they carry
 # enough contrast on white for body text.
-PRIMARY = "#17607d"
 SECONDARY = "#a8475c"
 
 # Explanatory grid diagrams.
@@ -50,13 +46,3 @@ MAP_GRID = "#667788"
 # where color is categorical rather than quantitative.
 COUNT_CMAP = "YlGnBu"
 GAP_CMAP = "YlOrBr"
-
-
-def sequential_colormap() -> Any:
-    """Return the colormap for per-cell counts."""
-    return COUNT_CMAP
-
-
-def gap_colormap() -> Any:
-    """Return the colormap for revisit gaps."""
-    return GAP_CMAP

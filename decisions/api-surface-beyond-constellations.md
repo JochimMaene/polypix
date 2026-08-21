@@ -1,6 +1,6 @@
 # API Surface Beyond the Constellation Examples
 
-Status: **accepted; pre-1.0 discovery gate**
+Status: **accepted; first consolidation completed**
 
 ## Decision
 
@@ -18,10 +18,12 @@ The use-case-neutral operation families are:
 5. retain or reorganize large membership efficiently;
 6. perform domain analysis downstream or in an explicitly separate layer.
 
-Polypix is already strong in region coverage, sparse candidate joins, and batch
-direction indexing. It has one cap-specific accumulator, no public compressed
-membership, and one temporal summary whose exact fields came from the EO
-example. The remaining asymmetry must be investigated before 1.0.
+Polypix was already strong in region coverage, sparse candidate joins, and batch
+direction indexing. This review admitted generic native `Coverage` count/sum
+reducers, packed ragged polygons, signed public indices, and lossless ordinal
+occupancy runs. It retained fused cap counting on performance evidence rather
+than cloning it for every geometry. Remaining candidates still require their
+own evidence before 1.0.
 
 This decision does not admit all of the candidates below. It establishes the
 evidence that must be gathered before deciding which small subset belongs.
@@ -31,13 +33,13 @@ evidence that must be gathered before deciding which small subset belongs.
 | API | Pre-1.0 assessment |
 | --- | --- |
 | `cover_cap()` | Foundational spherical primitive; retain. |
-| `cover_footprint()` | Foundational convex-region primitive; retain. |
+| `cover_convex_polygon()` | Foundational convex-region primitive; canonical name states the geometry. The former `cover_footprint()` name is removed. |
 | `cover_sweep()` | The paired-edge sweep is broadly useful; this name avoids conflict with the established HEALPix meaning of a latitude strip. |
-| `count_caps_per_cell()` | Broadly useful, but it is the all-ones cap case of additive rasterization, not necessarily the final accumulation design. |
-| `summarize_occupancy()` | Useful and fast, but its source-run plus merged-gap fields are the most example-shaped part of the API. Keep it provisional or move it to a clearly bounded occupancy-analysis layer until independent workloads validate the result model. |
+| `Count` / `Sum` reducers, via `into=` and `Coverage.reduce()` | Geometry-neutral native reductions over `Coverage`; admitted for dense and positional selected-cell outputs. The separate `count_coverage_per_cell()` and `sum_coverage_per_cell()` verbs are removed, and the fused cap accelerator survives as `cover_cap(..., into=Count())` rather than the removed `count_caps_per_cell()`. |
+| `occupancy()` | Lossless cell-major ordinal windows by default, or fused per-cell statistics via `into=Stats()`; replaces the mixed, lossy canonical `summarize_occupancy()` result and the separate `occupancy_runs()` and `occupancy_stats()` verbs. |
 | `cell_at()` | Foundational direction-to-cell bridge; retain. |
-| `centers()` | Foundational cell-to-direction bridge; retain. |
-| `corners()` | Honestly describes the four returned vertices without implying that curved HEALPix cell edges are sampled. |
+| `cell_centers()` | Foundational cell-to-direction bridge; explicit canonical name. |
+| `cell_corners()` | Explicitly describes the four returned cell vertices without implying that curved HEALPix cell edges are sampled. |
 | `Coverage` | Validated, read-only segmented interchange type with copied imports and zero-copy native results; retain. |
 
 ## Cross-domain workload matrix
@@ -47,12 +49,12 @@ propagation or the two executable constellation examples:
 
 | Workload | Needed primitives | Current fit or gap |
 | --- | --- | --- |
-| Astronomy survey tiling and focal-plane exposure | Cap/polygon coverage, point-to-cell indexing, per-cell counts or weighted exposure | Coverage and indexing exist; general accumulation is a gap. |
+| Astronomy survey tiling and focal-plane exposure | Cap/polygon coverage, point-to-cell indexing, per-cell counts or weighted exposure | Coverage, indexing, generic counts, and constant per-region weighted sums fit. |
 | Astronomy catalog cone search | Point-to-cell indexing, conservative region candidates, exact point filtering | Point indexing exists; center-selected coverage is not a no-false-negative candidate cover. |
-| Planetary image and scene catalogs | Ragged footprint batches, conservative selected-cell joins, cell-to-scene inversion | Center rasterization exists; packed ragged input, conservative candidates, and inversion need evidence. |
-| RF, optical, radar, or acoustic beam maps | Caps or convex contours, additive power/capacity values | Geometry fits; only unweighted cap counts exist. |
-| Aerial, maritime, or telescope scan sweeps | Paired-edge sweeps, per-segment counts, dwell accumulation | Sweep coverage fits; counts-only and accumulation need evidence. |
-| Monte Carlo footprints and uncertainty ensembles | Large cap/polygon batches, weighted probability or frequency maps | Explicit coverage and cap counts fit; weighted and polygon accumulation are gaps. |
+| Planetary image and scene catalogs | Ragged polygon batches, conservative selected-cell joins, cell-to-scene inversion | Packed ragged center rasterization exists; conservative candidates and inversion need evidence. |
+| RF, optical, radar, or acoustic beam maps | Caps or convex contours, additive power/capacity values | Geometry and constant per-region accumulation fit. |
+| Aerial, maritime, or telescope scan sweeps | Paired-edge sweeps, per-segment counts, dwell accumulation | Sweep coverage plus generic count/sum reduction fits; a fused count-only path still needs evidence. |
+| Monte Carlo footprints and uncertainty ensembles | Large cap/polygon batches, weighted probability or frequency maps | Explicit coverage, fused cap counts, and generic weighted accumulation fit. |
 | Static sites, facilities, or catalog directions | Direction-to-cell indexing and exact direction predicates or conservative candidates | Direction indexing exists; positional cap queries still evaluate cell centers, not the original site directions. |
 | Global spatial joins and acquisition lookup | Region-to-cell and cell-to-region incidence | `Coverage` stores the first orientation only. |
 
@@ -71,7 +73,7 @@ cell_at(vectors_xyz, resolution) -> ndarray
 ```
 
 quantizes directions to cells and exactly round-trips the centers returned by
-`centers()`. It lets users reach `cells=` and `candidate_cells=` without a second runtime HEALPix
+`cell_centers()`. It lets users reach `cells=` and `candidate_cells=` without a second runtime HEALPix
 dependency. Every surveyed HEALPix or discrete-global-grid toolkit provides
 the equivalent operation. It was admitted after independent fixtures through
 the poles, seams, face transitions, exact transition latitudes,
@@ -127,22 +129,21 @@ trusted zero-copy native construction path. Arrays are read-only, segments
 must contain unique cells but retain their supplied order, `len(coverage)` is
 the segment count, and integer indexing returns a read-only segment view.
 
-The remaining pre-1.0 decisions are:
-
-- signed versus unsigned 64-bit cell IDs;
-- whether packed vertices plus offsets should be accepted directly for ragged
-  upstream geometry.
-
-These are interoperability and correctness decisions, not presentation polish.
+The review resolved two interoperability decisions: public cells and offsets
+are signed `int64`, and `cover_convex_polygon(..., vertex_offsets=...)` accepts
+packed ragged input directly. Both avoid unnecessary copies or casts in common
+NumPy and upstream-library workflows.
 
 ## Performance experiments
 
-The following candidates are ranked experiments rather than promises.
+The first experiment below produced an admitted bounded API; the remaining
+candidates are ranked experiments rather than promises.
 
 ### Per-cell accumulation across geometry types
 
-Prototype unweighted counts for convex footprints and sweep segments, followed
-by one bounded weighted-sum design. The relevant complexity is:
+The accepted design reduces already-materialized `Coverage` with one unweighted
+count and one constant per-segment weighted sum. It applies equally to caps,
+convex polygons, and sweeps. The relevant complexity is:
 
 ```text
 materialize then reduce: O(region-cell hits) memory
@@ -150,12 +151,18 @@ fused accumulation:      O(grid cells or query cells) memory
 ```
 
 Constant per-region weights cover exposure, probability mass, capacity, dwell,
-and ensemble weighting. The public API must remain explicit and deterministic;
-there will be no arbitrary reducer callback. Floating accumulation also needs a
-defined dtype, overflow/NaN policy, and thread-order contract. Dense,
-positional-query, and sparse touched-cell results should be benchmarked as
-different shapes; a dense grid is impossible at high order and callers do not
-always know the touched cells in advance.
+and ensemble weighting. The public API remains explicit and deterministic;
+there is no arbitrary reducer callback. Floating output is `float64`, input and
+intermediate non-finite values are rejected, and addition follows deterministic
+segment/hit order. Dense and positional-query outputs are admitted; a sparse
+touched-cell result remains an experiment because callers do not always know
+the touched cells in advance and dense grids are impossible at high resolution.
+
+Fused cap counting remains because direct RING-span accumulation is materially
+faster than cap coverage followed by reduction. Polygon- or sweep-specific
+fused reducers require the same end-to-end evidence; naming symmetry does not
+admit them. See
+[Coverage Reductions and Revisit Statistics](coverage-reductions-and-revisit-statistics.md).
 
 ### Counts without cell materialization
 

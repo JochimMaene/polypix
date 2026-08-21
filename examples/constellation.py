@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import math
 from collections.abc import Sequence
 from io import BytesIO
@@ -33,23 +32,6 @@ DOC_FIGURE_DIR = Path("docs/assets/generated")
 
 # Path from a built page at examples/<name>.html to the assets copied by Sphinx.
 DOC_FIGURE_URL = "../generated"
-
-
-def write_measurements(path: Path, measurements: dict[str, Any]) -> None:
-    """Record one run's measurements next to the figures it produced."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(measurements, indent=2, sort_keys=True) + "\n")
-
-
-def read_measurements(path: Path) -> dict[str, Any]:
-    """Load measurements recorded by the documentation asset step."""
-    if not path.exists():
-        raise FileNotFoundError(
-            f"{path} is missing. Run `pixi run --environment docs docs-figures` "
-            "to execute the examples before building the documentation."
-        )
-    loaded: dict[str, Any] = json.loads(path.read_text())
-    return loaded
 
 
 def constellation_centers(
@@ -145,26 +127,12 @@ def map_coordinates(
     resolution: int,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Return longitude and latitude for every cell center."""
-    cell_count = 12 * 4**resolution
-    centers = px.centers(np.arange(cell_count, dtype=np.uint64), resolution)
+    cell_count = px.cell_count(resolution)
+    centers = px.cell_centers(np.arange(cell_count, dtype=np.int64), resolution)
     return (
         np.arctan2(centers[:, 1], centers[:, 0]),
         np.arcsin(np.clip(centers[:, 2], -1.0, 1.0)),
     )
-
-
-def clipped_range(
-    values: npt.NDArray[np.float64],
-    *,
-    low_percentile: float,
-    high_percentile: float,
-) -> tuple[float, float]:
-    """Return a percentile range so a thin tail cannot flatten the color scale."""
-    low = float(np.percentile(values, low_percentile))
-    high = float(np.percentile(values, high_percentile))
-    if high <= low:
-        return low, low + 1.0
-    return low, high
 
 
 def tiling_marker_size(

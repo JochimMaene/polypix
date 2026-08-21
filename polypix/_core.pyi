@@ -10,10 +10,12 @@ __all__ = [
     "_cell_at",
     "_center",
     "_count_caps_per_cell",
+    "_count_coverage_per_cell",
     "_cover",
     "_cover_cap",
     "_cover_sweep",
-    "_summarize_occupancy",
+    "_revisit_stats",
+    "_sum_coverage_per_cell",
     "_validate_coverage",
 ]
 
@@ -22,6 +24,7 @@ def _cover(
     offsets: npt.NDArray[np.uint64],
     resolution: int,
     candidate_cells: npt.NDArray[np.uint64] | None = None,
+    restrict_output: bool = True,
     threads: int | None = None,
 ) -> tuple[npt.NDArray[np.uint64], npt.NDArray[np.uint64]]: ...
 def _cover_cap(
@@ -29,6 +32,7 @@ def _cover_cap(
     radii_rad: npt.NDArray[np.float64],
     resolution: int,
     candidate_cells: npt.NDArray[np.uint64] | None = None,
+    restrict_output: bool = True,
     threads: int | None = None,
 ) -> tuple[npt.NDArray[np.uint64], npt.NDArray[np.uint64]]: ...
 def _count_caps_per_cell(
@@ -37,24 +41,39 @@ def _count_caps_per_cell(
     resolution: int,
     cells: npt.NDArray[np.uint64] | None = None,
     threads: int | None = None,
+) -> npt.NDArray[np.int64] | None: ...
+def _count_coverage_per_cell(
+    cells: npt.NDArray[np.uint64],
+    resolution: int,
+    requested_cells: npt.NDArray[np.uint64] | None = None,
 ) -> npt.NDArray[np.int64]: ...
+def _sum_coverage_per_cell(
+    cells: npt.NDArray[np.uint64],
+    offsets: npt.NDArray[np.uint64],
+    values: npt.NDArray[np.float64],
+    resolution: int,
+    requested_cells: npt.NDArray[np.uint64] | None = None,
+) -> npt.NDArray[np.float64]: ...
 def _cover_sweep(
     left_edge_xyz: npt.NDArray[np.float64],
     right_edge_xyz: npt.NDArray[np.float64],
     resolution: int,
     candidate_cells: npt.NDArray[np.uint64] | None = None,
+    restrict_output: bool = True,
     threads: int | None = None,
 ) -> tuple[npt.NDArray[np.uint64], npt.NDArray[np.uint64]]: ...
-def _summarize_occupancy(
+def _revisit_stats(
     cell_arrays: list[npt.NDArray[np.uint64]],
     offset_arrays: list[npt.NDArray[np.uint64]],
     resolution: int,
+    minimum_sources: int,
 ) -> tuple[
     npt.NDArray[np.uint64],
     npt.NDArray[np.uint64],
     npt.NDArray[np.uint64],
     npt.NDArray[np.uint64],
-    int,
+    npt.NDArray[np.uint64],
+    npt.NDArray[np.uint64],
 ]: ...
 def _validate_coverage(
     cells: npt.NDArray[np.uint64],

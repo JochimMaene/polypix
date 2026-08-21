@@ -61,7 +61,7 @@ def from_lonlat(
     )
 
 
-def window_cells(resolution: int) -> npt.NDArray[np.uint64]:
+def window_cells(resolution: int) -> npt.NDArray[np.int64]:
     """Return every cell whose center falls inside the drawing window."""
     longitude, latitude = np.meshgrid(
         np.linspace(WINDOW_LON[0], WINDOW_LON[1], 400),
@@ -72,12 +72,12 @@ def window_cells(resolution: int) -> npt.NDArray[np.uint64]:
 
 
 def cell_polygons(
-    cells: npt.NDArray[np.uint64],
+    cells: npt.NDArray[np.int64],
     resolution: int,
 ) -> list[npt.NDArray[np.float64]]:
     """Return each cell's four corners as a longitude/latitude polygon."""
-    corners = to_lonlat(px.corners(cells, resolution))
-    centers = to_lonlat(px.centers(cells, resolution))
+    corners = to_lonlat(px.cell_corners(cells, resolution))
+    centers = to_lonlat(px.cell_centers(cells, resolution))
     polygons = []
     for corner, center in zip(corners, centers, strict=True):
         # Keep every corner on the same side of the seam as its own center.
@@ -127,7 +127,7 @@ def new_axes(
 
 def draw_grid(
     axes: Any,
-    cells: npt.NDArray[np.uint64],
+    cells: npt.NDArray[np.int64],
     resolution: int,
     *,
     covered: set[int] | None = None,
@@ -154,7 +154,7 @@ def draw_grid(
             )
         )
     if centers:
-        points = to_lonlat(px.centers(cells, resolution))
+        points = to_lonlat(px.cell_centers(cells, resolution))
         # Only genuinely covered cells get the emphasised center. A highlighted
         # near-miss keeps the plain marker, because its center is what excluded it.
         inside = np.array([int(c) in covered for c in cells])
@@ -204,7 +204,7 @@ def center_sampling(path: Path) -> None:
         if int(cell) in covered:
             continue
         corner_angles = np.degrees(
-            np.arccos(np.clip(px.corners(cell, RESOLUTION)[0] @ center, -1.0, 1.0))
+            np.arccos(np.clip(px.cell_corners(cell, RESOLUTION)[0] @ center, -1.0, 1.0))
         )
         if (corner_angles < radius).any():
             missed = (int(cell), polygon)
@@ -254,7 +254,7 @@ def cover_cap(path: Path) -> None:
     save(figure, path)
 
 
-def cover_footprint(path: Path) -> None:
+def cover_convex_polygon(path: Path) -> None:
     """A convex polygon and the cells it selects."""
     page = guide()
     lon, lat = page["scene_lon"], page["scene_lat"]
@@ -354,8 +354,8 @@ def touching_cells(resolution: int) -> dict[int, set[int]]:
     visible enough to read as one region, and including it makes the graph too
     dense to color from a small palette.
     """
-    cells = np.arange(12 * 4**resolution, dtype=np.uint64)
-    corners = np.round(px.corners(cells, resolution), 7)
+    cells = np.arange(12 * 4**resolution, dtype=np.int64)
+    corners = np.round(px.cell_corners(cells, resolution), 7)
     at_corner: dict[tuple[float, float, float], set[int]] = {}
     for index, cell_corners in enumerate(corners):
         for corner in cell_corners:
@@ -405,7 +405,7 @@ def distinct_colors(resolution: int, palette: list[str]) -> list[str]:
 def sphere_levels(path: Path) -> None:
     """The whole sphere, partitioned at four resolutions.
 
-    HEALPix cell edges are curved, and `corners()` returns only four points per
+    HEALPix cell edges are curved, and `cell_corners()` returns only four points per
     cell, so drawing a coarse cell as a flat quadrilateral would misrepresent
     its shape. Instead this draws a fine mesh and colors each fine cell by the
     coarse cell its center falls in, which recovers the true curved boundaries
@@ -416,9 +416,9 @@ def sphere_levels(path: Path) -> None:
     from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
     mesh_resolution = 6
-    mesh = np.arange(12 * 4**mesh_resolution, dtype=np.uint64)
-    mesh_centers = px.centers(mesh, mesh_resolution)
-    mesh_corners = px.corners(mesh, mesh_resolution)
+    mesh = np.arange(12 * 4**mesh_resolution, dtype=np.int64)
+    mesh_centers = px.cell_centers(mesh, mesh_resolution)
+    mesh_corners = px.cell_corners(mesh, mesh_resolution)
 
     # Slightly rotated view so the pole and the equatorial band are both visible.
     view = np.array([0.62, 0.45, 0.64])
@@ -468,7 +468,7 @@ def sphere_levels(path: Path) -> None:
 def main() -> None:
     center_sampling(DOC_FIGURE_DIR / "center-sampling.svg")
     cover_cap(DOC_FIGURE_DIR / "cover-cap.svg")
-    cover_footprint(DOC_FIGURE_DIR / "cover-footprint.svg")
+    cover_convex_polygon(DOC_FIGURE_DIR / "cover-convex-polygon.svg")
     cover_sweep(DOC_FIGURE_DIR / "cover-sweep.svg")
     cell_at(DOC_FIGURE_DIR / "cell-at.svg")
     resolution_steps(DOC_FIGURE_DIR / "resolution-steps.svg")

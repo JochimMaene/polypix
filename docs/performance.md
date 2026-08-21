@@ -18,10 +18,10 @@ Public output storage, ignoring temporary native chunks:
 | --- | --- |
 | Explicit `Coverage` | `8 * hit_count + 8 * (segment_count + 1)` bytes |
 | `cell_at()` | 8 bytes per direction |
-| `centers()` | 24 bytes per cell |
-| `corners()` | 96 bytes per cell |
+| `cell_centers()` | 24 bytes per cell |
+| `cell_corners()` | 96 bytes per cell |
 | Dense cap counts | `8 * cell_count` bytes |
-| Sparse `OccupancySummary` | `32 * observed_cell_count` bytes |
+| `RevisitStats` | `48 * represented_cell_count` bytes |
 
 Parallel coverage builds ordered worker chunks and merges them, so peak native
 memory can reach roughly twice the final `cells` array. If allocation fails you
@@ -30,8 +30,8 @@ get a `MemoryError` rather than a crash.
 When the whole result will not fit, batch the input and consume each chunk:
 
 ```python
-for start in range(0, len(footprints), 10_000):
-    chunk = px.cover_footprint(footprints[start : start + 10_000], resolution=8)
+for start in range(0, len(polygons), 10_000):
+    chunk = px.cover_convex_polygon(polygons[start : start + 10_000], resolution=8)
     consume(chunk)
 ```
 
@@ -41,47 +41,86 @@ Concatenating all chunks recreates the original memory requirement.
 
 | What you need | Use | What you avoid |
 | --- | --- | --- |
-| Membership per region | `cover_cap()`, `cover_footprint()`, `cover_sweep()` | nothing; membership is the point |
-| Caps per cell | `count_caps_per_cell()` | one cell ID per cap-cell hit, plus a `bincount()` |
-| Runs and merged gaps over aligned bins | `summarize_occupancy()` | Python work per source and segment |
+| Membership per region | `cover_cap()`, `cover_convex_polygon()`, `cover_sweep()` | nothing; membership is the point |
+| Counts or weighted values per cell | `reduce=Count()`, `reduce=Sum(values)` | sorting, Python accumulation, one repeated value per hit |
+| Caps per cell | `cover_cap(..., reduce=Count())` | one cell ID per cap-cell hit, plus a `bincount()` |
+| Per-cell counts and internal gaps | `revisit()` | expanding every hit as an event, then building every run just to reduce it away |
 
-Occupancy summarization still consumes a `Coverage`, so sweep membership does
-get materialized. It fuses the reduction, not the geometry. The
-[architecture decisions](decisions.md) carry the benchmark evidence.
+## Choosing a dense or selected reduction
+
+`Count()` and `Sum(values)` return a dense fixed-grid array when their
+`cells` is `None`. That array is the requested result, so
+its cost follows the resolution rather than the coverage: 384 KiB at resolution
+6, 96 MiB at resolution 10, and 1.5 GiB at resolution 12. Passing `cells`
+returns one value per requested ID instead, so the result never scales with the
+grid.
+
+Sparse coverage above resolution 8 should pass `cells`. At or below that a
+`cells` query may still be served from a dense scratch grid, which costs about
+the same as the dense result — but only when the query and coverage together
+touch a reasonable share of that grid. A small query against a large grid, and
+every query above resolution 8, accumulates through a hash table instead and
+keeps memory flat.
+
+Which reducers fuse into the geometry kernel, and how `cover_cap()` chooses
+between a fused selected count and covering once then reducing, is described
+under [choosing a reducer](api.md#choosing-a-reducer). The
+[architecture decisions](development.md#architecture-decisions) carry the
+benchmark evidence.
+
+`revisit()` allocates by represented cell, never by run. That matters because
+materializing the runs themselves is not guaranteed to be smaller than the
+input: a cell hit in alternating bins creates one run per hit. This is the
+common case for a scanning constellation, where a cell is observed briefly and
+revisited hours later, so the run count approaches the hit count and runs
+compress nothing. Accumulating counts and complete internal gaps in one pass
+instead is smaller by orders of magnitude on that shape of workload.
+
+Moderate grids use bounded dense state; sparse high-resolution grids use a
+map-backed path rather than allocating by global cell count. Size the output
+with the table above.
 
 ## Dense counts versus selected cells
 
-Dense `count_caps_per_cell()` consumes analytic RING spans and is often faster
-than evaluating individual query cells:
+A dense `cover_cap(..., reduce=Count())` consumes analytic RING spans and is
+often faster than evaluating individual query cells:
 
 ```python
-dense = px.count_caps_per_cell(centers_xyz, radii_rad, resolution=8)
-sparse = px.count_caps_per_cell(
+dense = px.cover_cap(centers_xyz, radii_rad, resolution=8, reduce=px.Count())
+sparse = px.cover_cap(
     centers_xyz,
     radii_rad,
     resolution=20,
-    cells=small_site_cell_list,
+    candidate_cells=small_site_cell_list,
+    reduce=px.Count(),
 )
 ```
 
-Go dense whenever the array fits comfortably. Use `cells=` when the grid would
-be enormous and your query set is genuinely small. Its cost grows with both the
+Go dense whenever the array fits comfortably. Name `candidate_cells` when the
+grid would be enormous and your query set is genuinely small. Its cost grows with both the
 cap count and the number of cells you ask for, so it is not a general-purpose
 escape hatch.
 
 Either way the predicate is evaluated at cell centers. If those IDs came out of
 `cell_at()`, you are testing the cell, not the direction you started with.
 
-## Two arguments that look similar
+## One argument, two readings
 
-| Argument | Semantics | Output |
+`candidate_cells` is the only way to name a subset of the grid, and what it
+means follows the operation it is given to.
+
+| Call | Semantics | Output |
 | --- | --- | --- |
-| `candidate_cells=` | set filter for coverage | native cell order |
-| `cells=` | positional cap-count query | preserves your order and duplicates |
+| `cover_*(..., candidate_cells=)` | set filter for the coverage | native cell order |
+| `cover_*(..., candidate_cells=, reduce=)` | positional query | your order, duplicates kept |
+| `coverage.reduce(..., cells=)` | positional query | your order, duplicates kept |
 
-They are not interchangeable. Candidate planning also retains normalized
-geometry for the whole batch and may cache a bounded span of candidate centers,
-so chunk very large batches if that retained state starts to matter.
+Only the first restricts the scan unconditionally, because there the selection
+is the result. Under a reducer the restriction cannot change the answer, so
+Polypix takes it only while it is the cheaper plan. Candidate planning also
+retains normalized geometry for the whole batch and may cache a bounded span of
+candidate centers, so chunk very large batches if that retained state starts to
+matter.
 
 ## Geometry shape
 
@@ -95,9 +134,12 @@ counts skip cap-cell membership entirely.
 
 ## Input layout
 
-C-contiguous `float64` arrays are borrowed as-is. Anything else gets converted
-once, and ragged footprint sequences are validated and concatenated first. If
-input preparation shows up in your profile, feed it dense contiguous batches.
+Aligned, C-contiguous `float64` arrays are borrowed as-is. Anything else gets
+converted once, and ragged footprint sequences are concatenated and validated
+first. If input preparation shows up in your profile, feed it dense contiguous
+batches. An array viewed out of a packed byte buffer is contiguous but
+unaligned, which the kernel cannot borrow, so it is copied like any other
+non-conforming input.
 
 Native kernels release the GIL, so do not mutate a borrowed array from another
 thread while a call is running.
@@ -105,12 +147,12 @@ thread while a call is running.
 ## Threading
 
 ```python
-serial = px.cover_footprint(batch, resolution=8, threads=1)
-automatic = px.cover_footprint(batch, resolution=8)  # threads=None
+serial = px.cover_convex_polygon(batch, resolution=8, threads=1)
+automatic = px.cover_convex_polygon(batch, resolution=8)  # threads=None
 ```
 
 Automatic mode stays sequential below measured crossovers. `cell_at()`,
-`centers()`, and `corners()` parallelize large arrays too, but expose no
+`cell_centers()`, and `cell_corners()` parallelize large arrays too, but expose no
 control.
 
 If you already run several Polypix calls concurrently from your own executor,

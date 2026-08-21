@@ -141,7 +141,7 @@ def test_diagram_examples_still_run(
         "cell-at.svg",
         "center-sampling.svg",
         "cover-cap.svg",
-        "cover-footprint.svg",
+        "cover-convex-polygon.svg",
         "cover-sweep.svg",
         "resolution-steps.svg",
     ]

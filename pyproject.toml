@@ -39,7 +39,6 @@ test = ["pytest>=8"]
 
 [tool.maturin]
 bindings = "pyo3"
-features = ["pyo3/extension-module"]
 module-name = "polypix._core"
 python-source = "."
 strip = true

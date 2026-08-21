@@ -21,14 +21,11 @@ from examples.constellation import (
     EARTH_RADIUS_KM,
     map_coordinates,
     plot_global_map,
-    read_measurements,
     service_caps,
-    write_measurements,
 )
-from examples.palette import sequential_colormap
+from examples.palette import COUNT_CMAP
 
 FIGURE_PATH = DOC_FIGURE_DIR / "communications-availability.png"
-MEASUREMENTS_PATH = DOC_FIGURE_DIR / "communications-availability.json"
 
 # Permanent CelesTrak STARLINK group snapshot, retrieved 2026-07-29 from
 # https://celestrak.org/NORAD/elements/gp.php?GROUP=STARLINK&FORMAT=TLE.
@@ -48,8 +45,6 @@ class CommunicationsAnalysis:
     """Availability results and timings for the communications scenario."""
 
     mean_visible: npt.NDArray[np.float64]
-    minimum_visible: npt.NDArray[np.int64]
-    maximum_visible: npt.NDArray[np.int64]
     satellite_count: int
     snapshot_count: int
     covered_pair_count: int
@@ -89,21 +84,15 @@ def analyze() -> CommunicationsAnalysis:
     if not np.all(np.isfinite(positions_km)):
         raise ValueError("Astroz returned a non-finite propagated position")
 
-    cell_count = 12 * 4**HEALPIX_RESOLUTION
+    cell_count = px.cell_count(HEALPIX_RESOLUTION)
     visible_sum = np.zeros(cell_count, dtype=np.int64)
-    minimum_visible = np.full(
-        cell_count,
-        constellation.num_satellites,
-        dtype=np.int64,
-    )
-    maximum_visible = np.zeros(cell_count, dtype=np.int64)
     covered_pair_count = 0
     cap_geometry_elapsed_s = 0.0
     coverage_elapsed_s = 0.0
     reduction_elapsed_s = 0.0
 
     # Exact caps and their dense per-cell counts are processed one timestamp at
-    # a time. The fused count operation never materializes the much larger list
+    # a time. The fused count operation never builds the much larger list
     # of repeated cap-cell pairs.
     # --8<-- [start:communications-coverage]
     for snapshot_positions_km in positions_km:
@@ -116,25 +105,22 @@ def analyze() -> CommunicationsAnalysis:
         cap_geometry_elapsed_s += time.perf_counter() - cap_geometry_started
 
         coverage_started = time.perf_counter()
-        visible = px.count_caps_per_cell(
+        visible = px.cover_cap(
             centers,
             radii_rad,
             resolution=HEALPIX_RESOLUTION,
+            reduce=px.Count(),
         )
         coverage_elapsed_s += time.perf_counter() - coverage_started
 
         reduction_started = time.perf_counter()
         covered_pair_count += int(visible.sum())
         visible_sum += visible
-        np.minimum(minimum_visible, visible, out=minimum_visible)
-        np.maximum(maximum_visible, visible, out=maximum_visible)
         reduction_elapsed_s += time.perf_counter() - reduction_started
     # --8<-- [end:communications-coverage]
 
     return CommunicationsAnalysis(
         mean_visible=visible_sum / times_min.size,
-        minimum_visible=minimum_visible,
-        maximum_visible=maximum_visible,
         satellite_count=constellation.num_satellites,
         snapshot_count=times_min.size,
         covered_pair_count=covered_pair_count,
@@ -171,45 +157,20 @@ def plot_availability(
         visible=np.ones(result.mean_visible.size, dtype=bool),
         resolution=HEALPIX_RESOLUTION,
         colorbar_label="Mean catalogued objects in view",
-        cmap=sequential_colormap(),
+        cmap=COUNT_CMAP,
         norm=colors.PowerNorm(gamma=0.75, vmin=0.0, vmax=maximum),
         dpi=dpi,
     )
 
 
-def build_documentation_assets() -> None:
-    """Run the scenario, write its map, and record the measurements."""
+def build_documentation_assets() -> str:
+    """Run the scenario, write its map, and return its documentation HTML."""
     result = analyze()
     plotting_started = time.perf_counter()
     coordinates = map_coordinates(resolution=HEALPIX_RESOLUTION)
     plot_availability(result, FIGURE_PATH, coordinates=coordinates, dpi=100)
     plotting_elapsed_s = time.perf_counter() - plotting_started
 
-    write_measurements(
-        MEASUREMENTS_PATH,
-        {
-            "satellite_count": result.satellite_count,
-            "snapshot_count": result.snapshot_count,
-            "cap_count": result.snapshot_count * result.satellite_count,
-            "covered_pair_count": result.covered_pair_count,
-            "tle_parsing_ms": result.tle_parsing_elapsed_s * 1_000,
-            "propagation_ms": result.propagation_elapsed_s * 1_000,
-            "cap_geometry_ms": result.cap_geometry_elapsed_s * 1_000,
-            "coverage_ms": result.coverage_elapsed_s * 1_000,
-            "reduction_ms": result.reduction_elapsed_s * 1_000,
-            "analysis_ms": result.analysis_elapsed_s * 1_000,
-            "plotting_ms": plotting_elapsed_s * 1_000,
-            "mean_visible_min": float(result.mean_visible.min()),
-            "mean_visible_max": float(result.mean_visible.max()),
-            "sample_min": int(result.minimum_visible.min()),
-            "sample_max": int(result.maximum_visible.max()),
-        },
-    )
-
-
-def documentation_html() -> str:
-    """Return the recorded figure and measurements as HTML for the docs page."""
-    m = read_measurements(MEASUREMENTS_PATH)
     return f"""
 <figure class="example-figure">
   <img
@@ -225,9 +186,9 @@ def documentation_html() -> str:
 </figure>
 
 <div class="example-metrics">
-  <div><strong>{m["satellite_count"]:,}</strong><span>catalogued objects</span></div>
-  <div><strong>{m["cap_count"]:,}</strong><span>caps evaluated</span></div>
-  <div><strong>{m["covered_pair_count"]:,}</strong><span>cap–cell hits counted without materializing</span></div>
+  <div><strong>{result.satellite_count:,}</strong><span>catalogued objects</span></div>
+  <div><strong>{result.snapshot_count * result.satellite_count:,}</strong><span>caps evaluated</span></div>
+  <div><strong>{result.covered_pair_count:,}</strong><span>cap–cell hits counted without storing them</span></div>
 </div>
 
 <table class="example-timings">
@@ -237,19 +198,19 @@ def documentation_html() -> str:
   </thead>
   <tbody>
     <tr><td>Parse pinned TLE snapshot</td>
-        <td>{m["tle_parsing_ms"]:.0f} ms</td></tr>
+        <td>{result.tle_parsing_elapsed_s * 1_000:.0f} ms</td></tr>
     <tr><td>SGP4 propagation</td>
-        <td>{m["propagation_ms"]:.0f} ms</td></tr>
+        <td>{result.propagation_elapsed_s * 1_000:.0f} ms</td></tr>
     <tr><td>Service-cap geometry</td>
-        <td>{m["cap_geometry_ms"]:.0f} ms</td></tr>
-    <tr><td>{m["snapshot_count"]} <code>count_caps_per_cell()</code> calls</td>
-        <td><strong>{m["coverage_ms"]:.0f} ms</strong></td></tr>
+        <td>{result.cap_geometry_elapsed_s * 1_000:.0f} ms</td></tr>
+    <tr><td>{result.snapshot_count} <code>cover_cap(reduce=Count())</code> calls</td>
+        <td><strong>{result.coverage_elapsed_s * 1_000:.0f} ms</strong></td></tr>
     <tr><td>Availability reduction</td>
-        <td>{m["reduction_ms"]:.0f} ms</td></tr>
+        <td>{result.reduction_elapsed_s * 1_000:.0f} ms</td></tr>
     <tr><td>Complete analysis</td>
-        <td>{m["analysis_ms"]:.0f} ms</td></tr>
+        <td>{result.analysis_elapsed_s * 1_000:.0f} ms</td></tr>
     <tr><td>Plot and PNG encoding</td>
-        <td>{m["plotting_ms"]:.0f} ms</td></tr>
+        <td>{plotting_elapsed_s * 1_000:.0f} ms</td></tr>
   </tbody>
 </table>
 """.strip()

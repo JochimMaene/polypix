@@ -8,7 +8,8 @@ nside      = 2 ** resolution
 cell_count = 12 * 4 ** resolution
 ```
 
-Polypix accepts 0 through 29.
+Polypix accepts 0 through 29. Use `polypix.cell_count(resolution)` when
+allocating or validating a dense map.
 
 ```{figure} assets/generated/sphere-levels.png
 :alt: The same sphere partitioned at HEALPix resolutions 0 to 3, cell count rising from 12 to 768.

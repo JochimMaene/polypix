@@ -1,6 +1,25 @@
 # Exact Caps and Segmented Occupancy Reduction
 
-Status: **accepted; measured primary-workload primitives**
+Status: **accepted for exact caps; occupancy result superseded**
+
+## Later outcome
+
+Exact caps remain current, and so does the fused cap-counting kernel, but its
+public verb does not: `count_caps_per_cell()` was removed and the kernel is now
+reached through `cover_cap(..., into=Count())`. The provisional occupancy summary
+did not survive the broader workflow review either: `run_counts` described each
+source separately while gap fields described their union, and retaining only gap
+sum/count could not support maximum, minimum, median, boundary-censored, or
+cyclic revisit analyses. The canonical replacements are the lossless ordinal
+runs returned by `occupancy()` and the fused per-cell statistics returned by
+`occupancy(..., into=Stats())`; the provisional summary API and native
+implementation were removed. Those reducers, the generic `Coverage` count and
+sum reductions, and the consolidated naming and dtype decisions are recorded in
+[Coverage Reductions and Revisit Statistics](coverage-reductions-and-revisit-statistics.md),
+which also supersedes this record's rejection of a conditional return type.
+
+The remainder of this record preserves the evidence and historical decision
+that introduced the original operations.
 
 ## Decision
 

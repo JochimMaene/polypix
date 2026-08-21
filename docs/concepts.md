@@ -13,28 +13,13 @@ region's coverage falls into a contiguous span on each ring it touches, which is
 also why coverage cost tracks a region's latitude extent more than its shape.
 
 Polypix uses fixed-resolution RING ordering throughout, and calls the HEALPix
-order `resolution`:
-
-```text
-nside      = 2 ** resolution
-cell_count = 12 * 4 ** resolution
-```
-
-| Resolution | `nside` | Cells |
-| ---: | ---: | ---: |
-| 0 | 1 | 12 |
-| 1 | 2 | 48 |
-| 2 | 4 | 192 |
-| 8 | 256 | 786,432 |
-| 12 | 4,096 | 201,326,592 |
-
-Every step up quadruples the grid and roughly halves the cell scale, so the
-numbers get away from you quickly. Resolution 12 already needs about 1.5 GiB
-for one `int64` per cell. Resolutions run to 29, which is only useful for sparse
-transforms and selected-cell queries, never for a complete dense map.
-[Resolutions](resolutions.md) shows what the grid looks like at each level, and
-lists every one with its angular size, its size on the ground, and what a dense
-map would cost.
+order `resolution`. Every step up quadruples the grid and roughly halves the
+cell scale, so the numbers get away from you quickly: resolution 12 already
+needs about 1.5 GiB for one `int64` per cell. Resolutions run to 29, which is
+only useful for sparse transforms and selected-cell queries, never for a
+complete dense map. [Resolutions](resolutions.md) gives the formulas, shows what
+the grid looks like at each level, and lists every resolution with its angular
+size, its size on the ground, and what a dense map would cost.
 
 What you get back are ordinary RING pixel indices in `[0, cell_count)`. They are
 not packed tokens and they do not encode their resolution. The result object
@@ -59,8 +44,8 @@ vectors_n3 = np.moveaxis(vectors_3n, 0, -1)
 cells = px.cell_at(vectors_n3, resolution=8)
 ```
 
-Use `cell_at()` when your input is points rather than regions, and `centers()`
-to go back the other way. Be careful about what "back" means: `centers()` gives
+Use `cell_at()` when your input is points rather than regions, and `cell_centers()`
+to go back the other way. Be careful about what "back" means: `cell_centers()` gives
 you the grid representative, not the direction you started with. Cell centers
 round-trip exactly; arbitrary directions do not. A direction sitting numerically
 on a cell edge is a floating-point tie. It is repeatable for one build and
@@ -94,12 +79,13 @@ Caps and footprints use the same rule. The accepted geometry and its numerical
 limits are in the [geometry contract](api.md#geometry-contract).
 
 When you only want to know *how many* caps cover each cell, reach for
-`count_caps_per_cell()` rather than `cover_cap()`. It accumulates counts
+`cover_cap(..., reduce=px.Count())` rather than the default `Coverage`. It
+accumulates counts
 directly instead of emitting one cell ID per cap–cell pair.
 
 ## Batches and segments
 
-`cover_footprint()` takes one footprint, a dense batch, or a ragged sequence.
+`cover_convex_polygon()` takes one footprint, a dense batch, or a ragged sequence.
 `cover_cap()` takes one center or a batch, with a shared radius or one per cap.
 `cover_sweep()` turns consecutive pairs of two sampled edges into independent
 quadrilaterals. All three hand back a single `Coverage`:
@@ -113,25 +99,65 @@ Python object per region. `len(coverage)` is the item count and `coverage[i]` is
 a read-only zero-copy view of one segment. If segmented arrays arrive from
 somewhere else, `Coverage.from_arrays()` copies and validates them.
 
+That is also the way back from storage, and the reason the constructor is
+public. Coverage is usually the expensive product of a campaign, so the
+realistic shape of the work is to compute it once and query it afterwards. Two
+flat arrays and a resolution store in anything that holds arrays:
+
+```{literalinclude} ../examples/coverage_archive.py
+:language: python
+:start-after: "--8<-- [start:archive-store]"
+:end-before: "--8<-- [end:archive-store]"
+:dedent:
+```
+
+Reading them back validates once, at the boundary, so nothing downstream has to
+re-check a hit:
+
+```{literalinclude} ../examples/coverage_archive.py
+:language: python
+:start-after: "--8<-- [start:archive-load]"
+:end-before: "--8<-- [end:archive-load]"
+:dedent:
+```
+
+A reloaded coverage is an ordinary coverage: `revisit()` and `reduce()` apply
+unchanged and return exactly what they would have in the process that built it.
+
 Sweep sampling is part of the input contract, because Polypix joins consecutive
 samples with the shorter great-circle arc. Steps approaching 180° bow noticeably;
 past 180° you get the opposite arc; exactly ambiguous steps are rejected. Polypix
 cannot tell a deliberate minor arc from an undersampled trajectory, so sample
 densely enough that each arc is the boundary you meant.
 
-## Occupancy summaries
+## Occupancy runs
 
-`summarize_occupancy()` reads the segments of one or more `Coverage` results as
-aligned, ordered bins. It counts consecutive runs per source, then merges every
-source to measure the uncovered bins between occupied windows.
+`revisit()` reads the segments of one or more `Coverage` results as
+aligned, ordered bins. It returns every maximal half-open `[start, stop)` run,
+grouped by cell, where at least `minimum_sources` source entries cover the cell.
+Matching indices must describe identical bin boundaries, and consecutive bins
+must really be adjacent; those are caller assertions because `Coverage` carries
+no clock. Split an analysis at time discontinuities or insert an empty separator
+bin so a run cannot bridge them.
 
-Gaps are counts of bins, not durations. Polypix has no clock. Hits in bins 0
-and 2 give a gap of one, so this is an uncovered interval and not a
-start-to-start period. Equal bin duration only matters when you multiply those
-counts out into real time.
+Runs use segment indices, not durations. Polypix has no clock. Map `starts` and
+`stops` through your own array of time edges, then choose whether revisit means
+end-to-start, start-to-start, a finite-horizon edge gap, or a cyclic gap.
 
-The result is sparse and sorted by cell ID, so a high resolution does not force
-a dense global allocation.
+Runs are often only an intermediate. If all you need per cell is how many times
+it was occupied, the total and largest complete internal gap, and the bounds of
+its observed window, `revisit()` computes exactly that
+in one pass and
+never builds the runs. It reports the same thresholded, source-unioned axis for
+every field, and leaves the leading, trailing, and cyclic policies to you by
+reporting `first_start` and `last_stop` rather than choosing.
+
+The result is sparse and sorted by cell ID, so high resolution does not force a
+dense global allocation. Sequence positions count independently, so callers
+also own source uniqueness. Multi-source thresholding intentionally drops
+source identity; extract runs once per source when observer attribution is
+required. A sampled sweep yields occupied-bin runs, not exact continuous access
+events; physical boundary precision is limited by the sampling cadence.
 
 ## Handing cells to other libraries
 
@@ -139,18 +165,13 @@ Polypix exchanges exactly two things with the rest of the ecosystem: `(N, 3)`
 direction arrays and fixed-resolution RING IDs. There is no frame object model
 to adopt and no Astropy or geospatial runtime to install.
 
-Standard RING IDs go straight to healpy, astropy-healpix, or cdshealpix for
-everything Polypix leaves out: ordering conversion, neighbors, interpolation,
-resampling, harmonics, file formats. Every valid cell ID fits in signed
-`int64`, so when an API insists on signed:
-
-```python
-signed_cells = coverage.cells.astype(np.int64, copy=False)
-```
+Signed `int64` RING IDs go straight to healpy, astropy-healpix, or cdshealpix
+for everything Polypix leaves out: ordering conversion, neighbors,
+interpolation, resampling, harmonics, and file formats.
 
 Two things to watch when you hand data over:
 
-- `corners()` returns four corner vectors, and HEALPix cell edges are curved.
+- `cell_corners()` returns four corner vectors, and HEALPix cell edges are curved.
   Those four points are not a sampled boundary, so do not round-trip them as an
   exact great-circle polygon.
 - A MOC represents whole cells by area. Converting center-selected cells into a
@@ -170,9 +191,17 @@ coverage = px.cover_sweep(
 )
 ```
 
-Candidates are a set: order and duplicates are discarded. Filtering is still
-center sampled, so it does not become a conservative index, and a dense
+Without a reducer, candidates are a set: order and duplicates are discarded,
+and the restriction always applies because it defines the result. Filtering is
+still center sampled, so it does not become a conservative index, and a dense
 candidate set can end up slower than just scanning the rings.
+
+With a reducer, the same argument fixes the output's index space instead: one
+value per requested cell, in your order, duplicates preserved, and zero where
+nothing covered it. Restricting the scan is then Polypix's choice rather than
+yours — it cannot change the answer, so it is taken only while testing the
+selection beats scanning the rings and gathering. To reduce over a stored
+`Coverage`, pass the same selection as `coverage.reduce(Count(), cells=...)`.
 
 See [Performance and memory](performance.md) for candidate planning, geometry
 shape, chunking, output sizing, and threads.

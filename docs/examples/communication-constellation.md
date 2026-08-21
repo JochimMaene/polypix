@@ -42,7 +42,7 @@ Astroz produces Earth-fixed positions for every object and timestamp:
 ```
 
 At each timestamp, the 10,771 altitude-dependent service caps are accumulated
-with one `count_caps_per_cell()` call:
+with one `cover_cap(..., reduce=px.Count())` call:
 
 ```{literalinclude} ../../examples/communication_constellation.py
 :language: python

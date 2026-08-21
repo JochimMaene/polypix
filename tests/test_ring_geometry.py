@@ -8,6 +8,8 @@ import numpy as np
 import polypix as px
 
 # Independent fixtures generated with astropy-healpix 2.0.1 in RING order.
+# Regenerate with tools/generate_ring_geometry_fixtures.py, which must keep the
+# same signature frequencies as _geometry_signature below.
 RESOLUTION_0_CENTERS = np.asarray(
     [
         [0.5270462766947299, 0.5270462766947298, 2.0 / 3.0],
@@ -308,7 +310,7 @@ class RingGeometryTests(unittest.TestCase):
                 )
 
     def test_ring_centers_match_independent_base_resolution_fixture(self) -> None:
-        actual = px.centers(np.arange(12, dtype=np.uint64), resolution=0)
+        actual = px.cell_centers(np.arange(12, dtype=np.uint64), resolution=0)
 
         np.testing.assert_allclose(
             actual,
@@ -318,7 +320,7 @@ class RingGeometryTests(unittest.TestCase):
         )
 
     def test_ring_corners_match_independent_fixtures(self) -> None:
-        actual = px.corners(RESOLUTION_1_CORNER_CELLS, resolution=1)
+        actual = px.cell_corners(RESOLUTION_1_CORNER_CELLS, resolution=1)
 
         np.testing.assert_allclose(
             actual,
@@ -328,7 +330,7 @@ class RingGeometryTests(unittest.TestCase):
         )
 
     def test_ring_centers_keep_polar_precision_at_resolution_29(self) -> None:
-        actual = px.centers(RESOLUTION_29_CELLS, resolution=29)
+        actual = px.cell_centers(RESOLUTION_29_CELLS, resolution=29)
 
         np.testing.assert_allclose(
             actual,
@@ -341,13 +343,13 @@ class RingGeometryTests(unittest.TestCase):
         for resolution, (cells, centers, corners) in HEALPY_EXACT_FIXTURES.items():
             with self.subTest(resolution=resolution):
                 np.testing.assert_allclose(
-                    px.centers(cells, resolution),
+                    px.cell_centers(cells, resolution),
                     centers,
                     rtol=0.0,
                     atol=4e-15,
                 )
                 np.testing.assert_allclose(
-                    px.corners(cells, resolution),
+                    px.cell_corners(cells, resolution),
                     corners,
                     rtol=0.0,
                     atol=4e-15,
@@ -365,13 +367,13 @@ class RingGeometryTests(unittest.TestCase):
             )
 
             np.testing.assert_allclose(
-                _geometry_signature(px.centers(cells, resolution)),
+                _geometry_signature(px.cell_centers(cells, resolution)),
                 center_signature,
                 rtol=0.0,
                 atol=1e-15,
             )
             np.testing.assert_allclose(
-                _geometry_signature(px.corners(cells, resolution)),
+                _geometry_signature(px.cell_corners(cells, resolution)),
                 corner_signature,
                 rtol=0.0,
                 atol=1e-15,
@@ -381,8 +383,8 @@ class RingGeometryTests(unittest.TestCase):
         for resolution in range(7):
             cell_count = 12 * 4**resolution
             cells = np.arange(cell_count, dtype=np.uint64)
-            centers = px.centers(cells, resolution)
-            corners = px.corners(cells, resolution)
+            centers = px.cell_centers(cells, resolution)
+            corners = px.cell_corners(cells, resolution)
 
             np.testing.assert_allclose(
                 np.linalg.norm(corners, axis=2),

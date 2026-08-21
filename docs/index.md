@@ -67,7 +67,7 @@ latitude:
 >>> radii = np.deg2rad([5.0, 8.0])                     # footprint half-angles
 
 >>> coverage = px.cover_cap(centers, radii, resolution=8)
->>> coverage.counts
+>>> np.diff(coverage.offsets)
 array([1500, 3829])
 ```
 
@@ -76,10 +76,10 @@ footprint are available as `coverage[0]` and `coverage[1]`:
 
 ```{doctest}
 >>> coverage[0][:4]
-array([68085, 68086, 68087, 68088], dtype=uint64)
+array([68085, 68086, 68087, 68088])
 ```
 
-These are standard HEALPix RING indices in a NumPy `uint64` array.
+These are standard HEALPix RING indices in a NumPy `int64` array.
 
 To run that yourself:
 
@@ -107,7 +107,7 @@ Two executable studies show the same operations at constellation scale.
     <img src="generated/earth-observation-count.png" alt="Global Earth-observation count map">
     <div>
       <h2>How often does a satellite fly over?</h2>
-      <p>Ten days of Earth-observation coverage, mapped as revisit time.</p>
+      <p>Ten days of sampled coverage, mapped as observed-cell internal gaps.</p>
     </div>
   </a>
 </div>
