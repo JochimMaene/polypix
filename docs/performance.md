@@ -65,7 +65,7 @@ keeps memory flat.
 Which reducers fuse into the geometry kernel, and how `cover_cap()` chooses
 between a fused selected count and covering once then reducing, is described
 under [choosing a reducer](api.md#choosing-a-reducer). The
-[architecture decisions](development.md#architecture-decisions) carry the
+[architecture decisions](development.md#project-documents) carry the
 benchmark evidence.
 
 `revisit()` allocates by represented cell, never by run. That matters because

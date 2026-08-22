@@ -151,4 +151,7 @@ examples/earth-observation-constellation
 api
 release-notes
 development
+project-goal
+adr/0001-owned-healpix-ring-kernel
+adr/0002-coverage-reductions-and-revisit-statistics
 ```

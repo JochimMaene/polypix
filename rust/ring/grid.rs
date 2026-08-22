@@ -240,10 +240,10 @@ pub(crate) fn cells_at(vectors: &[f64], resolution: u8) -> NativeResult<Vec<u64>
     Ok(cells)
 }
 
-// Independently derived from the published HEALPix RING numbering and
-// twelve-face layout. This is not adapted from the GPL HEALPix C++ ring2xyf
-// implementation; tests/test_ring_geometry.py pins it against that external
-// numerical oracle.
+// The RING-to-face logic is adapted from Astrometry.net's BSD-3-Clause
+// `healpix_ring_to_xy` implementation. It is not adapted from the GPL HEALPix
+// C++ `ring2xyf` implementation; tests/test_ring_geometry.py pins it against
+// that external numerical oracle.
 pub(super) fn ring_to_face_xy(cell: u64, nside: u64) -> (u8, i64, i64) {
     let ring_index = ring_of_cell(cell, nside);
     let ring_start = ring_start(nside, ring_index);

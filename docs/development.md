@@ -17,8 +17,9 @@ tests/                behavior tests and independent geometry fixtures
 benchmarks/           CodSpeed public-call regression benchmarks
 examples/             the two documented case studies and their shared helpers
 tools/                external-oracle fixture generation and CI guards
-decisions/            architecture decision records and the project goal
 docs/                 Sphinx/MyST documentation sources
+  adr/                architecture decision records
+  project-goal.md     project direction and scope
 ```
 
 ## Build model
@@ -137,14 +138,12 @@ rather than Python lists for anything large.
 Adding a public function means updating `polypix/__init__.py`, `docs/api.md`,
 and the tests and benchmarks that cover it.
 
-## Architecture decisions
+## Project documents
 
-These records explain why Polypix owns a focused native RING kernel and why a
-small number of fused reductions were admitted. They are maintainer evidence
-rather than user instructions:
+The project goal describes the boundary and scope. The ADRs explain decisions
+that would be awkward to undo. These pages are for maintainers; the user-facing
+documentation is in the rest of `docs/`:
 
-- [Project goal](https://github.com/JochimMaene/polypix/blob/main/decisions/project-goal.md)
-- [Owned HEALPix kernel](https://github.com/JochimMaene/polypix/blob/main/decisions/owned-healpix-kernel.md)
-- [Exact caps and segmented occupancy](https://github.com/JochimMaene/polypix/blob/main/decisions/cap-and-occupancy-primitives.md)
-- [API surface beyond constellation examples](https://github.com/JochimMaene/polypix/blob/main/decisions/api-surface-beyond-constellations.md)
-- [Coverage reductions and revisit statistics](https://github.com/JochimMaene/polypix/blob/main/decisions/coverage-reductions-and-revisit-statistics.md)
+- [Project goal](project-goal.md)
+- [Own the HEALPix RING kernel](adr/0001-owned-healpix-ring-kernel.md)
+- [Use reducers for coverage results and revisit statistics](adr/0002-coverage-reductions-and-revisit-statistics.md)
