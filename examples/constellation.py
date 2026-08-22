@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from io import BytesIO
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -214,29 +213,7 @@ def plot_global_map(
         colorbar.ax.xaxis.set_major_formatter(ScalarFormatter())
     figure.subplots_adjust(left=0.025, right=0.975, top=0.97, bottom=0.13)
 
-    encoded = BytesIO()
-    figure.savefig(encoded, format="png", dpi=dpi, facecolor=figure.get_facecolor())
-    plt.close(figure)
-
-    data = _quantized_png(encoded.getvalue())
     if isinstance(output, Path):
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_bytes(data)
-    else:
-        output.write(data)
-
-
-def _quantized_png(data: bytes) -> bytes:
-    """Re-encode a colormapped map to a palette PNG.
-
-    These figures draw a single colormap over a flat background, so 256 palette
-    entries are visually indistinguishable from truecolor at roughly a third of
-    the bytes.
-    """
-    from PIL import Image
-
-    image = Image.open(BytesIO(data)).convert("RGB")
-    palette = image.quantize(colors=256, dither=Image.Dither.NONE)
-    out = BytesIO()
-    palette.save(out, format="PNG", optimize=True)
-    return out.getvalue() if out.tell() < len(data) else data
+    figure.savefig(output, format="png", dpi=dpi, facecolor=figure.get_facecolor())
+    plt.close(figure)
