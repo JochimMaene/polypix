@@ -1,7 +1,5 @@
 """Sphinx configuration for the Polypix documentation."""
 
-from __future__ import annotations
-
 from importlib.metadata import version as package_version
 
 project = "Polypix"
@@ -16,7 +14,6 @@ extensions = [
 ]
 
 source_suffix = {".md": "markdown", ".rst": "restructuredtext"}
-root_doc = "index"
 exclude_patterns = ["assets/generated/*.html"]
 
 myst_enable_extensions = [
@@ -47,13 +44,9 @@ html_theme_options = {
         "text": "Polypix",
     },
     "repository_url": "https://github.com/JochimMaene/polypix",
-    "repository_branch": "main",
-    "path_to_docs": "docs",
     "use_repository_button": True,
     "use_issues_button": False,
     "use_edit_page_button": False,
-    "use_download_button": False,
-    "use_fullscreen_button": False,
     "home_page_in_toc": False,
     "show_navbar_depth": 1,
     "max_navbar_depth": 3,
