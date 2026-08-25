@@ -16,6 +16,18 @@ def vectors(points: list[tuple[float, float]]) -> np.ndarray:
     )
 
 
+def cap_ring(angle: float, radius: float, vertex_count: int = 8) -> np.ndarray:
+    angle_rad = np.radians(angle)
+    radius_rad = np.radians(radius)
+    axis = np.asarray([np.cos(angle_rad), np.sin(angle_rad), 0.0])
+    horizontal = np.asarray([-np.sin(angle_rad), np.cos(angle_rad), 0.0])
+    phase = np.linspace(0.0, 2.0 * np.pi, vertex_count, endpoint=False)
+    return np.cos(radius_rad) * axis + np.sin(radius_rad) * (
+        np.cos(phase)[:, None] * horizontal
+        + np.sin(phase)[:, None] * np.asarray([0.0, 0.0, 1.0])
+    )
+
+
 def planar_contains(points: np.ndarray, queries: np.ndarray) -> np.ndarray:
     inside = np.zeros(len(queries), dtype=np.bool_)
     x = queries[:, 0]
@@ -129,6 +141,16 @@ def test_polygon_holes_and_multipolygon_form_one_deduplicated_region() -> None:
         px.cover_polygon(region, 6, candidate_cells=selected).cells,
         selected,
     )
+
+
+def test_distant_holes_are_compared_in_the_outer_ring_hemisphere() -> None:
+    polygon = px.Polygon(
+        cap_ring(0.0, 89.0, 48),
+        cap_ring(-50.0, 4.0),
+        cap_ring(40.0, 4.0),
+    )
+
+    assert len(polygon.holes) == 2
 
 
 def test_region_batch_reducers_count_each_region_once() -> None:

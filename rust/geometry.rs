@@ -458,10 +458,10 @@ fn segments_touch_or_cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -
     })
 }
 
-fn rings_touch_or_cross(left: &Ring, right: &Ring) -> bool {
-    let (first, second) = projection_basis(left.axis);
-    let left_projected = projected_vertices(&left.vertices, left.axis, first, second);
-    let right_projected = projected_vertices(&right.vertices, left.axis, first, second);
+fn rings_touch_or_cross(left: &Ring, right: &Ring, axis: Vec3) -> bool {
+    let (first, second) = projection_basis(axis);
+    let left_projected = projected_vertices(&left.vertices, axis, first, second);
+    let right_projected = projected_vertices(&right.vertices, axis, first, second);
     left_projected
         .iter()
         .zip(left_projected.iter().cycle().skip(1))
@@ -560,7 +560,7 @@ pub(crate) fn prepare_general_polygon(
     let Some(raw_outer) = raw_rings.first() else {
         return Err("A polygon needs an outer ring.".to_owned());
     };
-    let outer = prepare_ring(raw_outer).map_err(|error| format!("outer: {error}"))?;
+    let outer = prepare_ring(raw_outer)?;
     let holes = raw_rings
         .iter()
         .skip(1)
@@ -568,7 +568,7 @@ pub(crate) fn prepare_general_polygon(
         .map(|(index, ring)| prepare_ring(ring).map_err(|error| format!("holes[{index}]: {error}")))
         .collect::<Result<Vec<_>, _>>()?;
     for (index, hole) in holes.iter().enumerate() {
-        if rings_touch_or_cross(&outer, hole)
+        if rings_touch_or_cross(&outer, hole, outer.axis)
             || ring_location(&outer, hole.vertices[0]) != RingLocation::Inside
         {
             return Err(format!(
@@ -576,7 +576,7 @@ pub(crate) fn prepare_general_polygon(
             ));
         }
         for (other_index, other) in holes[..index].iter().enumerate() {
-            if rings_touch_or_cross(hole, other)
+            if rings_touch_or_cross(hole, other, outer.axis)
                 || ring_location(hole, other.vertices[0]) != RingLocation::Outside
                 || ring_location(other, hole.vertices[0]) != RingLocation::Outside
             {

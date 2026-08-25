@@ -149,7 +149,7 @@ fn _validate_polygon(
         .map_err(PyValueError::new_err)
 }
 
-#[pyfunction(signature = (vertices_xyz, ring_offsets, polygon_offsets, region_offsets, resolution, candidate_cells=None, threads=None))]
+#[pyfunction(signature = (vertices_xyz, ring_offsets, polygon_offsets, region_offsets, resolution, candidate_cells=None, restrict_output=true, threads=None))]
 fn _cover_regions<'py>(
     py: Python<'py>,
     vertices_xyz: PyReadonlyArray2<'py, f64>,
@@ -158,6 +158,7 @@ fn _cover_regions<'py>(
     region_offsets: PyReadonlyArray1<'py, u64>,
     resolution: u8,
     candidate_cells: Option<PyReadonlyArray1<'py, u64>>,
+    restrict_output: bool,
     threads: Option<usize>,
 ) -> PyResult<PyCoverage<'py>> {
     validate_resolution(resolution)?;
@@ -182,7 +183,14 @@ fn _cover_regions<'py>(
     let coverage = py
         .detach(|| {
             ring::cover_regions(
-                vertices, rings, polygons, regions, resolution, candidates, threads,
+                vertices,
+                rings,
+                polygons,
+                regions,
+                resolution,
+                candidates,
+                restrict_output,
+                threads,
             )
         })
         .map_err(native_error)?;

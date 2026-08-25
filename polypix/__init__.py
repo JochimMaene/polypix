@@ -1044,6 +1044,7 @@ def cover_polygon(
             region_offsets,
             resolved,
             candidates,
+            reducer is None,
             thread_count,
         )
     else:

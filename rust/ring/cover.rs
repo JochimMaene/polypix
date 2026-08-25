@@ -116,12 +116,14 @@ pub(super) fn dispatch_coverage(
     })?
 }
 
-pub(super) fn compute_candidate_coverage(
+pub(super) fn compute_candidate_coverage<T: Send + Sync>(
     item_count: usize,
     candidates: &[u64],
     resolution: u8,
     threads: Option<usize>,
-    prepare: impl Fn(usize) -> Result<PreparedFootprint, String> + Send + Sync,
+    prepare: impl Fn(usize) -> Result<T, String> + Send + Sync,
+    z_bounds: impl Fn(&T) -> (f64, f64) + Send + Sync,
+    contains: impl Fn(&T, Vec3) -> bool + Send + Sync,
 ) -> NativeResult<Coverage> {
     let prepare_all = |parallel| {
         let prepared = if parallel {
@@ -136,19 +138,17 @@ pub(super) fn compute_candidate_coverage(
         // footprint is stable across thread counts.
         prepared.into_iter().collect::<Result<Vec<_>, _>>()
     };
-    let plan_for = |footprints: &[PreparedFootprint], parallel| {
-        plan_item_candidates(footprints, candidates, resolution, parallel, |footprint| {
-            footprint.z_bounds()
-        })
+    let plan_for = |items: &[T], parallel| {
+        plan_item_candidates(items, candidates, resolution, parallel, &z_bounds)
     };
-    let compute_planned = |footprints: &[PreparedFootprint], plan: &CandidatePlan, parallel| {
+    let compute_planned = |items: &[T], plan: &CandidatePlan, parallel| {
         compute_planned_candidates(
             item_count,
             plan,
             candidates,
             resolution,
             parallel,
-            |index, point| footprints[index].contains(point),
+            |index, point| contains(&items[index], point),
         )
     };
     // Footprint preparation happens here too, so it counts toward the decision.
@@ -251,6 +251,8 @@ pub(super) fn compute_mixed_coverage(
                 PreparedFootprint::from_raw(&vertices[start * 3..end * 3])
                     .map_err(|error| format!("polygons_xyz[{index}]: {error}"))
             },
+            PreparedFootprint::z_bounds,
+            PreparedFootprint::contains,
         );
     }
     let parallel_work = accumulated_scan_work(polygon_count, threads, estimated_cells);
@@ -335,49 +337,96 @@ pub(crate) fn cover_regions(
     region_offsets: &[u64],
     resolution: u8,
     raw_candidates: Option<&[u64]>,
+    restrict_output: bool,
     threads: Option<usize>,
 ) -> NativeResult<Coverage> {
     let candidates = candidate_cells(raw_candidates, resolution)?;
     let region_count = region_offsets.len() - 1;
-    // ponytail: regions are the parallel unit; flatten components if single,
-    // very large multipolygons become a measured bottleneck.
-    dispatch_coverage(region_count, region_count > 1, threads, |range| {
-        let mut coverage = Coverage {
-            cells: Vec::new(),
-            offsets: Vec::with_capacity(range.len() + 1),
-        };
-        coverage.offsets.push(0);
-        for region in range {
-            let polygons = prepare_region(
-                vertices,
-                ring_offsets,
-                polygon_offsets,
-                region_offsets[region] as usize,
-                region_offsets[region + 1] as usize,
-            )
-            .map_err(|error| NativeError::from(format!("regions[{region}]: {error}")))?;
-            if let Some(candidates) = candidates.as_deref() {
-                for &cell in candidates {
-                    let point = center(cell, resolution);
-                    if polygons.iter().any(|polygon| polygon.contains(point)) {
-                        push_coverage_cell(&mut coverage.cells, cell, 1024)?;
+    let estimated_cells = |region: usize| {
+        (region_offsets[region] as usize..region_offsets[region + 1] as usize).fold(
+            0_usize,
+            |total, polygon| {
+                let outer_ring = polygon_offsets[polygon] as usize;
+                let start = ring_offsets[outer_ring] as usize * 3;
+                let end = ring_offsets[outer_ring + 1] as usize * 3;
+                total.saturating_add(estimated_cap_cells(&vertices[start..end], resolution))
+            },
+        )
+    };
+    if let Some(candidates) = candidates.as_deref().filter(|candidates| {
+        should_test_candidates(
+            restrict_output,
+            sampled_total(region_count, estimated_cells) as f64,
+            polygon_offsets.len() - 1,
+            candidates.len(),
+        )
+    }) {
+        return compute_candidate_coverage(
+            region_count,
+            candidates,
+            resolution,
+            threads,
+            |region| {
+                prepare_region(
+                    vertices,
+                    ring_offsets,
+                    polygon_offsets,
+                    region_offsets[region] as usize,
+                    region_offsets[region + 1] as usize,
+                )
+                .map_err(|error| format!("regions[{region}]: {error}"))
+            },
+            |polygons| {
+                polygons
+                    .iter()
+                    .map(PreparedRegionPolygon::z_bounds)
+                    .fold((1.0_f64, -1.0_f64), |bounds, (minimum, maximum)| {
+                        (bounds.0.min(minimum), bounds.1.max(maximum))
+                    })
+            },
+            |polygons, point| polygons.iter().any(|polygon| polygon.contains(point)),
+        );
+    }
+    let parallel_work = accumulated_scan_work(region_count, threads, estimated_cells);
+    dispatch_coverage(
+        region_count,
+        parallel_work >= SCAN_PARALLEL_MIN_WORK,
+        threads,
+        |range| {
+            let mut coverage = Coverage {
+                cells: Vec::new(),
+                offsets: Vec::with_capacity(range.len() + 1),
+            };
+            coverage.offsets.push(0);
+            for region in range {
+                let polygons = prepare_region(
+                    vertices,
+                    ring_offsets,
+                    polygon_offsets,
+                    region_offsets[region] as usize,
+                    region_offsets[region + 1] as usize,
+                )
+                .map_err(|error| NativeError::from(format!("regions[{region}]: {error}")))?;
+                if let [polygon] = polygons.as_slice() {
+                    polygon.cover(resolution, &mut coverage.cells)?;
+                } else {
+                    let mut region_cells = Vec::new();
+                    for polygon in &polygons {
+                        polygon.cover(resolution, &mut region_cells)?;
                     }
+                    region_cells.sort_unstable();
+                    region_cells.dedup();
+                    coverage
+                        .cells
+                        .try_reserve(region_cells.len())
+                        .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
+                    coverage.cells.extend(region_cells);
                 }
-            } else if let [polygon] = polygons.as_slice() {
-                polygon.cover(resolution, &mut coverage.cells)?;
-            } else {
-                let mut region_cells = Vec::new();
-                for polygon in &polygons {
-                    polygon.cover(resolution, &mut region_cells)?;
-                }
-                region_cells.sort_unstable();
-                region_cells.dedup();
-                coverage.cells.extend(region_cells);
+                coverage.offsets.push(coverage.cells.len() as u64);
             }
-            coverage.offsets.push(coverage.cells.len() as u64);
-        }
-        Ok(coverage)
-    })
+            Ok(coverage)
+        },
+    )
 }
 
 pub(super) fn compute_cap_chunk(
@@ -727,6 +776,8 @@ pub(crate) fn cover_sweep(
             resolution,
             threads,
             |index| prepare_sweep_footprint(&normalized_left, &normalized_right, index),
+            PreparedFootprint::z_bounds,
+            PreparedFootprint::contains,
         );
     }
     let parallel_work = accumulated_scan_work(segment_count, threads, estimated_cells);

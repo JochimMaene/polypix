@@ -94,6 +94,9 @@ pub(super) fn candidate_range(
     minimum_z: f64,
     maximum_z: f64,
 ) -> Range<usize> {
+    if minimum_z > maximum_z {
+        return 0..0;
+    }
     let nside = 1_u64 << resolution;
     let (first_ring, last_ring) = ring_range(nside, minimum_z, maximum_z);
     let first_cell = ring_start(nside, first_ring);

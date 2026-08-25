@@ -36,6 +36,7 @@ def _cover_regions(
     region_offsets: npt.NDArray[np.uint64],
     resolution: int,
     candidate_cells: npt.NDArray[np.uint64] | None = None,
+    restrict_output: bool = True,
     threads: int | None = None,
 ) -> tuple[npt.NDArray[np.uint64], npt.NDArray[np.uint64]]: ...
 def _cover_cap(
