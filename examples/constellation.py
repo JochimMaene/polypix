@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
+from io import BytesIO
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -31,6 +32,10 @@ DOC_FIGURE_DIR = Path("docs/assets/generated")
 
 # Path from a built page at examples/<name>.html to the assets copied by Sphinx.
 DOC_FIGURE_URL = "../generated"
+
+# Figure paths as written into the generated MyST fragments. Sphinx resolves
+# them relative to the page doing the include, which lives in docs/examples/.
+DOC_FIGURE_INCLUDE_DIR = "../assets/generated"
 
 
 def constellation_centers(
@@ -99,6 +104,7 @@ def swath_edges(
     return left, right
 
 
+# --8<-- [start:service-caps]
 def service_caps(
     positions_km: npt.NDArray[np.float64],
     *,
@@ -119,6 +125,9 @@ def service_caps(
         - minimum_elevation_rad
     )
     return centers, radii
+
+
+# --8<-- [end:service-caps]
 
 
 def map_coordinates(
@@ -176,6 +185,7 @@ def plot_global_map(
     """Render cell values on a consistently styled global equal-area map."""
     import matplotlib.pyplot as plt
     from matplotlib.ticker import NullLocator, ScalarFormatter
+    from PIL import Image
 
     longitude, latitude = coordinates
     figure = plt.figure(figsize=(12.0, 5.75), facecolor=MAP_BACKGROUND)
@@ -215,5 +225,14 @@ def plot_global_map(
 
     if isinstance(output, Path):
         output.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(output, format="png", dpi=dpi, facecolor=figure.get_facecolor())
+    # These maps hold a handful of band colours plus chrome, but a truecolour
+    # PNG of a million speckled markers costs megabytes. A palette is five
+    # times smaller; 128 entries leave enough greys for the antialiased text,
+    # which a smaller palette tints towards the ramp.
+    buffer = BytesIO()
+    figure.savefig(buffer, format="png", dpi=dpi, facecolor=figure.get_facecolor())
     plt.close(figure)
+    buffer.seek(0)
+    Image.open(buffer).convert("RGB").quantize(colors=128).save(
+        output, format="PNG", optimize=True
+    )

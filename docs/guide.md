@@ -1,18 +1,19 @@
 # Getting started
 
-Every block on this page runs. Start a Python session, paste the setup below,
-and each following block continues from the one before it.
+This page is one long session. Start a Python interpreter, paste in the setup
+below, and each block that follows continues where the previous one left off.
 
 ```bash
 pip install polypix
 ```
 
-NumPy is the only runtime dependency, and there are wheels for CPython 3.12+ on
-Linux, macOS, and Windows. [Installation](install.md) covers source builds.
+NumPy is the only runtime dependency, and there are wheels for CPython 3.12 and
+newer on Linux, macOS, and Windows. [Installation](install.md) covers source
+builds.
 
 ## What you call
 
-Four common geometry operations cover most uses:
+Four operations cover most of what people do with the library:
 
 | You have | Call | You get back |
 | --- | --- | --- |
@@ -21,18 +22,19 @@ Four common geometry operations cover most uses:
 | The swath a sensor paints as it moves | `cover_sweep()` | the cells under each interval of the swath |
 | Individual pointings, ground tracks, sample points | `cell_at()` | the one cell each direction falls in |
 
-All four take batches. Angular arguments, where present, are in **radians**.
+All four take batches, and every angular argument is in radians.
 
 ## Setup
 
-Everything you pass in is a Cartesian direction `(x, y, z)`. Magnitude is
-ignored, so position vectors work just as well as unit vectors, and the frame is
+Everything you pass in is a Cartesian direction `(x, y, z)`. Magnitudes are
+ignored, so position vectors work as well as unit vectors, and the frame is
 whichever one you are already working in: Earth-fixed for a ground footprint,
-celestial for a sky survey. Polypix never labels or transforms it.
+celestial for a sky survey. Polypix neither labels the frame nor transforms
+between frames.
 
-If your data is longitude and latitude, convert it once on the way in, and
-convert cell centers back on the way out. These two helpers are all you need,
-and the rest of the page uses them throughout:
+If your data is longitude and latitude, convert it once on the way in and
+convert cell centers back on the way out. The two helpers below are all that
+takes, and the rest of this page uses them throughout:
 
 ```{doctest}
 >>> import numpy as np
@@ -56,18 +58,18 @@ and the rest of the page uses them throughout:
 [Direction geometry](concepts.md#direction-geometry) explains why these
 conversions stay outside Polypix.
 
-The examples below all work at resolution 4, where a cell is about 400 km
-across. That is coarse enough that you can count the cells in the pictures and
-check them against the numbers.
+The examples all work at resolution 4, where a cell is about 400 km across. That
+is coarse enough that you can count the cells in each picture and check them
+against the numbers in the output.
 
 ## Cover visibility circles
 
-A spherical cap is a center direction plus an angular radius in radians. This is
-the shape of a ground station's view of a satellite above an elevation mask, of
-a satellite's own service circle, and of any instantaneous circular field of
-view.
+A spherical cap is a center direction plus an angular radius in radians. It is
+the shape of a ground station's view of a satellite above an elevation mask, of a
+satellite's own service circle, and of any circular instantaneous field of view.
 
-Here are two caps of different sizes, given in degrees and converted:
+Here are two caps of different sizes, given in degrees and converted on the way
+in:
 
 ```{doctest}
 >>> cap_lon, cap_lat = [-7.5, 8.0], [3.0, -4.0]
@@ -82,18 +84,19 @@ Here are two caps of different sizes, given in degrees and converted:
 array([9, 4])
 ```
 
-Both caps came back in one result. A result holds every cell in one flat
-`cells` array, with `offsets` marking where each input's cells begin and end -
-so `len()` counts the inputs and `np.diff(offsets)` gives the cells each one
-covered. Indexing returns a read-only view of one of them:
+Both caps came back in a single result. A result keeps every cell in one flat
+`cells` array, with `offsets` recording where each input's cells begin and end.
+That is why `len()` counts inputs and not cells, and why
+`np.diff(offsets)` tells you how many cells each input covered. Indexing gives
+you a read-only view of one of them:
 
 ```{doctest}
 >>> cap_coverage[0]
 array([1374, 1375, 1438, 1439, 1502, 1503, 1566, 1567, 1631])
 ```
 
-Every region operation follows the same rule: a cell is selected when its center
-lies inside the region.
+All of the region operations follow the same rule: a cell is selected when its
+center lies inside the region.
 
 ```{figure} assets/generated/cover-cap.svg
 :alt: Two spherical caps and the grid cells each one covers.
@@ -106,8 +109,9 @@ The two caps above, and the cells `cover_cap()` returned for them.
 ## Cover scenes and sensor footprints
 
 A convex polygon is the shape of an imaging scene, a detector frame projected on
-the ground, or any convex area of interest. Give the vertices in boundary order;
-adjacent vertices are joined by the shorter great-circle arc:
+the ground, or any convex area of interest. Give the vertices in boundary order.
+Adjacent vertices are joined by the shorter of the two great-circle arcs between
+them:
 
 ```{doctest}
 >>> scene_lon = [-9.0, 7.0, 11.0, -2.0]
@@ -132,16 +136,16 @@ One polygon produces one segment in the result.
 A four-sided footprint and the cells it covers.
 ```
 
-If every polygon has the same vertex count, a dense `(regions, vertices, 3)`
-array is the fastest thing to hand over. For a ragged batch, pass a sequence of
-arrays instead.
+If all of your polygons have the same vertex count, a dense
+`(regions, vertices, 3)` array is the cheapest thing to hand over. If they do
+not, pass a sequence of arrays instead.
 
 ## Cover a swath
 
 A moving sensor sweeps out a swath. Sample its left and right edges at whatever
-cadence your propagator gives you, and `cover_sweep()` treats every consecutive
-pair of samples as one quadrilateral of swath. Seven samples along a track, with
-edges 3.2° either side of it:
+cadence your propagator gives you, and `cover_sweep()` reads every consecutive
+pair of samples as one quadrilateral of swath. Here are seven samples along a
+track, with edges 3.2° either side of it:
 
 ```{doctest}
 >>> track_lon = np.linspace(-13.0, 13.0, 7)
@@ -171,13 +175,14 @@ array([1376, 1440, 1504, 1568])
 Each pair of consecutive samples becomes one quadrilateral, and each quadrilateral is its own segment in the result.
 ```
 
-Polypix joins adjacent samples with minor great-circle arcs. Sample densely
-enough that those arcs represent the intended swath edge.
+Adjacent samples are joined with the shorter great-circle arc, so sample
+densely enough that those arcs really do describe the swath edge you had in
+mind.
 
 ## Assign pointings to cells
 
-When your input is points rather than regions — a ground track, a set of target
-coordinates, individual pointings — use `cell_at()`:
+When your input is points rather than regions (a ground track, a set of target
+coordinates, individual pointings) use `cell_at()`:
 
 ```{doctest}
 >>> point_lon = [-11.0, -3.0, 5.0, 12.0]
@@ -188,8 +193,9 @@ coordinates, individual pointings — use `cell_at()`:
 array([1374, 1695, 1441, 1762])
 ```
 
-`cell_centers()` goes back the other way, but watch what "back" means. These are the
-cells' own centers, not the directions you started with:
+`cell_centers()` goes back the other way, though it is worth being careful about
+what "back" means here. What you get are the cells' own centers, not the
+directions you started from:
 
 ```{doctest}
 >>> point_centers = px.cell_centers(point_cells, resolution=4)
@@ -217,8 +223,9 @@ array([1374, 1695, 1441, 1762])
 
 ## Turn cells into a map
 
-Cell IDs are integers in `[0, cell_count(resolution))`. Reduce the segmented
-membership from any geometry into a global map with one operation:
+Cell IDs are integers in `[0, cell_count(resolution))`, so a global map is just
+an array of that length. One operation reduces the segmented membership from any
+geometry into one:
 
 ```{doctest}
 >>> resolution = 4
@@ -228,8 +235,8 @@ membership from any geometry into a global map with one operation:
 (3072,)
 ```
 
-`hits[i]` is the number of regions that selected cell `i`. Convert occupied
-cell centers to longitude and latitude before plotting:
+Now `hits[i]` is the number of regions that selected cell `i`. Convert the
+occupied cell centers to longitude and latitude before plotting:
 
 ```{doctest}
 >>> occupied = np.flatnonzero(hits)
@@ -239,28 +246,29 @@ True
 ```
 
 ```{figure} assets/generated/earth-observation-count.png
-:alt: Global map of observation counts, banded by latitude, from ten satellites over ten days.
+:alt: Global map of overflight counts, banded by latitude, from three Sentinel-2 spacecraft over 14 days.
 :width: 100%
 :align: center
 
-At mission scale, the same reduction counts 144,000 swath intervals from ten
-satellites. [How often does a satellite fly
-over?](examples/earth-observation-constellation.md) builds the analysis end to
+At mission scale, the same reduction counts 60,480 swath intervals from the
+three Sentinel-2 spacecraft. [What is Sentinel-2's revisit
+time?](examples/earth-observation-constellation.md) builds the analysis end to
 end.
 ```
 
-Equal-area cells make these counts directly comparable without area weighting.
+Since the cells are equal in area, these counts can be compared as they are,
+with no area weighting anywhere.
 
-Use `coverage.reduce(px.Sum(values))` when each segment contributes an
-exposure, duration, probability, or capacity instead of one count. The native
-reducer reads `Coverage.offsets` directly rather than repeating one value per
-hit.
+When a segment contributes an exposure, a duration, a probability, or a capacity
+rather than a single count, use `coverage.reduce(px.Sum(values))` instead. The
+native reducer reads `Coverage.offsets` directly, so it never has to repeat one
+value per hit.
 
 ## Summarize revisit over a timeline
 
-When a coverage's segments are consecutive time bins, `revisit()` reads them
-as a timeline and returns per-cell revisit statistics. Bins are ordinal, so
-apply your own time base afterward:
+When a coverage's segments happen to be consecutive time bins, `revisit()` reads
+them as a timeline and returns per-cell statistics. The bins are ordinal, so you
+apply your own time base afterwards:
 
 ```{doctest}
 >>> stats = px.revisit(swath_coverage)
@@ -274,22 +282,23 @@ True
 
 Every field describes the same thresholded axis, so `run_counts`,
 `internal_gap_steps_sum`, and `maximum_internal_gap_steps` can be combined
-directly. `first_start` and `last_stop` bound the observed window, so you can
-add horizon-edge gaps yourself.
+directly. `first_start` and `last_stop` bound the window a cell was observed in,
+which is what you need to add the gaps at the ends of the horizon yourself.
 
-With multiple aligned timelines, pass the sequence together. Matching segment
-indices must have identical time boundaries, and consecutive bins must be
-temporally adjacent. Set `minimum_sources=2` for simultaneous two-source
-occupancy; source uniqueness is your responsibility. Polypix leaves percentile,
-leading/trailing, and cyclic gap definitions to the analysis layer because they
-are policy choices, not geometry. For sweeps, the result is an occupied-bin
-approximation whose physical boundary precision is limited by the sampling
-cadence.
+With several aligned timelines, pass the whole sequence at once. Matching segment
+indices have to describe identical time boundaries, and consecutive bins have to
+be adjacent in time; `minimum_sources=2` then asks for cells covered by two
+sources at once. Whether your sources are really distinct is something we cannot
+check, so that part is yours. Percentiles, leading and trailing gaps, and cyclic
+gap definitions are policy and not geometry, so they are left to the analysis
+layer as well. For a sampled sweep, remember that these are occupied bins rather
+than exact access events, and that the boundaries are only as precise as the
+sampling cadence.
 
 ## Count overlaps without building membership
 
-If you only need cap counts per cell, ask for them directly and Polypix never
-builds the region–cell pairs:
+If cap counts per cell are all you need, ask for them directly and the
+region-cell pairs are never built at all:
 
 ```{doctest}
 >>> counts = px.cover_cap(
@@ -319,17 +328,17 @@ At high resolution, query only the cells you need:
 
 ## When a region comes back empty
 
-A cell is covered when its **center** falls inside your region. A region smaller
-or thinner than a cell can therefore return an empty segment. Raise `resolution`
-until cells are smaller than the smallest feature you need to resolve.
-[Resolutions](resolutions.md#picking-one) has the sizes, and [center-sampled
-coverage](concepts.md#center-sampled-coverage) shows exactly what the rule
-includes and excludes.
+A cell is covered when its center falls inside your region, so a region smaller
+or thinner than a cell can quite legitimately come back empty. The fix is to
+raise `resolution` until the cells are smaller than the smallest feature you care
+about. [Resolutions](resolutions.md#picking-one) lists the sizes, and
+[center-sampled coverage](concepts.md#center-sampled-coverage) shows exactly what
+the rule includes and leaves out.
 
 ## Where to go next
 
 - [How it works](concepts.md) explains resolution, center sampling, segmented
-  results, occupancy runs, and handing cell IDs to other HEALPix libraries.
+  results, occupancy runs, and how to hand cell IDs to other HEALPix libraries.
 - [Performance and memory](performance.md) covers sizing results, sparse
   queries, batching, and threads.
-- [API reference](api.md) is the complete call contract.
+- [API reference](api.md) has the exact signatures and validation rules.

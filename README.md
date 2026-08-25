@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/_static/polypix-dark.svg">
-    <img src="docs/_static/polypix.svg" alt="Polypix" height="110">
+    <source media="(prefers-color-scheme: dark)" srcset="https://jochimmaene.github.io/polypix/_static/polypix-dark.svg">
+    <img src="https://jochimmaene.github.io/polypix/_static/polypix.svg" alt="Polypix" height="110">
   </picture>
 </p>
 
@@ -22,9 +22,23 @@ Batch coverage of circles, polygons, and swept paths on a HEALPix grid.
 [Repository](https://github.com/JochimMaene/polypix) |
 [Issues](https://github.com/JochimMaene/polypix/issues)
 
-Polypix accepts whole batches and returns standard HEALPix RING cell IDs as
-NumPy arrays. Its native kernel handles spherical geometry and can use multiple
-cores for large calls.
+Hand Polypix a batch of spherical regions and it gives you back the HEALPix
+cells they cover, as standard RING IDs in NumPy arrays. The spherical geometry
+runs in a native kernel, which uses several cores for large calls. Use the
+result for coverage maps, visibility counts, and revisit analysis.
+
+## How many Starlink satellites can you see?
+
+[![Global map of the mean number of catalogued Starlink objects in view](https://jochimmaene.github.io/polypix/generated/communications-availability.png)](https://jochimmaene.github.io/polypix/examples/communication-constellation.html)
+
+All 10,771 catalogued Starlink objects, propagated for an hour and counted cell
+by cell. Two dense bands around 40° north and south see 70 to 90 objects at
+once, the equator about 37, the poles about 20. Behind it are 137 million
+cap-cell hits, counted by one `cover_cap()` call per timestamp, never stored, and
+done in well under a second.
+
+[Read the case study](https://jochimmaene.github.io/polypix/examples/communication-constellation.html) for the
+propagation, the service-cap geometry, and the timings.
 
 ## Install
 
@@ -32,36 +46,46 @@ cores for large calls.
 pip install polypix
 ```
 
-Wheels cover CPython 3.12+ on Linux x86-64 and ARM64, macOS 11+ on Intel and
-Apple Silicon, and Windows x86-64. NumPy is the only runtime dependency.
+There are wheels for CPython 3.12 and newer on Linux x86-64 and ARM64, macOS 11+
+on Intel and Apple Silicon, and Windows x86-64. NumPy is the only runtime
+dependency.
 
 ## Quick start
 
-Cover two spherical caps. Centers are Cartesian directions and radii are in
-radians:
+Two satellites overhead, each serving a circle on the ground. Centers are
+Cartesian directions and radii are in radians:
 
 ```python
 import numpy as np
 import polypix as px
 
 centers = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
-radii = np.deg2rad([5.0, 8.0])
+radii = np.radians([6.0, 4.0])
 
-coverage = px.cover_cap(centers, radii, resolution=8)
-print(np.diff(coverage.offsets))  # [1502 3824]
+coverage = px.cover_cap(centers, radii, resolution=6)
+print(np.diff(coverage.offsets))  # [134  56]
 ```
 
-`coverage[i]` contains the cells selected for cap `i`. Selection is based on
-cell centers, not partial cell overlap.
+`coverage[i]` holds the cells covered by satellite `i`. A cell is covered when
+its center falls inside the circle, so partial overlap at the boundary does not
+count.
+
+Ask for counts instead and the region-cell pairs are never built, which is how
+the map above is made:
+
+```python
+counts = px.cover_cap(centers, radii, resolution=6, reduce=px.Count())
+print(counts.shape)  # (49152,) one value per cell on the grid
+```
 
 ## Documentation
 
-Start with [Getting started](https://jochimmaene.github.io/polypix/guide/).
-The site also has the [API reference](https://jochimmaene.github.io/polypix/api/),
-[resolution guide](https://jochimmaene.github.io/polypix/resolutions/), and two
-executable constellation studies.
+Start with [Getting started](https://jochimmaene.github.io/polypix/guide.html). The
+site also carries the [API reference](https://jochimmaene.github.io/polypix/api.html),
+a [resolution guide](https://jochimmaene.github.io/polypix/resolutions.html), and two
+constellation case studies that run end to end.
 
 ## License
 
-Apache License 2.0. See `THIRD_PARTY_NOTICES.md` for dependency and
+Apache License 2.0. See `THIRD_PARTY_NOTICES.md` for the dependency and
 embedded-code notices.

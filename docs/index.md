@@ -16,26 +16,30 @@ html_theme.sidebar_secondary.remove: true
 [![Benchmarks](https://github.com/JochimMaene/polypix/actions/workflows/codspeed.yml/badge.svg)](https://github.com/JochimMaene/polypix/actions/workflows/codspeed.yml)
 :::
 
-Polypix turns batches of spherical regions into standard HEALPix cell IDs. Use
-the result for coverage maps, visibility counts, and revisit analysis.
+How much of the ground did this constellation actually see, and how often did it
+come back? Which cells did a ten-day survey never reach?
+
+Polypix helps answer those questions You hand it batches of spherical regions and it hands back standard HEALPix cell IDs, which you then use for coverage maps, visibility counts, and revisit analysis.
 
 ## Why Polypix
 
-- **Batch-first.** Arrays of regions go in; compact NumPy arrays come back.
-- **Equal area.** Counts can be compared without latitude weighting.
-- **Native execution.** Large calls can use multiple cores while the GIL is
-  released.
-- **Small runtime.** NumPy is the only dependency. Wheels include the native
-  kernel.
+The library was written for mission analysis, and a few decisions follow from
+that:
+
+- Everything takes batches. Whole arrays of regions go in, and what comes back
+  is a NumPy array, not a Python object per region.
+- The grid has cells of equal area, so per-cell counts can be compared without
+  weighting anything by latitude.
+- It is fast. The geometry runs in Rust, and large calls release the GIL and use
+  several cores. Both case studies below cover millions of cells in well under a
+  second.
+- NumPy is the only runtime dependency. The wheels carry the compiled kernel, so
+  there is no system HEALPix library to find and no compiler to arrange.
 
 ## The grid
 
-Polypix answers on a HEALPix grid. It divides the sphere into cells of
-**exactly equal area**, starting from 12 cells and splitting each one into four
-at every step up in resolution. Each cell has an integer ID, and those IDs are
-what Polypix gives back.
-
-Because the cells have equal area, per-cell counts can be compared directly.
+Polypix uses a HEALPix grid. HEALPix divides the sphere into cells of exactly equal area, starting from 12 cells and splitting each one into four at
+every step up in resolution. Each cell has an integer ID, and those IDs are what Polypix gives back.
 
 ```{figure} assets/generated/sphere-levels.png
 :alt: The same sphere partitioned at HEALPix resolutions 0 to 3, cell count rising from 12 to 768.
@@ -48,9 +52,7 @@ the ground. [Resolutions](resolutions.md) has the whole table.
 
 ## A first example
 
-Here are two circular ground footprints centered near Brussels and Bogotá.
-Polypix takes Cartesian directions, so the example first converts longitude and
-latitude:
+Suppose you have two circular ground footprints, one near Brussels and one near Bogotá. Polypix works in Cartesian directions instead of longitude and latitude, so the example converts them on the way in:
 
 ```{doctest}
 >>> import numpy as np
@@ -71,57 +73,60 @@ latitude:
 array([1500, 3829])
 ```
 
-At resolution 8 a nominal cell is about 25 km across. The cell IDs for each
-footprint are available as `coverage[0]` and `coverage[1]`:
+At resolution 8 a typical cell is about 25 km across, which is why the smaller
+footprint came back with 1500 cells and the larger one with 3829. The IDs themselves are available per footprint, as `coverage[0]` and `coverage[1]`:
 
 ```{doctest}
 >>> coverage[0][:4]
 array([68085, 68086, 68087, 68088])
 ```
 
-These are standard HEALPix RING indices in a NumPy `int64` array.
+Those are standard HEALPix RING indices in a NumPy `int64` array.
 
-To run that yourself:
+To run the example yourself:
 
 ```bash
 pip install polypix
 ```
 
-NumPy is the only runtime dependency. [Installation](install.md) covers wheels
-and source builds; [Getting started](guide.md) walks through the other region
-shapes.
+[Installation](install.md) covers the wheels and source builds, and
+[Getting started](guide.md) walks through the other region shapes.
 
 ## What that looks like at scale
 
-Two executable studies show the same operations at constellation scale.
+Both of the case studies below run the same handful of operations at
+constellation scale. Each one is measured while the documentation is built, so
+the timings on those pages come from the same run that produced their figures.
 
 <div class="example-gallery">
   <a class="example-card" href="examples/communication-constellation.html">
     <img src="generated/communications-availability.png" alt="Global Starlink visibility map">
     <div>
-      <h2>How many satellites can you see?</h2>
-      <p>A one-hour Starlink snapshot, mapped cell by cell from real orbital data.</p>
+      <h2>How many Starlink satellites can you see?</h2>
+      <p>All 10,771 catalogued objects, propagated for an hour and counted cell by cell.</p>
     </div>
   </a>
   <a class="example-card" href="examples/earth-observation-constellation.html">
-    <img src="generated/earth-observation-count.png" alt="Global Earth-observation count map">
+    <img src="generated/earth-observation-revisit.png" alt="Global map of mean time between Sentinel-2 overflights">
     <div>
-      <h2>How often does a satellite fly over?</h2>
-      <p>Ten days of sampled coverage, mapped as observed-cell internal gaps.</p>
+      <h2>What is Sentinel-2's revisit time?</h2>
+      <p>Three real spacecraft, 14 days of swaths, and the wait between overflights cell by cell.</p>
     </div>
   </a>
 </div>
 
-## What Polypix leaves to you
+## What Polypix does not do
 
-A cell counts as covered when its center falls inside your region. Polypix does
-not return every cell touched by the boundary.
-[Center-sampled coverage](concepts.md#center-sampled-coverage) shows exactly
-what that includes and excludes.
+One thing is worth knowing before you get any further. A cell counts as covered
+when its center falls inside your region, which means Polypix does not return
+every cell the boundary touches.
+[Center-sampled coverage](concepts.md#center-sampled-coverage) shows exactly what
+that rule includes and leaves out.
 
-Anything upstream of the geometry stays in your own code. Orbit propagation,
+Everything upstream of the geometry stays in your own code. Orbit propagation,
 attitude, sensor models, and ellipsoid intersection all happen before Polypix
-sees anything, and you hand it the caps or footprints that come out.
+sees anything; what you hand over are the caps or footprints that come out of
+them.
 
 ```{toctree}
 :caption: Guides
@@ -152,6 +157,4 @@ api
 release-notes
 development
 project-goal
-adr/0001-owned-healpix-ring-kernel
-adr/0002-coverage-reductions-and-revisit-statistics
 ```

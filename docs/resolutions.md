@@ -1,15 +1,7 @@
 # Resolutions
 
-One number controls the whole grid. `resolution` is the HEALPix order, and
-everything else follows from it:
-
-```text
-nside      = 2 ** resolution
-cell_count = 12 * 4 ** resolution
-```
-
-Polypix accepts 0 through 29. Use `polypix.cell_count(resolution)` when
-allocating or validating a dense map.
+`resolution` is the HEALPix order, and it is the only grid parameter there is. Polypix accepts 0 through 29. When you are allocating or checking a dense map,
+`polypix.cell_count(resolution)` gives you the length.
 
 ```{figure} assets/generated/sphere-levels.png
 :alt: The same sphere partitioned at HEALPix resolutions 0 to 3, cell count rising from 12 to 768.
@@ -31,14 +23,16 @@ The same region on three grids. Each step up quadruples the cell count and rough
 
 ## Reading the table
 
-HEALPix is an equal-area grid, so every cell on the sphere covers exactly the
-same solid angle. Their *shapes* differ. A cell near a pole is not shaped like
-one on the equator, so no single edge length holds everywhere. The nominal cell size below is `sqrt(cell area)`, which is the usual
-stand-in and matches what `healpy.nside2resol()` reports. Treat it as a typical
-size, not as a bound on how wide any particular cell gets.
+Every cell on the sphere covers exactly the same solid angle, but their shapes
+differ: a cell near a pole is not shaped like one on the equator, so no single
+edge length holds everywhere. The nominal cell size below is `sqrt(cell area)`,
+which is the usual stand-in and matches what `healpy.nside2resol()` reports.
+Treat it as a typical size rather than as a bound on how wide any particular cell
+gets.
 
-The Earth column is that same angle laid on a sphere of radius 6,371 km, the
-IUGG mean radius. It is the distance across a typical cell at ground level.
+The Earth column is that same angle laid on a sphere of radius 6,371 km, the IUGG
+mean radius, so it is roughly the distance across a typical cell at ground
+level.
 
 {.polypix-reftable}
 | Resolution | `nside` | Cells | Nominal cell size | On Earth | Dense `int64` map |
@@ -76,23 +70,17 @@ IUGG mean radius. It is the distance across a typical cell at ground level.
 
 ## Picking one
 
-Match the grid to the smallest feature you care about, then stop. Each step up
-quadruples the cell count and halves the cell size, so overshooting by two costs
-you sixteen times the memory for detail you are not using.
+Match the grid to the smallest feature you care about.
 
 Some rough anchors:
 
-- **Resolution 6** (≈100 km) suits constellation coverage and revisit studies.
-  Both [examples](index.md#what-that-looks-like-at-scale) use it.
-- **Resolution 8–10** (25 km down to 6 km) suits regional analysis and most
+- Resolution 6, around 100 km, suits constellation coverage and revisit
+  studies. Both [case studies](index.md#what-that-looks-like-at-scale) use it.
+- Resolutions 8 to 10, from 25 km down to 6 km, suit regional analysis and most
   sensor-footprint work.
-- **Resolution 12** (1.6 km) is about where a dense global map stops being
-  comfortable. One `int64` per cell is already 1.5 GiB.
-- **Above 13**, forget dense global arrays. The high resolutions exist for
-  sparse work: pass `candidate_cells=` to restrict coverage to cells you care
-  about, or `cells=` to query a short list. See
+- Resolution 12, around 1.6 km, is about where a dense global map stops being
+  comfortable, since one `int64` per cell is already 1.5 GiB.
+- Above 13, dense global arrays are out of the question. The high resolutions
+  are there for sparse work: pass `candidate_cells=` to restrict coverage to the
+  cells you care about, or `cells=` to query a short list. See
   [Performance and memory](performance.md).
-
-The last few rows are there for completeness rather than use. Resolution 29
-divides the Earth into 12 millimetre cells and would need 24 EiB to hold one
-integer each.
