@@ -46,3 +46,14 @@ MAP_GRID = "#667788"
 # where color is categorical rather than quantitative.
 COUNT_CMAP = "YlGnBu"
 GAP_CMAP = "YlOrBr"
+
+# Where to start sampling a ramp, rather than at its palest step.
+#
+# The pale end of a ColorBrewer sequential sits within about 1.1:1 contrast of a
+# white page, so on the revisit maps the shortest waits fade into the paper, and
+# the two palest bands are within a ΔE of 7 of each other even for full colour
+# vision. Worse, the cells that are never overflown at all are the paper, and
+# they sit at the poles right beside the shortest waits. Starting a quarter of
+# the way up keeps seven ordered steps and gives the lightest band a colour of
+# its own.
+RAMP_START = 0.25

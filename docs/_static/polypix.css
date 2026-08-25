@@ -47,49 +47,6 @@ html[data-theme="dark"] {
   margin: 0 0.3rem 0.4rem 0;
 }
 
-.polypix-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.7rem;
-  margin-top: 1.2rem;
-}
-
-.polypix-actions a {
-  border: 1px solid var(--pst-color-primary);
-  border-radius: 0.35rem;
-  font-weight: 600;
-  padding: 0.5rem 0.9rem;
-  text-decoration: none;
-}
-
-.polypix-actions a:first-child {
-  background: var(--pst-color-primary);
-  color: white;
-}
-
-/* The dark theme's primary is the light logo cyan, so white text on it fails
-   contrast. Use the logo navy instead. */
-html[data-theme="dark"] .polypix-actions a:first-child {
-  color: #0c1c3b;
-}
-
-.polypix-install {
-  align-items: center;
-  background: var(--polypix-surface);
-  border: 1px solid var(--polypix-rule);
-  border-radius: 0.45rem;
-  display: inline-flex;
-  font-family: var(--pst-font-family-monospace);
-  gap: 0.75rem;
-  margin: 1.2rem 0 0;
-  padding: 0.6rem 1rem;
-}
-
-.polypix-install::before {
-  color: var(--polypix-muted);
-  content: "$";
-}
-
 /* Example cards, used on the landing page and the examples index. */
 .example-gallery {
   display: grid;

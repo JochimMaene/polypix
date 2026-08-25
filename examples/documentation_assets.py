@@ -14,10 +14,10 @@ from examples.earth_observation_constellation import (
 
 def main() -> None:
     build_diagrams()
-    (DOC_FIGURE_DIR / "communications-availability.html").write_text(
+    (DOC_FIGURE_DIR / "communications-availability.md").write_text(
         build_communications() + "\n"
     )
-    (DOC_FIGURE_DIR / "earth-observation.html").write_text(
+    (DOC_FIGURE_DIR / "earth-observation.md").write_text(
         build_earth_observation() + "\n"
     )
 

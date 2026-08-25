@@ -1,7 +1,5 @@
 """Sphinx configuration for the Polypix documentation."""
 
-from __future__ import annotations
-
 from importlib.metadata import version as package_version
 
 project = "Polypix"
@@ -11,13 +9,17 @@ release = package_version("polypix")
 
 extensions = [
     "myst_parser",
+    "sphinx.ext.autodoc",
+    "sphinx.ext.autosummary",
     "sphinx.ext.doctest",
     "sphinx.ext.intersphinx",
+    "sphinx.ext.napoleon",
 ]
 
 source_suffix = {".md": "markdown", ".rst": "restructuredtext"}
-root_doc = "index"
-exclude_patterns = ["assets/generated/*.html"]
+# The generated result fragments are included by the example pages, so Sphinx
+# should not also build them as standalone documents.
+exclude_patterns = ["assets/generated/*.html", "assets/generated/*.md"]
 
 myst_enable_extensions = [
     "attrs_block",
@@ -26,6 +28,13 @@ myst_enable_extensions = [
     "fieldlist",
 ]
 myst_heading_anchors = 4
+
+# The API reference is generated from the docstrings in polypix/__init__.py.
+autodoc_typehints = "none"
+autodoc_member_order = "bysource"
+autodoc_default_options = {"exclude-members": "__init__, __new__"}
+napoleon_use_rtype = False
+napoleon_preprocess_types = True
 
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
@@ -47,13 +56,9 @@ html_theme_options = {
         "text": "Polypix",
     },
     "repository_url": "https://github.com/JochimMaene/polypix",
-    "repository_branch": "main",
-    "path_to_docs": "docs",
     "use_repository_button": True,
-    "use_issues_button": True,
-    "use_edit_page_button": True,
-    "use_download_button": False,
-    "use_fullscreen_button": False,
+    "use_issues_button": False,
+    "use_edit_page_button": False,
     "home_page_in_toc": False,
     "show_navbar_depth": 1,
     "max_navbar_depth": 3,

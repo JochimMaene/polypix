@@ -49,22 +49,54 @@ ValuesLike = float | Sequence[float] | npt.ArrayLike
 
 @dataclass(frozen=True, eq=False, init=False, slots=True)
 class Coverage:
-    """Validated, read-only segmented HEALPix RING coverage.
+    """Segmented HEALPix RING coverage, validated and read-only.
 
-    A segment is one input item: one polygon, one cap, one sweep interval.
-    ``cells`` is the flat concatenation of every segment's cells and ``offsets``
-    delimits them, so ``len(coverage)`` is the segment count, not the cell
-    count, and ``coverage[i]`` is a zero-copy view of one segment. Sizes are
-    ``np.diff(offsets)`` and the hit-aligned segment index is
-    ``np.repeat(np.arange(len(coverage)), np.diff(offsets))``; neither is
-    returned, because neither is cheaper here than in NumPy.
+    One segment is one input item: one polygon, one cap, one sweep interval.
+    Every cell is stored in the flat ``cells`` array, and ``offsets`` records
+    where each segment begins and ends. So ``len(coverage)`` counts input
+    items and not cells, and ``coverage[i]`` is a zero-copy view of the
+    cells found for item ``i``.
 
-    Holding a Coverage is proof that its invariants hold - cells in range,
-    offsets nondecreasing and closed, cells unique within each segment - which
-    is why :func:`revisit` needs no rescan. Public construction copies and
-    validates; results returned by Polypix reuse their already-owned native
-    buffers without another copy. Equality is identity-based so comparing two
-    large coverages never performs an implicit linear scan.
+    The covering functions return this type. Calling ``Coverage(...)``
+    directly raises :exc:`TypeError`; use :meth:`from_arrays` to bring
+    segmented arrays back in from storage.
+
+    Attributes
+    ----------
+    cells : ndarray
+        Flat ``int64`` array of standard HEALPix RING indices, in input
+        order.
+    offsets : ndarray
+        ``int64`` segment boundaries, of length ``len(coverage) + 1``.
+    resolution : int
+        The HEALPix resolution that every cell in the result belongs to.
+
+    Notes
+    -----
+    Holding a Coverage is proof that its invariants hold: every cell is in
+    range for the resolution, the offsets are nondecreasing and closed, and
+    no cell repeats within a segment. That is why :func:`revisit` does not
+    rescan what it is handed. The same cell may of course turn up in many
+    different segments.
+
+    Two derived arrays are easy to want, and we deliberately do not return
+    them, since NumPy computes them no more slowly than we could::
+
+        sizes = np.diff(coverage.offsets)
+        segment_of_each_hit = np.repeat(np.arange(len(coverage)), sizes)
+
+    Cell order within a segment is deterministic for a given build and
+    platform, but it is not part of the interface, and we never sort a result
+    for presentation alone. Imported segments keep the order they arrived in.
+
+    Read-only means the arrays come back with ``WRITEABLE=False``. That
+    catches accidental writes; it is not a promise of deep immutability
+    against deliberate flag manipulation. Imported arrays are copied, so
+    later edits to your own input cannot reach into a Coverage.
+
+    Equality is identity-based, so comparing two large coverages never
+    starts an implicit linear scan. Compare ``cells``, ``offsets``, and
+    ``resolution`` yourself when you want value equality.
     """
 
     cells: npt.NDArray[np.int64]
@@ -83,7 +115,54 @@ class Coverage:
         offsets: OffsetsLike,
         resolution: int,
     ) -> Coverage:
-        """Copy and validate imported segmented RING-cell arrays."""
+        """Copy and validate segmented RING-cell arrays from elsewhere.
+
+        This is the way back in from storage. Coverage is usually the
+        expensive product of a campaign, so the realistic shape of the work
+        is to compute it once and query it many times afterwards. A reloaded
+        coverage is an ordinary coverage: :func:`revisit` and
+        :meth:`reduce` apply unchanged.
+
+        Parameters
+        ----------
+        cells : array_like of int
+            RING indices at ``resolution``, concatenated in segment order.
+        offsets : array_like of int
+            Segment boundaries. The sequence starts at 0, never decreases,
+            and ends at the number of cells.
+        resolution : int
+            HEALPix resolution from 0 through 29.
+
+        Returns
+        -------
+        Coverage
+            A coverage owning validated copies of both arrays.
+
+        Raises
+        ------
+        TypeError
+            If either input is not an integer array.
+        ValueError
+            If a cell falls outside the grid, the offsets are not a closed
+            nondecreasing sequence, or a cell repeats inside one segment.
+
+        Notes
+        -----
+        Validation costs one pass over the cells and segments, and an
+        unsorted segment may need temporary storage. It happens once, here
+        at the boundary, so nothing downstream has to re-check a hit.
+
+        Examples
+        --------
+        >>> import polypix as px
+        >>> coverage = px.Coverage.from_arrays(
+        ...     cells=[2, 7, 9], offsets=[0, 2, 3], resolution=1
+        ... )
+        >>> len(coverage)
+        2
+        >>> coverage[1]
+        array([9])
+        """
         resolved = _as_resolution(resolution)
         # ``_validate_coverage`` range-checks every cell natively; offsets are
         # only bounds-checked there, so they keep the signed scan.
@@ -152,16 +231,55 @@ class Coverage:
     ) -> npt.NDArray[np.int64] | npt.NDArray[np.float64]:
         """Accumulate this coverage with a :class:`Count` or :class:`Sum`.
 
-        With ``cells=None`` the result is a dense array indexed by RING cell
-        ID. Supplying ``cells`` returns one value per requested ID, in query
-        order and including duplicates, without a grid-sized result. Small
-        grids still use a dense scratch array internally; large ones
-        accumulate through a hash table.
+        Use this when several reductions share one expensive covering pass,
+        or when the coverage came back from storage. The answer is the one a
+        fused ``reduce=`` call on the covering function would have given.
 
-        The reducer vocabulary is the one the covering operations accept as
-        ``reduce=``, so a stored coverage reduces exactly as a fused call
-        would have; ``cells`` here plays the part ``candidate_cells`` plays
-        there.
+        Parameters
+        ----------
+        reducer : Count or Sum
+            The accumulation to perform.
+        cells : int or array_like of int, optional
+            RING indices to report. This plays the part ``candidate_cells``
+            plays on a covering call: leave it out for a dense array indexed
+            by cell ID, or name cells to get one value per requested ID.
+
+        Returns
+        -------
+        ndarray
+            With ``cells=None``, a dense array of length
+            ``cell_count(resolution)`` indexed by RING cell ID. Otherwise
+            one value per requested ID, in query order and including
+            duplicates. :class:`Count` returns ``int64`` and :class:`Sum`
+            returns ``float64``.
+
+        Raises
+        ------
+        TypeError
+            If ``reducer`` is not a :class:`Count` or :class:`Sum`, or
+            ``cells`` is not an integer array.
+        ValueError
+            If a requested cell falls outside the grid, or a
+            :class:`Sum` carries the wrong number of values.
+
+        Notes
+        -----
+        Naming cells is the reason to reach for this method: it answers a
+        question about a few thousand cells without ever allocating the
+        grid. Small grids still accumulate through a dense scratch array
+        internally, and large ones through a hash table, so memory follows
+        what you asked for instead of the resolution.
+
+        Without ``cells``, the array-level equivalent is a one-liner and
+        usually faster than coming back through Polypix, so prefer it::
+
+            np.bincount(coverage.cells, minlength=px.cell_count(resolution))
+
+        The same call with ``weights=np.repeat(values, sizes)`` covers
+        :class:`Sum`. That equivalence stops holding as soon as you name
+        cells, because :func:`numpy.bincount` has to build the whole grid
+        before it can index a few cells out of it. At resolution 13 that is
+        six gibibytes to answer a question about one city.
         """
         if not isinstance(reducer, (Count, Sum)):
             raise TypeError("reducer must be a Count or Sum reducer.")
@@ -173,17 +291,51 @@ class Coverage:
 
 @dataclass(frozen=True, eq=False, init=False, slots=True)
 class RevisitStats:
-    """Read-only per-cell revisit statistics on one thresholded axis.
+    """Per-cell revisit statistics on one thresholded axis.
 
-    Every field describes the same source-unioned coverage of a cell after
-    thresholding, and every one of them needs the single pass over the segment
-    axis: nothing here can be recovered from the rest afterwards. In
-    particular ``maximum_internal_gap_steps`` exists only while a run closes,
-    so reproducing it downstream would mean materializing every run.
+    :func:`revisit` produces these; direct construction raises
+    :exc:`TypeError`. Every field describes the same thresholded,
+    source-unioned coverage of a cell, so they can be combined freely.
+    Gaps and window bounds are measured in segments, not seconds, because a
+    Coverage carries no clock.
 
-    ``first_start`` and ``last_stop`` bound the observed window, so callers can
-    apply their own leading, trailing, or cyclic gap policy against the segment
-    count they passed in; the gap fields cover complete internal gaps only.
+    Attributes
+    ----------
+    cells : ndarray
+        Ascending ``int64`` RING indices of the cells that were covered at
+        least once.
+    run_counts : ndarray
+        ``int64`` number of separate visits per cell, at least one.
+    internal_gap_steps_sum : ndarray
+        ``int64`` total length of the gaps between visits, in segments.
+        Zero for a cell visited once.
+    maximum_internal_gap_steps : ndarray
+        ``int64`` longest single gap between two visits, in segments. Zero
+        for a cell visited once.
+    first_start : ndarray
+        ``int64`` segment index at which the cell was first covered.
+    last_stop : ndarray
+        ``int64`` segment index just after the cell was last covered.
+
+    Notes
+    -----
+    All six arrays need the same single pass over the segment axis, and
+    none of them can be recovered from the others afterwards.
+    ``maximum_internal_gap_steps`` is the clearest case: an individual gap
+    exists only in the moment one visit closes and the next opens, so
+    computing it later would mean materializing every visit.
+
+    Only complete gaps between two visits are counted. What happens at the
+    ends of the timeline is a policy choice, so we report the window
+    instead of choosing for you: the trailing gap is
+    ``segment_count - last_stop`` against the segment count you passed in,
+    and the number of internal gaps per cell is ``run_counts - 1``.
+
+    Anything this result does not carry is either one NumPy expression away
+    or already in your hands, since the resolution, segment count,
+    threshold, and source count all came from the arguments you supplied.
+    The arrays follow the same read-only and identity-equality rules as
+    :class:`Coverage`, and ``len(stats)`` is the number of cells reported.
     """
 
     cells: npt.NDArray[np.int64]
@@ -237,7 +389,35 @@ def _as_resolution(value: int) -> int:
 
 
 def cell_count(resolution: int) -> int:
-    """Return the number of fixed-resolution HEALPix cells."""
+    """Return the number of HEALPix cells at one resolution.
+
+    The count is ``12 * 4 ** resolution``, since the grid starts from 12
+    cells and splits each one into four at every step up. Use this when
+    allocating or checking the length of a dense map.
+
+    Parameters
+    ----------
+    resolution : int
+        HEALPix resolution, 0 through 29.
+
+    Returns
+    -------
+    int
+        The number of cells in the grid.
+
+    Raises
+    ------
+    TypeError
+        If ``resolution`` is not an integer.
+    ValueError
+        If ``resolution`` falls outside 0 through 29.
+
+    Examples
+    --------
+    >>> import polypix as px
+    >>> px.cell_count(4)
+    3072
+    """
     resolved = _as_resolution(resolution)
     return 12 * (1 << (2 * resolved))
 
@@ -529,20 +709,56 @@ def _as_polygons(
 
 @dataclass(frozen=True, eq=False, slots=True)
 class Count:
-    """Count how many segments contain each cell.
+    """Count how many segments cover each cell.
 
-    Which cells are reported is chosen by the operation being reduced, through
-    ``candidate_cells`` when covering or ``cells`` on :meth:`Coverage.reduce`,
-    never by the reducer itself.
+    Pass an instance as ``reduce=Count()`` to a covering function, or to
+    :meth:`Coverage.reduce`. The reducer names the accumulation and nothing
+    else: which cells are reported is decided by the operation being
+    reduced, through ``candidate_cells`` when covering or ``cells`` when
+    reducing a stored coverage.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import polypix as px
+    >>> counts = px.cover_cap(
+    ...     np.array([[0.0, 0.0, 1.0]]), 0.2, resolution=4, reduce=px.Count()
+    ... )
+    >>> int(counts.sum())
+    24
     """
 
 
 @dataclass(frozen=True, eq=False, slots=True)
 class Sum:
-    """Accumulate one finite value per segment into the cells it covers.
+    """Add one value per segment into every cell that segment covers.
 
-    ``values`` is a scalar shared by every segment or one value per segment.
-    The reported cells are selected as for :class:`Count`.
+    Reach for this when a segment contributes an exposure, a duration, a
+    probability, or a capacity instead of a single count.
+
+    Parameters
+    ----------
+    values : float or array_like of float
+        One finite value shared by every segment, or one value per segment.
+
+    Notes
+    -----
+    Floating-point addition runs in segment and hit order, so a repeated
+    call on the same input returns the same sums. Cells are selected as
+    described for :class:`Count`.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import polypix as px
+    >>> weighted = px.cover_cap(
+    ...     np.array([[0.0, 0.0, 1.0]]),
+    ...     0.4,
+    ...     resolution=2,
+    ...     reduce=px.Sum([2.5]),
+    ... )
+    >>> float(weighted.sum())
+    10.0
     """
 
     values: ValuesLike
@@ -592,40 +808,99 @@ def cover_convex_polygon(
     threads: int | None = None,
     reduce: CoverageReducer | None = None,
 ) -> Coverage | npt.NDArray[np.int64] | npt.NDArray[np.float64]:
-    """Cover convex spherical polygons by HEALPix cell-center inclusion.
+    """Find the cells whose centers fall inside each convex polygon.
+
+    This is the shape of an imaging scene, a detector frame projected on the
+    ground, or any convex area of interest. Give the vertices in boundary
+    order; adjacent vertices are joined by the shorter great-circle arc.
 
     Parameters
     ----------
-    polygons_xyz
-        One ``(vertices, 3)`` polygon, a dense batch, or a ragged sequence.
-        Finite nonzero vectors are normalized; edges follow minor great-circle
-        arcs.
-    resolution
-        HEALPix resolution from 0 through 29.
-    candidate_cells
-        Optional RING indices restricting which cell centers are tested.
-    reduce
-        Optional :class:`Count` or :class:`Sum` reducer. ``None`` returns the
-        segmented ``Coverage``; a reducer returns its accumulated array and
-        lets Polypix skip building the cell lists where it can.
-    threads
-        ``None`` selects the automatic policy, 1 is sequential, and larger
-        values are reusable worker-pool maximums.
+    polygons_xyz : array_like or sequence of array_like
+        One ``(vertices, 3)`` polygon, a dense ``(polygons, vertices, 3)``
+        batch, or a sequence of ``(vertices, 3)`` arrays when the polygons
+        have different vertex counts. Vectors are Cartesian directions in
+        one frame of your choosing, finite and nonzero; we normalize the
+        magnitudes internally. The accepted geometry is described under
+        :ref:`geometry-contract`.
+    resolution : int
+        HEALPix resolution, 0 through 29. Returned cells satisfy
+        ``0 <= cell < cell_count(resolution)``.
+    candidate_cells : array_like of int, optional
+        RING indices at ``resolution`` limiting which cell centers are
+        tested at all. Duplicates and order are ignored. An empty selection
+        returns empty segments without dropping any input item.
+    threads : int, optional
+        ``None`` picks the automatic policy, ``1`` runs sequentially, and a
+        larger value sets the maximum size of the reusable worker pool,
+        capped by the host.
+    reduce : Count or Sum, optional
+        Leave this out to get the segmented :class:`Coverage`. Pass a
+        reducer to get its accumulated array instead, which also lets us
+        skip building the cell lists where we can. See
+        :ref:`choosing-a-reducer`.
 
     Returns
     -------
     Coverage or ndarray
-        Flat RING indices and offsets delimiting each input footprint, or the
-        reduced array when ``reduce`` is given.
+        Without ``reduce``, one segment per input polygon. With a reducer,
+        the array described under :class:`Count` and :class:`Sum`.
 
     Raises
     ------
     TypeError
-        If inputs have incompatible numeric types.
+        If the inputs have incompatible numeric types.
     ValueError
-        If shapes, indices, vectors, or polygon geometry are invalid.
+        If a shape, resolution, vector, candidate index, or the polygon
+        geometry itself is invalid.
     MemoryError
-        If the explicit segmented result does not fit in memory.
+        If the segmented result does not fit in memory. Consider batching
+        the input, or a reducer if counts are what you are after.
+
+    Notes
+    -----
+    A cell is selected when its center lies inside the polygon or exactly
+    on its boundary. Cells that the boundary merely clips are not included,
+    so this is not a conservative spatial index.
+
+    An empty sequence, a one-dimensional empty array, and a dense
+    ``(0, vertices, 3)`` array all describe a batch of zero polygons. A
+    ``(0, 3)`` array is unambiguously one polygon with no vertices, and is
+    rejected.
+
+    An aligned, C-contiguous ``float64`` dense batch is the cheapest thing
+    to hand over. Other real numeric arrays are converted once, and a
+    ragged sequence is concatenated before the native call, which costs
+    about what concatenating it yourself would. Strictly increasing
+    candidate arrays are borrowed as they are; anything else is sorted and
+    deduplicated internally.
+
+    Contiguous arrays are borrowed for the duration of the call. Since the
+    native kernel releases the GIL, do not mutate an input or candidate
+    array from another thread before the call returns. Threading never
+    changes membership, segment order, or cell order on one build and
+    platform.
+
+    Validation compares vertex pairs and tests every edge against every
+    vertex, so its cost grows with the square of the vertex count. A
+    densely sampled boundary is better handed to :func:`cover_sweep` in
+    short segments than passed as one polygon with hundreds of vertices.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import polypix as px
+    >>> scene = np.array(
+    ...     [
+    ...         [0.99, -0.10, -0.10],
+    ...         [0.99, 0.10, -0.10],
+    ...         [0.99, 0.10, 0.10],
+    ...         [0.99, -0.10, 0.10],
+    ...     ]
+    ... )
+    >>> coverage = px.cover_convex_polygon(scene, resolution=6)
+    >>> len(coverage)
+    1
     """
     resolved = _as_resolution(resolution)
     vertices, offsets = _as_polygons(polygons_xyz)
@@ -692,18 +967,82 @@ def cover_cap(
     threads: int | None = None,
     reduce: CoverageReducer | None = None,
 ) -> Coverage | npt.NDArray[np.int64] | npt.NDArray[np.float64]:
-    """Cover exact spherical caps by HEALPix cell-center inclusion.
+    """Find the cells whose centers fall inside each spherical cap.
 
-    ``centers_xyz`` accepts one ``(3,)`` vector or a ``(caps, 3)`` batch.
-    ``radii_rad`` is either a scalar shared by every center or an exact
-    ``(caps,)`` array with one radius per center; length-one arrays are not
-    broadcast. Radii must be finite and lie between zero and pi radians. Input
-    vectors are normalized internally. Other arguments and the segmented
-    result follow :func:`cover_convex_polygon`.
+    A cap is a center direction plus an angular radius. It is the shape of a
+    ground station's view of anything above an elevation mask, of a
+    satellite's own service circle, and of any circular instantaneous field
+    of view. Use this rather than approximating a circle with a many-sided
+    polygon: the region here is the exact cap.
 
-    ``reduce=Count()`` counts caps per cell directly, without building cap
-    coverage first. For selected cells the kernel picks whichever of the two is
-    cheaper and falls back to covering once and counting when that wins.
+    Parameters
+    ----------
+    centers_xyz : array_like
+        One ``(3,)`` Cartesian direction or a ``(caps, 3)`` batch, in one
+        frame of your choosing. Vectors are finite and nonzero, and we
+        normalize the magnitudes internally.
+    radii_rad : float or array_like
+        One finite angular radius in radians shared by every center, or
+        exactly ``(caps,)`` radii, one per center. A length-one array is not
+        broadcast. Radii lie in the closed interval ``[0, pi]``, where 0 is
+        a point cap and pi is the whole sphere.
+    resolution : int
+        HEALPix resolution, 0 through 29.
+    candidate_cells : array_like of int, optional
+        RING indices at ``resolution`` limiting which cell centers are
+        tested. Duplicates and order are ignored.
+    threads : int, optional
+        ``None`` picks the automatic policy, ``1`` runs sequentially, and a
+        larger value sets the maximum size of the reusable worker pool.
+    reduce : Count or Sum, optional
+        Leave this out to get the segmented :class:`Coverage`. Pass a
+        reducer to get its accumulated array instead.
+
+    Returns
+    -------
+    Coverage or ndarray
+        Without ``reduce``, one segment per cap; a single ``(3,)`` center
+        still comes back as one segment. With a reducer, its accumulated
+        array.
+
+    Raises
+    ------
+    TypeError
+        If the inputs have incompatible numeric types.
+    ValueError
+        If a shape, vector, radius, resolution, or candidate index is
+        invalid.
+    MemoryError
+        If the segmented result does not fit in memory. Use
+        ``reduce=Count()`` if counts are the intended result.
+
+    Notes
+    -----
+    A cell is selected when its center lies inside the cap or on its
+    boundary. This does not test whether the area of a cell intersects the
+    cap, so a cap smaller than a cell can come back empty.
+
+    Counting caps is the one place where fusing the reduction into the
+    geometry kernel currently wins by a wide margin, because the cap kernel
+    accumulates private RING spans and never allocates the cap-cell pairs
+    at all. It does this for a dense grid and for a selection alike, and
+    falls back to covering once and counting when it judges that cheaper.
+    Either way the answer is the same.
+
+    An empty ``(0, 3)`` batch of centers accepts a scalar or empty radius
+    array and returns a coverage with offsets ``[0]``, which keeps empty
+    chunks composable. As with the other borrowed inputs, do not mutate a
+    contiguous center, radius, or candidate array from another thread
+    before the call returns.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import polypix as px
+    >>> centers = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    >>> coverage = px.cover_cap(centers, np.radians([6.0, 4.0]), resolution=4)
+    >>> np.diff(coverage.offsets)
+    array([8, 4])
     """
     resolved = _as_resolution(resolution)
     reducer = _as_coverage_reducer(reduce)
@@ -875,12 +1214,86 @@ def cover_sweep(
     threads: int | None = None,
     reduce: CoverageReducer | None = None,
 ) -> Coverage | npt.NDArray[np.int64] | npt.NDArray[np.float64]:
-    """Cover the quadrilateral segments between two sampled spherical edges.
+    """Cover the quadrilaterals between two sampled edges of a swath.
 
-    Each output segment covers ``[left[i], right[i], right[i+1], left[i+1]]``.
-    Repeated paired samples create a zero-area segment and are rejected.
-    Inputs, resolution, candidates, threading, ``reduce``, return value, and
-    errors follow :func:`cover_convex_polygon`.
+    A moving sensor sweeps out a swath. Sample its left and right edges at
+    whatever cadence your propagator gives you, and every consecutive pair
+    of samples becomes one quadrilateral,
+    ``[left[i], right[i], right[i + 1], left[i + 1]]``, covered on its own.
+    This paired-edge sweep is not the constant-colatitude operation
+    traditionally called a HEALPix "strip".
+
+    Parameters
+    ----------
+    left_edge_xyz, right_edge_xyz : array_like
+        ``(samples, 3)`` arrays of Cartesian directions of equal length, in
+        one frame of your choosing.
+    resolution : int
+        HEALPix resolution, 0 through 29.
+    candidate_cells : array_like of int, optional
+        RING indices at ``resolution`` limiting which cell centers are
+        tested. Duplicates and order are ignored.
+    threads : int, optional
+        ``None`` picks the automatic policy, ``1`` runs sequentially, and a
+        larger value sets the maximum size of the reusable worker pool.
+    reduce : Count or Sum, optional
+        Leave this out to get the segmented :class:`Coverage`. Pass a
+        reducer to get its accumulated array instead.
+
+    Returns
+    -------
+    Coverage or ndarray
+        Without ``reduce``, ``max(samples - 1, 0)`` segments. With a
+        reducer, its accumulated array.
+
+    Raises
+    ------
+    TypeError
+        If the inputs have incompatible numeric types.
+    ValueError
+        If the two edges have different lengths, or a segment is invalid or
+        encloses no area.
+    MemoryError
+        If the segmented result does not fit in memory.
+
+    Notes
+    -----
+    Consecutive samples are joined by the shorter great-circle arc, which
+    makes sampling density part of the input contract. Steps approaching
+    180 degrees bow noticeably, steps past 180 degrees give you the
+    opposite arc, and exactly ambiguous steps are rejected. We cannot tell
+    a deliberate minor arc from an undersampled trajectory, so sample
+    densely enough that each arc is the boundary you meant.
+
+    Segments are independent, and we neither merge nor deduplicate them.
+    A global ``np.unique(coverage.cells)`` forms the sorted union, at the
+    cost of the segmentation and some sorting time and memory.
+
+    Zero or one paired sample describes no intervals and returns empty
+    coverage with offsets ``[0]``. Repeating both edge samples at the same
+    step encloses no area and is rejected; represent a stationary interval
+    upstream instead, since deleting a sample shifts your time bins.
+    Repeating a sample on one edge only is accepted, and gives a triangle
+    pinched at that edge.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import polypix as px
+    >>> track = np.radians(np.linspace(-13.0, 13.0, 7))
+    >>> def edge(offset):
+    ...     lat = np.radians(offset)
+    ...     return np.stack(
+    ...         [
+    ...             np.cos(lat) * np.cos(track),
+    ...             np.cos(lat) * np.sin(track),
+    ...             np.full_like(track, np.sin(lat)),
+    ...         ],
+    ...         axis=-1,
+    ...     )
+    >>> coverage = px.cover_sweep(edge(3.2), edge(-3.2), resolution=4)
+    >>> len(coverage)
+    6
     """
     resolved = _as_resolution(resolution)
     reducer = _as_coverage_reducer(reduce)
@@ -960,16 +1373,74 @@ def revisit(
 ) -> RevisitStats:
     """Summarize how often each cell is covered across ordered bins.
 
-    Each timeline is a coverage whose segments are consecutive, temporally
-    adjacent bins in ascending order. Each sequence entry is counted as one
-    source, and a cell is covered in a bin when at least ``minimum_sources``
-    entries contain it. Callers must supply unique timelines with identical bin
-    boundaries when those semantics matter. The result stays ordinal; callers
-    decide how bins map to physical time and how leading, trailing, or cyclic
-    gaps should be treated.
+    Read the segments of a coverage as a timeline instead of a batch. A
+    cell is covered in a bin when at least ``minimum_sources`` of the
+    timelines contain it there, and consecutive covered bins form one
+    visit. What comes back is the per-cell visit count, the gaps between
+    visits, and the bounds of the observed window.
 
-    Per-cell visit counts and complete internal gaps accumulate in one pass,
-    without ever building the individual runs.
+    Parameters
+    ----------
+    timelines : Coverage or sequence of Coverage
+        One coverage per source, each of whose segments are consecutive,
+        temporally adjacent bins in ascending order. Every entry must share
+        a resolution and a segment count.
+    minimum_sources : int, default 1
+        How many sources must cover a cell in the same bin for it to count.
+        A threshold above the number of sources returns an empty result.
+
+    Returns
+    -------
+    RevisitStats
+        Ascending qualifying cells, with one statistic per cell.
+
+    Raises
+    ------
+    TypeError
+        If ``timelines`` holds something other than coverages.
+    ValueError
+        If the sequence is empty, the threshold is not positive, or the
+        sources disagree on resolution or segment count.
+
+    Notes
+    -----
+    Two things we cannot check for you, because a :class:`Coverage` carries
+    no clock. Matching segment indices must describe identical bin
+    boundaries, and consecutive bins must really be adjacent in time. Split
+    the analysis at a discontinuity, or insert a deliberately empty
+    separator bin, so that a visit cannot bridge one.
+
+    Bins are ordinal, so map ``first_start`` and ``last_stop`` through your
+    own array of time edges afterwards, and choose there whether revisit
+    means end-to-start, start-to-start, or something cyclic.
+
+    Counts and gaps accumulate in a single pass, and the result is
+    allocated by cell rather than by visit. That matters because the visits
+    themselves are not guaranteed to be smaller than the input: a cell hit
+    in alternating bins produces one visit per hit. The result is sparse
+    and sorted by cell ID, so a high resolution does not force a dense
+    global allocation.
+
+    Sequence positions are counted independently, so source uniqueness is
+    yours to guarantee, and thresholding several sources deliberately drops
+    source identity. Call this once per source when you need to know which
+    observer saw what. For a sampled sweep, these are occupied bins rather
+    than exact access events, and the boundary times are uncertain at the
+    sampling cadence.
+
+    Examples
+    --------
+    Four bins, in which one cell is covered, missed, then covered twice:
+
+    >>> import polypix as px
+    >>> timeline = px.Coverage.from_arrays(
+    ...     cells=[5, 5, 5], offsets=[0, 1, 1, 2, 3], resolution=0
+    ... )
+    >>> stats = px.revisit(timeline)
+    >>> stats.cells, stats.run_counts, stats.maximum_internal_gap_steps
+    (array([5]), array([2]), array([1]))
+    >>> stats.first_start, stats.last_stop
+    (array([0]), array([4]))
     """
     cells, offsets, resolution, threshold, count = _prepared_timelines(
         timelines, minimum_sources, "revisit"
@@ -983,10 +1454,41 @@ def cell_centers(
     cells: CellsLike,
     resolution: int,
 ) -> npt.NDArray[np.float64]:
-    """Return unit-vector centers for HEALPix RING indices.
+    """Return the center direction of each HEALPix cell.
 
-    The result has shape ``(cells, 3)``. Invalid resolutions, non-integer
-    inputs, negative values, and out-of-range indices are rejected.
+    Parameters
+    ----------
+    cells : int or array_like of int
+        RING indices at ``resolution``.
+    resolution : int
+        HEALPix resolution, 0 through 29.
+
+    Returns
+    -------
+    ndarray
+        Shape ``(cells, 3)``, dtype ``float64``, unit vectors. A scalar
+        cell returns ``(1, 3)`` and an empty input returns ``(0, 3)``.
+
+    Raises
+    ------
+    TypeError
+        If ``cells`` is not an integer array.
+    ValueError
+        If the resolution is invalid, or an index is negative or off the
+        grid.
+
+    Notes
+    -----
+    These are the cells' own centers, not the directions you started from.
+    Only a cell center round-trips exactly through :func:`cell_at`. Large
+    arrays are parallelized inside the native kernel, which is why there is
+    no threading argument here.
+
+    Examples
+    --------
+    >>> import polypix as px
+    >>> px.cell_centers(0, resolution=0).round(3)
+    array([[0.527, 0.527, 0.667]])
     """
     resolved = _as_resolution(resolution)
     ring = _as_uint64_vector(cells, "cells", native_range_checked=True)
@@ -997,12 +1499,56 @@ def cell_at(
     vectors_xyz: VectorsLike,
     resolution: int,
 ) -> npt.NDArray[np.int64]:
-    """Return the HEALPix RING cell containing each Cartesian direction.
+    """Return the HEALPix cell that each direction falls in.
 
-    ``vectors_xyz`` accepts one ``(3,)`` vector or a ``(vectors, 3)`` batch.
-    Finite nonzero vectors are normalized internally, and the result always
-    has shape ``(vectors,)``. Directions exactly on a cell boundary follow the
-    deterministic HEALPix partition used by the native RING kernel.
+    Use this when your input is points rather than regions: a ground track,
+    a set of targets, individual pointings.
+
+    Parameters
+    ----------
+    vectors_xyz : array_like
+        One ``(3,)`` Cartesian direction or a ``(vectors, 3)`` batch.
+        Vectors are finite and nonzero; magnitudes are ignored.
+    resolution : int
+        HEALPix resolution, 0 through 29.
+
+    Returns
+    -------
+    ndarray
+        Shape ``(vectors,)``, dtype ``int64``. A single ``(3,)`` vector
+        returns shape ``(1,)`` and an empty ``(0, 3)`` batch returns shape
+        ``(0,)``.
+
+    Raises
+    ------
+    TypeError
+        If the input is not a real numeric array.
+    ValueError
+        If the shape, a vector, or the resolution is invalid.
+
+    Notes
+    -----
+    Every finite nonzero direction lands in exactly one cell, so this
+    quantizes rather than approximating: it does not turn center-sampled
+    region coverage into a conservative spatial index.
+
+    A direction sitting numerically on a cell edge or vertex is a
+    floating-point tie. The answer is repeatable for the same input, build,
+    and platform, but we do not promise which of the adjacent cells owns an
+    exact boundary direction across platforms. Resolve the tie upstream if
+    your application needs a portable policy.
+
+    Large batches are parallelized inside the native kernel, and
+    contiguous inputs are borrowed while the GIL is released, so do not
+    mutate them concurrently.
+
+    Examples
+    --------
+    >>> import numpy as np
+    >>> import polypix as px
+    >>> cells = px.cell_at(np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]), 4)
+    >>> px.cell_at(px.cell_centers(cells, 4), 4)
+    array([1504,    0])
     """
     resolved = _as_resolution(resolution)
     vectors = _as_float_array(vectors_xyz, "vectors_xyz")
@@ -1017,10 +1563,35 @@ def cell_corners(
     cells: CellsLike,
     resolution: int,
 ) -> npt.NDArray[np.float64]:
-    """Return four unit-vector corners for HEALPix RING indices.
+    """Return the four corner directions of each HEALPix cell.
 
-    The result has shape ``(cells, 4, 3)`` in boundary traversal order.
-    Validation follows :func:`cell_centers`.
+    Parameters
+    ----------
+    cells : int or array_like of int
+        RING indices at ``resolution``.
+    resolution : int
+        HEALPix resolution, 0 through 29.
+
+    Returns
+    -------
+    ndarray
+        Shape ``(cells, 4, 3)``, dtype ``float64``, unit vectors in
+        boundary traversal order. A scalar cell keeps the leading axis and
+        returns ``(1, 4, 3)``. The first corner is not repeated at the end.
+
+    Raises
+    ------
+    TypeError
+        If ``cells`` is not an integer array.
+    ValueError
+        If the resolution is invalid, or an index is negative or off the
+        grid.
+
+    Notes
+    -----
+    HEALPix cell edges are curved, and we do not sample them between the
+    corners. Four corners are therefore not a boundary: do not round-trip
+    them as an exact great-circle polygon for the cell.
     """
     resolved = _as_resolution(resolution)
     ring = _as_uint64_vector(cells, "cells", native_range_checked=True)

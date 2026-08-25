@@ -19,8 +19,9 @@ from examples.constellation import (  # noqa: E402
     swath_edges,
 )
 from examples.earth_observation_constellation import (  # noqa: E402
+    CADENCE_S,
     SWATH_HALF_WIDTH_RAD,
-    reduce_coverage,
+    overflight_gaps,
 )
 
 
@@ -88,7 +89,7 @@ def test_constellation_rejects_uneven_plane_distribution() -> None:
         )
 
 
-def test_reduce_coverage_counts_windows_and_mean_uncovered_gaps() -> None:
+def test_overflight_gaps_reports_visits_and_mean_gaps_in_hours() -> None:
     first = px.Coverage.from_arrays(
         cells=np.asarray([1, 2, 1, 1, 2], dtype=np.uint64),
         offsets=np.asarray([0, 2, 3, 3, 5], dtype=np.uint64),
@@ -100,57 +101,45 @@ def test_reduce_coverage_counts_windows_and_mean_uncovered_gaps() -> None:
         resolution=1,
     )
 
-    observations, mean_internal_gap_s, max_internal_gap_s, gap_counts = reduce_coverage(
-        [first, second],
-        cell_count=48,
-        cadence_s=60,
-    )
+    cells, visits, mean_gap_h, worst_gap_h = overflight_gaps([first, second])
 
-    assert observations[1] == 2
-    assert observations[2] == 2
-    assert mean_internal_gap_s[1] == 60
-    assert mean_internal_gap_s[2] == 60
-    assert max_internal_gap_s[1] == 60
-    assert max_internal_gap_s[2] == 60
-    assert gap_counts[1] == 1
-    assert gap_counts[2] == 1
-    assert np.isnan(mean_internal_gap_s[3])
-    assert np.isnan(max_internal_gap_s[3])
+    one_bin_h = CADENCE_S / 3_600
+    assert cells.tolist() == [1, 2]
+    assert visits.tolist() == [2, 2]
+    np.testing.assert_allclose(mean_gap_h, [one_bin_h, one_bin_h])
+    np.testing.assert_allclose(worst_gap_h, [one_bin_h, one_bin_h])
 
 
-def test_reduce_coverage_excludes_horizon_edge_gaps() -> None:
+def test_overflight_gaps_excludes_horizon_edge_gaps() -> None:
     coverage = px.Coverage.from_arrays(
         cells=[4, 4],
         offsets=[0, 0, 1, 1, 2, 2],
         resolution=1,
     )
 
-    observations, mean_internal_gap_s, max_internal_gap_s, gap_counts = reduce_coverage(
-        [coverage], cell_count=48, cadence_s=60
-    )
+    cells, visits, mean_gap_h, worst_gap_h = overflight_gaps([coverage])
 
-    assert observations[4] == 2
-    assert gap_counts[4] == 1
-    assert mean_internal_gap_s[4] == 60
-    assert max_internal_gap_s[4] == 60
     # The unobserved first and last bins are deliberately not part of this
     # complete internal-gap statistic.
+    assert cells.tolist() == [4]
+    assert visits.tolist() == [2]
+    np.testing.assert_allclose(mean_gap_h, [CADENCE_S / 3_600])
+    np.testing.assert_allclose(worst_gap_h, [CADENCE_S / 3_600])
 
 
-def test_reduce_coverage_rejects_mismatched_interval_counts() -> None:
-    first = px.Coverage.from_arrays(
-        cells=np.asarray([1], dtype=np.uint64),
-        offsets=np.asarray([0, 1], dtype=np.uint64),
+def test_overflight_gaps_reports_no_gap_for_a_single_visit() -> None:
+    coverage = px.Coverage.from_arrays(
+        cells=[7, 7],
+        offsets=[0, 1, 2, 2],
         resolution=1,
     )
-    second = px.Coverage.from_arrays(
-        cells=np.asarray([1], dtype=np.uint64),
-        offsets=np.asarray([0, 1, 1], dtype=np.uint64),
-        resolution=1,
-    )
 
-    with np.testing.assert_raises_regex(ValueError, "same interval count"):
-        reduce_coverage([first, second], cell_count=48, cadence_s=60)
+    cells, visits, mean_gap_h, worst_gap_h = overflight_gaps([coverage])
+
+    assert cells.tolist() == [7]
+    assert visits.tolist() == [1]
+    assert mean_gap_h.size == 0
+    assert worst_gap_h.size == 0
 
 
 def test_archived_coverage_reloads_into_an_equivalent_coverage(

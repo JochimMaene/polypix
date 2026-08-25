@@ -4,43 +4,21 @@
 pip install polypix
 ```
 
-NumPy is the only runtime dependency.
-
-## Wheels
-
-| Platform | Architectures | Python |
-| --- | --- | --- |
-| Linux | x86-64, ARM64 | CPython 3.12+ |
-| macOS 11+ | x86-64, ARM64 | CPython 3.12+ |
-| Windows | x86-64 | CPython 3.12+ |
-
-Wheels bundle the native coverage kernel. Installing one requires no Rust
-toolchain, C++ compiler, system HEALPix library, or CFITSIO.
+NumPy is the only runtime dependency. There are wheels for CPython 3.12 and
+newer on Linux (x86-64 and ARM64), macOS 11+ (Intel and Apple Silicon), and
+Windows x86-64, and each one carries the compiled coverage kernel.
 
 ## Building from source
 
-A source build requires a stable Rust toolchain and CPython 3.12 or newer. The
-Maturin backend fetches and compiles the Rust dependencies:
+A source build needs CPython 3.12 or newer and a stable Rust toolchain, which
+[rustup](https://rustup.rs) installs. Nothing else: pip takes the source
+distribution from PyPI, and the Maturin backend fetches and compiles the Rust
+dependencies for you.
 
 ```bash
-pip install -e .
+pip install polypix --no-binary polypix
 ```
 
-The supported development environment is Pixi, which provisions Python, NumPy,
-Rust, Maturin, and pytest, then installs Polypix in editable mode:
-
-```bash
-pixi run test
-```
-
-Checked-in Pixi platforms are Linux x86-64 and macOS. Windows and Linux ARM64
-contributors use the `pip install -e .` path, which CI also exercises.
-
-For a local wheel:
-
-```bash
-pixi run wheel
-```
-
-Release wheels for every supported platform come from the GitHub Actions release
-workflow. See [Development](development.md) for contributor workflows.
+[Development](development.md) covers building from a clone in the Pixi
+environment we use for contributions, together with the test, lint, benchmark,
+and documentation commands.
