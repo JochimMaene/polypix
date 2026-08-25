@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import operator
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any, Never, SupportsIndex, cast, overload
 
@@ -20,10 +20,12 @@ from ._core import (
     _count_coverage_per_cell,
     _cover,
     _cover_cap,
+    _cover_regions,
     _cover_sweep,
     _revisit_stats,
     _sum_coverage_per_cell,
     _validate_coverage,
+    _validate_polygon,
 )
 
 _POLYGON_SHAPE_ERROR = (
@@ -45,6 +47,77 @@ PolygonsLike = (
 )
 EdgesLike = Sequence[Sequence[float]] | npt.ArrayLike
 ValuesLike = float | Sequence[float] | npt.ArrayLike
+
+
+@dataclass(frozen=True, eq=False, init=False, slots=True)
+class Polygon:
+    """One spherical polygon outer boundary and any holes, in Cartesian XYZ.
+
+    Coordinates are copied into read-only ``float64`` arrays and the geometry
+    is validated immediately. Ring orientation does not matter.
+
+    Parameters
+    ----------
+    outer : array_like
+        The ``(vertices, 3)`` outer boundary.
+    *holes : array_like
+        Zero or more ``(vertices, 3)`` hole boundaries.
+    """
+
+    outer: npt.NDArray[np.float64]
+    holes: tuple[npt.NDArray[np.float64], ...]
+
+    def __init__(self, outer: object, *holes: object) -> None:
+        owned_outer = np.array(
+            _as_float_matrix(outer, 3, "outer"), dtype=np.float64, order="C", copy=True
+        )
+        owned_holes = tuple(
+            np.array(
+                _as_float_matrix(hole, 3, f"holes[{index}]"),
+                dtype=np.float64,
+                order="C",
+                copy=True,
+            )
+            for index, hole in enumerate(holes)
+        )
+        rings = (owned_outer, *owned_holes)
+        offsets = np.concatenate(
+            (
+                np.zeros(1, dtype=np.uint64),
+                np.cumsum([len(ring) for ring in rings], dtype=np.uint64),
+            )
+        )
+        vertices = np.concatenate(rings) if rings else np.empty((0, 3), np.float64)
+        _validate_polygon(vertices, offsets)
+        for ring in rings:
+            _freeze_array(ring)
+        object.__setattr__(self, "outer", owned_outer)
+        object.__setattr__(self, "holes", owned_holes)
+
+
+@dataclass(frozen=True, eq=False, init=False, slots=True)
+class MultiPolygon:
+    """A union of zero or more :class:`Polygon` components.
+
+    The union is one input region and therefore one coverage segment. An empty
+    ``MultiPolygon`` is a valid empty region.
+    """
+
+    polygons: tuple[Polygon, ...]
+
+    def __init__(self, *polygons: Polygon) -> None:
+        if not all(isinstance(polygon, Polygon) for polygon in polygons):
+            raise TypeError("MultiPolygon components must be Polygon objects.")
+        object.__setattr__(self, "polygons", polygons)
+
+    def __len__(self) -> int:
+        return len(self.polygons)
+
+    def __iter__(self) -> Iterator[Polygon]:
+        return iter(self.polygons)
+
+
+RegionLike = PolygonsLike | Polygon | MultiPolygon | Sequence[Polygon | MultiPolygon]
 
 
 @dataclass(frozen=True, eq=False, init=False, slots=True)
@@ -707,6 +780,59 @@ def _as_polygons(
     return _ragged_polygons(values, shapes)
 
 
+def _as_structured_region_buffers(
+    values: object,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+    if isinstance(values, (Polygon, MultiPolygon)):
+        regions = [values]
+    elif (
+        isinstance(values, Sequence)
+        and values
+        and isinstance(values[0], (Polygon, MultiPolygon))
+    ):
+        if not all(isinstance(value, (Polygon, MultiPolygon)) for value in values):
+            raise TypeError(
+                "Do not mix polygon arrays with Polygon objects in one batch."
+            )
+        regions = list(values)
+    else:
+        return None
+
+    polygons = [
+        (region,) if isinstance(region, Polygon) else region.polygons
+        for region in regions
+    ]
+    rings = [
+        ring
+        for region in polygons
+        for polygon in region
+        for ring in (polygon.outer, *polygon.holes)
+    ]
+    vertices = np.concatenate(rings) if rings else np.empty((0, 3), dtype=np.float64)
+    ring_offsets = np.concatenate(
+        (
+            np.zeros(1, dtype=np.uint64),
+            np.cumsum([len(ring) for ring in rings], dtype=np.uint64),
+        )
+    )
+    polygon_offsets = np.concatenate(
+        (
+            np.zeros(1, dtype=np.uint64),
+            np.cumsum(
+                [1 + len(polygon.holes) for region in polygons for polygon in region],
+                dtype=np.uint64,
+            ),
+        )
+    )
+    region_offsets = np.concatenate(
+        (
+            np.zeros(1, dtype=np.uint64),
+            np.cumsum([len(region) for region in polygons], dtype=np.uint64),
+        )
+    )
+    return vertices, ring_offsets, polygon_offsets, region_offsets
+
+
 @dataclass(frozen=True, eq=False, slots=True)
 class Count:
     """Count how many segments cover each cell.
@@ -768,8 +894,8 @@ CoverageReducer = Count | Sum
 
 
 @overload
-def cover_convex_polygon(
-    polygons_xyz: PolygonsLike,
+def cover_polygon(
+    polygons_xyz: RegionLike,
     resolution: int,
     *,
     candidate_cells: CellsLike | None = None,
@@ -779,8 +905,8 @@ def cover_convex_polygon(
 
 
 @overload
-def cover_convex_polygon(
-    polygons_xyz: PolygonsLike,
+def cover_polygon(
+    polygons_xyz: RegionLike,
     resolution: int,
     *,
     candidate_cells: CellsLike | None = None,
@@ -790,8 +916,8 @@ def cover_convex_polygon(
 
 
 @overload
-def cover_convex_polygon(
-    polygons_xyz: PolygonsLike,
+def cover_polygon(
+    polygons_xyz: RegionLike,
     resolution: int,
     *,
     candidate_cells: CellsLike | None = None,
@@ -800,29 +926,31 @@ def cover_convex_polygon(
 ) -> npt.NDArray[np.float64]: ...
 
 
-def cover_convex_polygon(
-    polygons_xyz: PolygonsLike,
+def cover_polygon(
+    polygons_xyz: RegionLike,
     resolution: int,
     *,
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
     reduce: CoverageReducer | None = None,
 ) -> Coverage | npt.NDArray[np.int64] | npt.NDArray[np.float64]:
-    """Find the cells whose centers fall inside each convex polygon.
+    """Find the cells whose centers fall inside each polygonal region.
 
     This is the shape of an imaging scene, a detector frame projected on the
-    ground, or any convex area of interest. Give the vertices in boundary
-    order; adjacent vertices are joined by the shorter great-circle arc.
+    ground, or an area of interest. Simple array inputs may be convex or
+    concave. Use :class:`Polygon` for holes and :class:`MultiPolygon` for a
+    multipart region. Adjacent vertices use the shorter great-circle arc.
 
     Parameters
     ----------
-    polygons_xyz : array_like or sequence of array_like
+    polygons_xyz : array_like, Polygon, MultiPolygon, or sequence
         One ``(vertices, 3)`` polygon, a dense ``(polygons, vertices, 3)``
         batch, or a sequence of ``(vertices, 3)`` arrays when the polygons
-        have different vertex counts. Vectors are Cartesian directions in
-        one frame of your choosing, finite and nonzero; we normalize the
-        magnitudes internally. The accepted geometry is described under
-        :ref:`geometry-contract`.
+        have different vertex counts. A ``Polygon`` or ``MultiPolygon`` is
+        one result segment; a sequence of those objects is a batch. Vectors
+        are Cartesian directions in one frame of your choosing, finite and
+        nonzero; we normalize the magnitudes internally. The accepted geometry
+        is described under :ref:`geometry-contract`.
     resolution : int
         HEALPix resolution, 0 through 29. Returned cells satisfy
         ``0 <= cell < cell_count(resolution)``.
@@ -843,7 +971,7 @@ def cover_convex_polygon(
     Returns
     -------
     Coverage or ndarray
-        Without ``reduce``, one segment per input polygon. With a reducer,
+        Without ``reduce``, one segment per input region. With a reducer,
         the array described under :class:`Count` and :class:`Sum`.
 
     Raises
@@ -898,25 +1026,51 @@ def cover_convex_polygon(
     ...         [0.99, -0.10, 0.10],
     ...     ]
     ... )
-    >>> coverage = px.cover_convex_polygon(scene, resolution=6)
+    >>> coverage = px.cover_polygon(scene, resolution=6)
     >>> len(coverage)
     1
     """
     resolved = _as_resolution(resolution)
-    vertices, offsets = _as_polygons(polygons_xyz)
+    structured = _as_structured_region_buffers(polygons_xyz)
     reducer = _as_coverage_reducer(reduce)
     candidates, requested = _reduction_plan(candidate_cells, reducer, resolved)
-    coverage = Coverage._from_native(
-        *_cover(
+    thread_count = _as_threads(threads)
+    if structured is not None:
+        vertices, ring_offsets, polygon_offsets, region_offsets = structured
+        native = _cover_regions(
             vertices,
-            offsets,
+            ring_offsets,
+            polygon_offsets,
+            region_offsets,
             resolved,
             candidates,
-            reducer is None,
-            _as_threads(threads),
-        ),
-        resolved,
-    )
+            thread_count,
+        )
+    else:
+        vertices, ring_offsets = _as_polygons(polygons_xyz)
+        try:
+            native = _cover(
+                vertices,
+                ring_offsets,
+                resolved,
+                candidates,
+                reducer is None,
+                thread_count,
+            )
+        except ValueError as error:
+            if "must be convex and non-self-intersecting" not in str(error):
+                raise
+            item_offsets = np.arange(len(ring_offsets), dtype=np.uint64)
+            native = _cover_regions(
+                vertices,
+                ring_offsets,
+                item_offsets,
+                item_offsets,
+                resolved,
+                candidates,
+                thread_count,
+            )
+    coverage = Coverage._from_native(*native, resolved)
     if reducer is None:
         return coverage
     return _reduce_coverage(coverage, reducer, requested)
@@ -1601,6 +1755,8 @@ def cell_corners(
 __all__ = [
     "Count",
     "Coverage",
+    "MultiPolygon",
+    "Polygon",
     "RevisitStats",
     "Sum",
     "__version__",
@@ -1609,7 +1765,7 @@ __all__ = [
     "cell_corners",
     "cell_count",
     "cover_cap",
-    "cover_convex_polygon",
+    "cover_polygon",
     "cover_sweep",
     "revisit",
 ]

@@ -9,7 +9,7 @@ polypix/
   py.typed            PEP 561 marker
 rust/
   revisit.rs          segmented revisit and gap reduction
-  geometry.rs         convex spherical-polygon validation
+  geometry.rs         spherical-polygon validation and containment
   lib.rs              PyO3 bindings and native-buffer safety
   ring/               HEALPix RING coverage, planning, and threading
   reduce.rs           dense and selected coverage reductions

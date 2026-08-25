@@ -10,8 +10,9 @@ use std::sync::OnceLock;
 
 use crate::error::NativeResult;
 use crate::geometry::{
-    contains_center, dot, nearly_equal, normalize, polygon_contains, prepare_polygon,
-    validate_polygon, Polygon, Vec3, CONTAINMENT_EPSILON,
+    contains_center, dot, general_polygon_contains, nearly_equal, normalize, polygon_contains,
+    prepare_general_polygon, prepare_polygon, ring_contains, validate_polygon, GeneralPolygon,
+    Polygon, Vec3, CONTAINMENT_EPSILON,
 };
 
 use super::cover::push_coverage_cell;
@@ -58,9 +59,14 @@ pub(super) fn longitude_bounds(
     vertices: &[Vec3],
     edge_normals: &[Vec3],
 ) -> ([(f64, f64); 2], usize) {
-    if contains_center(edge_normals, [0.0, 0.0, 1.0])
-        || contains_center(edge_normals, [0.0, 0.0, -1.0])
-    {
+    longitude_bounds_for(vertices, |point| contains_center(edge_normals, point))
+}
+
+fn longitude_bounds_for(
+    vertices: &[Vec3],
+    contains: impl Fn(Vec3) -> bool,
+) -> ([(f64, f64); 2], usize) {
+    if contains([0.0, 0.0, 1.0]) || contains([0.0, 0.0, -1.0]) {
         return ([(0.0, TAU), (0.0, 0.0)], 1);
     }
 
@@ -187,6 +193,16 @@ pub(super) fn cached_scan_rings(resolution: u8) -> Option<&'static [ScanRing]> {
 }
 
 pub(super) fn polygon_z_bounds(vertices: &[Vec3], edge_normals: &[Vec3]) -> (f64, f64) {
+    polygon_z_bounds_for(vertices, edge_normals, |point| {
+        contains_center(edge_normals, point)
+    })
+}
+
+fn polygon_z_bounds_for(
+    vertices: &[Vec3],
+    edge_normals: &[Vec3],
+    contains: impl Fn(Vec3) -> bool,
+) -> (f64, f64) {
     let mut minimum: f64 = 1.0;
     let mut maximum: f64 = -1.0;
     for &vertex in vertices {
@@ -211,13 +227,67 @@ pub(super) fn polygon_z_bounds(vertices: &[Vec3], edge_normals: &[Vec3]) -> (f64
         }
     }
 
-    if contains_center(edge_normals, [0.0, 0.0, 1.0]) {
+    if contains([0.0, 0.0, 1.0]) {
         maximum = 1.0;
     }
-    if contains_center(edge_normals, [0.0, 0.0, -1.0]) {
+    if contains([0.0, 0.0, -1.0]) {
         minimum = -1.0;
     }
     (minimum, maximum)
+}
+
+pub(super) enum PreparedRegionPolygon {
+    Convex(PreparedFootprint),
+    General(GeneralPolygon),
+}
+
+impl PreparedRegionPolygon {
+    pub(super) fn from_rings(raw_rings: &[Vec<Vec3>]) -> Result<Self, String> {
+        if raw_rings.len() == 1 {
+            let raw = raw_rings[0]
+                .iter()
+                .flat_map(|vertex| vertex.iter().copied())
+                .collect::<Vec<_>>();
+            if let Ok(footprint) = PreparedFootprint::from_raw(&raw) {
+                return Ok(Self::Convex(footprint));
+            }
+        }
+        prepare_general_polygon(raw_rings).map(Self::General)
+    }
+
+    pub(super) fn contains(&self, point: Vec3) -> bool {
+        match self {
+            Self::Convex(footprint) => footprint.contains(point),
+            Self::General(polygon) => general_polygon_contains(polygon, point),
+        }
+    }
+
+    pub(super) fn cover(&self, resolution: u8, cells: &mut Vec<u64>) -> NativeResult<()> {
+        match self {
+            Self::Convex(footprint) => footprint.cover(resolution, cells),
+            Self::General(polygon) => {
+                let contains = |point| general_polygon_contains(polygon, point);
+                let (minimum_z, maximum_z) = polygon_z_bounds_for(
+                    &polygon.outer.vertices,
+                    &polygon.outer.edge_normals,
+                    |point| ring_contains(&polygon.outer, point),
+                );
+                let (longitude_intervals, interval_count) =
+                    longitude_bounds_for(&polygon.outer.vertices, |point| {
+                        ring_contains(&polygon.outer, point)
+                    });
+                cover_centers_in_bounds(
+                    minimum_z,
+                    maximum_z,
+                    longitude_intervals,
+                    interval_count,
+                    resolution,
+                    |x, y, z| contains([x, y, z]),
+                    |cell| push_coverage_cell(cells, cell, 1024),
+                )
+            }
+        }
+    }
 }
 
 impl Cap {
@@ -422,12 +492,32 @@ pub(super) fn cover_centers(
     edge_normals: &[Vec3],
     resolution: u8,
     contains: impl Fn(f64, f64, f64) -> bool,
+    visit: impl FnMut(u64) -> NativeResult<()>,
+) -> NativeResult<()> {
+    let (minimum_z, maximum_z) = polygon_z_bounds(vertices, edge_normals);
+    let (longitude_intervals, interval_count) = longitude_bounds(vertices, edge_normals);
+    cover_centers_in_bounds(
+        minimum_z,
+        maximum_z,
+        longitude_intervals,
+        interval_count,
+        resolution,
+        contains,
+        visit,
+    )
+}
+
+fn cover_centers_in_bounds(
+    minimum_z: f64,
+    maximum_z: f64,
+    longitude_intervals: [(f64, f64); 2],
+    interval_count: usize,
+    resolution: u8,
+    contains: impl Fn(f64, f64, f64) -> bool,
     mut visit: impl FnMut(u64) -> NativeResult<()>,
 ) -> NativeResult<()> {
     let nside = 1_u64 << resolution;
-    let (minimum_z, maximum_z) = polygon_z_bounds(vertices, edge_normals);
     let (first_ring, last_ring) = ring_range(nside, minimum_z, maximum_z);
-    let (longitude_intervals, interval_count) = longitude_bounds(vertices, edge_normals);
     let ring_table = cached_scan_rings(resolution);
 
     for ring_index in first_ring..=last_ring {

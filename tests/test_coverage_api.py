@@ -33,10 +33,10 @@ def test_polygon_api_accepts_packed_and_ragged_vertices() -> None:
 
     # A uniform sequence, a dense array, and a ragged sequence containing the
     # same two polygons must all agree.
-    sequence = px.cover_convex_polygon([first, second], resolution=4)
-    dense = px.cover_convex_polygon(np.stack((first, second)), resolution=4)
+    sequence = px.cover_polygon([first, second], resolution=4)
+    dense = px.cover_polygon(np.stack((first, second)), resolution=4)
     triangle = second[:3]
-    ragged = px.cover_convex_polygon([first, triangle], resolution=4)
+    ragged = px.cover_polygon([first, triangle], resolution=4)
 
     np.testing.assert_array_equal(dense.cells, sequence.cells)
     np.testing.assert_array_equal(dense.offsets, sequence.offsets)
@@ -44,7 +44,7 @@ def test_polygon_api_accepts_packed_and_ragged_vertices() -> None:
     np.testing.assert_array_equal(ragged[0], sequence[0])
 
     with pytest.raises(ValueError, match="polygons_xyz"):
-        px.cover_convex_polygon(np.ones((2, 2)), resolution=1)
+        px.cover_polygon(np.ones((2, 2)), resolution=1)
 
 
 def test_malformed_ragged_polygon_uses_the_public_validation_error() -> None:
@@ -54,7 +54,7 @@ def test_malformed_ragged_polygon_uses_the_public_validation_error() -> None:
     )
 
     with pytest.raises(ValueError, match=r"polygons_xyz\[1\].*shape"):
-        px.cover_convex_polygon([quad, 1], resolution=4)
+        px.cover_polygon([quad, 1], resolution=4)
 
 
 def test_grid_names_and_cell_count() -> None:

@@ -28,7 +28,7 @@ pub(crate) fn dot(left: Vec3, right: Vec3) -> f64 {
     left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
 }
 
-fn cross(left: Vec3, right: Vec3) -> Vec3 {
+pub(crate) fn cross(left: Vec3, right: Vec3) -> Vec3 {
     [
         left[1] * right[2] - left[2] * right[1],
         left[2] * right[0] - left[0] * right[2],
@@ -36,7 +36,7 @@ fn cross(left: Vec3, right: Vec3) -> Vec3 {
     ]
 }
 
-fn norm(vector: Vec3) -> f64 {
+pub(crate) fn norm(vector: Vec3) -> f64 {
     vector[0].hypot(vector[1]).hypot(vector[2])
 }
 
@@ -228,4 +228,247 @@ pub(crate) fn contains_center(edge_normals: &[Vec3], center: Vec3) -> bool {
     edge_normals
         .iter()
         .all(|&normal| dot(normal, center) >= -CONTAINMENT_EPSILON)
+}
+
+pub(crate) struct Ring {
+    pub(crate) vertices: Vec<Vec3>,
+    pub(crate) edge_normals: Vec<Vec3>,
+    axis: Vec3,
+}
+
+pub(crate) struct GeneralPolygon {
+    pub(crate) outer: Ring,
+    pub(crate) holes: Vec<Ring>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RingLocation {
+    Outside,
+    Boundary,
+    Inside,
+}
+
+fn ring_location(ring: &Ring, point: Vec3) -> RingLocation {
+    if dot(ring.axis, point) <= 0.0 {
+        return RingLocation::Outside;
+    }
+    let mut winding = 0.0;
+    for ((&start, &end), &normal) in ring
+        .vertices
+        .iter()
+        .zip(ring.vertices.iter().cycle().skip(1))
+        .zip(&ring.edge_normals)
+    {
+        let edge_cosine = dot(start, end);
+        if dot(normal, point).abs() <= CONTAINMENT_EPSILON
+            && dot(start, point) >= edge_cosine - CONTAINMENT_EPSILON
+            && dot(end, point) >= edge_cosine - CONTAINMENT_EPSILON
+        {
+            return RingLocation::Boundary;
+        }
+        let start_tangent = [
+            start[0] - point[0] * dot(point, start),
+            start[1] - point[1] * dot(point, start),
+            start[2] - point[2] * dot(point, start),
+        ];
+        let end_tangent = [
+            end[0] - point[0] * dot(point, end),
+            end[1] - point[1] * dot(point, end),
+            end[2] - point[2] * dot(point, end),
+        ];
+        winding +=
+            dot(point, cross(start_tangent, end_tangent)).atan2(dot(start_tangent, end_tangent));
+    }
+    if winding.abs() > std::f64::consts::PI {
+        RingLocation::Inside
+    } else {
+        RingLocation::Outside
+    }
+}
+
+pub(crate) fn general_polygon_contains(polygon: &GeneralPolygon, point: Vec3) -> bool {
+    match ring_location(&polygon.outer, point) {
+        RingLocation::Outside => false,
+        RingLocation::Boundary => true,
+        RingLocation::Inside => polygon
+            .holes
+            .iter()
+            .all(|hole| ring_location(hole, point) != RingLocation::Inside),
+    }
+}
+
+pub(crate) fn ring_contains(ring: &Ring, point: Vec3) -> bool {
+    ring_location(ring, point) != RingLocation::Outside
+}
+
+fn projected_vertices(vertices: &[Vec3], axis: Vec3) -> Vec<[f64; 2]> {
+    let reference = if axis[2].abs() < 0.9 {
+        [0.0, 0.0, 1.0]
+    } else {
+        [1.0, 0.0, 0.0]
+    };
+    let first = normalize(cross(reference, axis)).expect("basis vectors are not parallel");
+    let second = cross(axis, first);
+    vertices
+        .iter()
+        .map(|&vertex| {
+            let scale = dot(axis, vertex);
+            [dot(first, vertex) / scale, dot(second, vertex) / scale]
+        })
+        .collect()
+}
+
+fn orient(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
+    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+}
+
+fn between(a: f64, b: f64, value: f64) -> bool {
+    value >= a.min(b) - CONTAINMENT_EPSILON && value <= a.max(b) + CONTAINMENT_EPSILON
+}
+
+fn segments_touch_or_cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
+    let ab_c = orient(a, b, c);
+    let ab_d = orient(a, b, d);
+    let cd_a = orient(c, d, a);
+    let cd_b = orient(c, d, b);
+    if ((ab_c > CONTAINMENT_EPSILON && ab_d < -CONTAINMENT_EPSILON)
+        || (ab_c < -CONTAINMENT_EPSILON && ab_d > CONTAINMENT_EPSILON))
+        && ((cd_a > CONTAINMENT_EPSILON && cd_b < -CONTAINMENT_EPSILON)
+            || (cd_a < -CONTAINMENT_EPSILON && cd_b > CONTAINMENT_EPSILON))
+    {
+        return true;
+    }
+    [(ab_c, c), (ab_d, d)].into_iter().any(|(side, point)| {
+        side.abs() <= CONTAINMENT_EPSILON
+            && between(a[0], b[0], point[0])
+            && between(a[1], b[1], point[1])
+    }) || [(cd_a, a), (cd_b, b)].into_iter().any(|(side, point)| {
+        side.abs() <= CONTAINMENT_EPSILON
+            && between(c[0], d[0], point[0])
+            && between(c[1], d[1], point[1])
+    })
+}
+
+fn rings_touch_or_cross(left: &Ring, right: &Ring) -> bool {
+    let left_projected = projected_vertices(&left.vertices, left.axis);
+    let right_projected = projected_vertices(&right.vertices, left.axis);
+    left_projected
+        .iter()
+        .zip(left_projected.iter().cycle().skip(1))
+        .any(|(&a, &b)| {
+            right_projected
+                .iter()
+                .zip(right_projected.iter().cycle().skip(1))
+                .any(|(&c, &d)| segments_touch_or_cross(a, b, c, d))
+        })
+}
+
+fn prepare_ring(raw_vertices: &[[f64; 3]]) -> Result<Ring, String> {
+    if raw_vertices.len() < 3 {
+        return Err("Each ring needs at least three vertices.".to_owned());
+    }
+    let mut vertices = raw_vertices
+        .iter()
+        .copied()
+        .map(|vertex| normalize(vertex).map_err(|error| format!("vector {error}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    if nearly_equal(vertices[0], *vertices.last().expect("non-empty ring")) {
+        vertices.pop();
+    }
+    if vertices.len() < 3 {
+        return Err("Each ring needs at least three unique vertices.".to_owned());
+    }
+    for left in 0..vertices.len() {
+        for other in (left + 1)..vertices.len() {
+            if nearly_equal(vertices[left], vertices[other]) {
+                return Err("Ring contains duplicate vertices.".to_owned());
+            }
+        }
+    }
+    let edge_normals = vertices
+        .iter()
+        .zip(vertices.iter().cycle().skip(1))
+        .map(|(&left, &right)| normalized_edge(left, right))
+        .collect::<Result<Vec<_>, _>>()?;
+    let axis = normalize(vertices.iter().fold([0.0; 3], |mut sum, vertex| {
+        sum[0] += vertex[0];
+        sum[1] += vertex[1];
+        sum[2] += vertex[2];
+        sum
+    }))
+    .map_err(|_| "Ring does not fit inside an open hemisphere.".to_owned())?;
+    if vertices
+        .iter()
+        .any(|&vertex| dot(axis, vertex) <= CONTAINMENT_EPSILON)
+    {
+        return Err("Ring does not fit inside an open hemisphere.".to_owned());
+    }
+    let projected = projected_vertices(&vertices, axis);
+    let maximum_turn = projected
+        .iter()
+        .zip(projected.iter().cycle().skip(1))
+        .zip(projected.iter().cycle().skip(2))
+        .take(projected.len())
+        .map(|((&a, &b), &c)| orient(a, b, c).abs())
+        .fold(0.0_f64, f64::max);
+    if maximum_turn <= VALIDATION_TRIPLE_EPSILON {
+        return Err("Ring is degenerate.".to_owned());
+    }
+    for first in 0..projected.len() {
+        let first_next = (first + 1) % projected.len();
+        for second in (first + 1)..projected.len() {
+            let second_next = (second + 1) % projected.len();
+            if first == second || first_next == second || second_next == first {
+                continue;
+            }
+            if segments_touch_or_cross(
+                projected[first],
+                projected[first_next],
+                projected[second],
+                projected[second_next],
+            ) {
+                return Err("Ring must not cross or touch itself.".to_owned());
+            }
+        }
+    }
+    Ok(Ring {
+        vertices,
+        edge_normals,
+        axis,
+    })
+}
+
+pub(crate) fn prepare_general_polygon(
+    raw_rings: &[Vec<[f64; 3]>],
+) -> Result<GeneralPolygon, String> {
+    let Some(raw_outer) = raw_rings.first() else {
+        return Err("A polygon needs an outer ring.".to_owned());
+    };
+    let outer = prepare_ring(raw_outer).map_err(|error| format!("outer: {error}"))?;
+    let holes = raw_rings
+        .iter()
+        .skip(1)
+        .enumerate()
+        .map(|(index, ring)| prepare_ring(ring).map_err(|error| format!("holes[{index}]: {error}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    for (index, hole) in holes.iter().enumerate() {
+        if rings_touch_or_cross(&outer, hole)
+            || ring_location(&outer, hole.vertices[0]) != RingLocation::Inside
+        {
+            return Err(format!(
+                "holes[{index}] must be strictly inside the outer ring."
+            ));
+        }
+        for (other_index, other) in holes[..index].iter().enumerate() {
+            if rings_touch_or_cross(hole, other)
+                || ring_location(hole, other.vertices[0]) != RingLocation::Outside
+                || ring_location(other, hole.vertices[0]) != RingLocation::Outside
+            {
+                return Err(format!(
+                    "holes[{other_index}] and holes[{index}] must not overlap or touch."
+                ));
+            }
+        }
+    }
+    Ok(GeneralPolygon { outer, holes })
 }

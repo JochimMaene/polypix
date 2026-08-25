@@ -282,6 +282,102 @@ pub(crate) fn cover(
     )
 }
 
+fn prepare_region_polygon(
+    vertices: &[f64],
+    ring_offsets: &[u64],
+    first_ring: usize,
+    last_ring: usize,
+) -> Result<PreparedRegionPolygon, String> {
+    let rings = (first_ring..last_ring)
+        .map(|ring| {
+            let start = ring_offsets[ring] as usize * 3;
+            let end = ring_offsets[ring + 1] as usize * 3;
+            vertices[start..end]
+                .chunks_exact(3)
+                .map(|value| [value[0], value[1], value[2]])
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    PreparedRegionPolygon::from_rings(&rings)
+}
+
+pub(crate) fn validate_region_polygon(
+    vertices: &[f64],
+    ring_offsets: &[u64],
+) -> Result<(), String> {
+    prepare_region_polygon(vertices, ring_offsets, 0, ring_offsets.len() - 1).map(|_| ())
+}
+
+fn prepare_region(
+    vertices: &[f64],
+    ring_offsets: &[u64],
+    polygon_offsets: &[u64],
+    first_polygon: usize,
+    last_polygon: usize,
+) -> Result<Vec<PreparedRegionPolygon>, String> {
+    (first_polygon..last_polygon)
+        .map(|polygon| {
+            prepare_region_polygon(
+                vertices,
+                ring_offsets,
+                polygon_offsets[polygon] as usize,
+                polygon_offsets[polygon + 1] as usize,
+            )
+            .map_err(|error| format!("polygons[{polygon}]: {error}"))
+        })
+        .collect()
+}
+
+pub(crate) fn cover_regions(
+    vertices: &[f64],
+    ring_offsets: &[u64],
+    polygon_offsets: &[u64],
+    region_offsets: &[u64],
+    resolution: u8,
+    raw_candidates: Option<&[u64]>,
+    threads: Option<usize>,
+) -> NativeResult<Coverage> {
+    let candidates = candidate_cells(raw_candidates, resolution)?;
+    let region_count = region_offsets.len() - 1;
+    // ponytail: regions are the parallel unit; flatten components if single,
+    // very large multipolygons become a measured bottleneck.
+    dispatch_coverage(region_count, region_count > 1, threads, |range| {
+        let mut coverage = Coverage {
+            cells: Vec::new(),
+            offsets: Vec::with_capacity(range.len() + 1),
+        };
+        coverage.offsets.push(0);
+        for region in range {
+            let polygons = prepare_region(
+                vertices,
+                ring_offsets,
+                polygon_offsets,
+                region_offsets[region] as usize,
+                region_offsets[region + 1] as usize,
+            )
+            .map_err(|error| NativeError::from(format!("regions[{region}]: {error}")))?;
+            if let Some(candidates) = candidates.as_deref() {
+                for &cell in candidates {
+                    let point = center(cell, resolution);
+                    if polygons.iter().any(|polygon| polygon.contains(point)) {
+                        push_coverage_cell(&mut coverage.cells, cell, 1024)?;
+                    }
+                }
+            } else {
+                let mut region_cells = Vec::new();
+                for polygon in &polygons {
+                    polygon.cover(resolution, &mut region_cells)?;
+                }
+                region_cells.sort_unstable();
+                region_cells.dedup();
+                coverage.cells.extend(region_cells);
+            }
+            coverage.offsets.push(coverage.cells.len() as u64);
+        }
+        Ok(coverage)
+    })
+}
+
 pub(super) fn compute_cap_chunk(
     caps: &[Cap],
     range: Range<usize>,

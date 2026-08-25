@@ -179,7 +179,7 @@ def test_named_footprint_coverage_matches_brute_force_centers(
     """Every cell the kernel emits, and only those, passes the predicate."""
     for name, vertices in _named_footprints().items():
         with subtests.test(footprint=name):
-            coverage = px.cover_convex_polygon(vertices[None], resolution)
+            coverage = px.cover_polygon(vertices[None], resolution)
             _assert_matches(
                 coverage.cells,
                 _polygon_margins(vertices, resolution),
@@ -199,7 +199,7 @@ def test_random_polygon_coverage_matches_brute_force_centers(
         radius = float(rng.uniform(0.01, 1.2))
         vertices = _convex_polygon(rng, sides, radius)
         with subtests.test(trial=trial, radius=radius):
-            coverage = px.cover_convex_polygon(vertices[None], resolution)
+            coverage = px.cover_polygon(vertices[None], resolution)
             _assert_matches(
                 coverage.cells,
                 _polygon_margins(vertices, resolution),
@@ -232,7 +232,7 @@ def test_a_convex_polygon_can_meet_one_ring_in_two_arcs() -> None:
         ]
     )
     resolution = 5
-    covered = px.cover_convex_polygon(vertices[None], resolution).cells
+    covered = px.cover_polygon(vertices[None], resolution).cells
     heights = np.round(px.cell_centers(covered, resolution)[:, 2], 12)
 
     split = 0
@@ -317,8 +317,8 @@ def test_candidate_filtering_matches_the_full_scan(resolution: int) -> None:
     for name, scanned, filtered in [
         (
             "polygon",
-            px.cover_convex_polygon(polygons, resolution),
-            px.cover_convex_polygon(polygons, resolution, candidate_cells=every_cell),
+            px.cover_polygon(polygons, resolution),
+            px.cover_polygon(polygons, resolution, candidate_cells=every_cell),
         ),
         (
             "cap",
@@ -370,8 +370,8 @@ def test_results_are_invariant_across_thread_counts(threads: int) -> None:
     )
     sweep_values = rng.normal(size=1500)
 
-    reference = px.cover_convex_polygon(polygons, resolution, threads=1)
-    actual = px.cover_convex_polygon(polygons, resolution, threads=threads)
+    reference = px.cover_polygon(polygons, resolution, threads=1)
+    actual = px.cover_polygon(polygons, resolution, threads=threads)
     np.testing.assert_array_equal(reference.cells, actual.cells)
     np.testing.assert_array_equal(reference.offsets, actual.offsets)
 
@@ -383,7 +383,7 @@ def test_results_are_invariant_across_thread_counts(threads: int) -> None:
     for name, cover, kwargs, segment_values in [
         (
             "polygon",
-            px.cover_convex_polygon,
+            px.cover_polygon,
             {"polygons_xyz": polygons},
             polygon_values,
         ),
@@ -461,9 +461,7 @@ def test_fused_reducers_match_materialize_then_reduce(threads: int | None) -> No
         ),
         (
             "polygon",
-            lambda **kw: px.cover_convex_polygon(
-                polygons, resolution, threads=threads, **kw
-            ),
+            lambda **kw: px.cover_polygon(polygons, resolution, threads=threads, **kw),
         ),
         (
             "sweep",
@@ -596,7 +594,7 @@ def test_edge_lying_exactly_on_a_cell_center_is_covered(resolution: int) -> None
         for pole in poles:
             for half_angle in (0.05, 0.3):
                 quad = _quad_through_point(centers[cell], pole, half_angle)
-                coverage = px.cover_convex_polygon(quad[None], resolution)
+                coverage = px.cover_polygon(quad[None], resolution)
                 assert int(cell) in set(coverage.cells.tolist()), (
                     f"cell {cell} lies on the edge of its own footprint but was "
                     f"not covered at resolution {resolution}"
@@ -613,7 +611,7 @@ def test_edge_lying_exactly_on_a_cell_center_is_covered(resolution: int) -> None
                 np.testing.assert_array_equal(
                     np.sort(coverage.cells),
                     np.sort(
-                        px.cover_convex_polygon(
+                        px.cover_polygon(
                             quad[None], resolution, candidate_cells=every_cell
                         ).cells
                     ),
@@ -642,7 +640,7 @@ def test_cell_corner_footprints_match_brute_force_centers(
     ):
         for cell in range(px.cell_count(source_resolution)):
             quad = corners[cell]
-            coverage = px.cover_convex_polygon(quad[None], target_resolution)
+            coverage = px.cover_polygon(quad[None], target_resolution)
             _assert_matches(
                 coverage.cells,
                 _polygon_margins(quad, target_resolution),
@@ -695,14 +693,14 @@ def test_selected_reducers_ignore_how_the_kernel_reaches_the_cells(
                 np.sort(rng.choice(grid, size=size // 2, replace=False)), 2
             ),
         }
-        coverage = px.cover_convex_polygon(quads, resolution, threads=1)
+        coverage = px.cover_polygon(quads, resolution, threads=1)
         for name, selected in selections.items():
             for reducer in (px.Count(), px.Sum(values)):
                 with subtests.test(
                     size=size, selection=name, reducer=type(reducer).__name__
                 ):
                     np.testing.assert_array_equal(
-                        px.cover_convex_polygon(
+                        px.cover_polygon(
                             quads,
                             resolution,
                             threads=1,
@@ -763,12 +761,12 @@ def test_reduced_candidates_are_positional_and_zero_where_uncovered() -> None:
     rng = np.random.default_rng(20260827)
     resolution = 6
     quads = _grid_quads(rng, 200, 2.0)
-    dense = px.cover_convex_polygon(quads, resolution, threads=1, reduce=px.Count())
+    dense = px.cover_polygon(quads, resolution, threads=1, reduce=px.Count())
     covered = np.flatnonzero(dense)
     uncovered = np.flatnonzero(dense == 0)
     requested = np.concatenate([covered[:4], uncovered[:4], covered[:4]])
 
-    selected = px.cover_convex_polygon(
+    selected = px.cover_polygon(
         quads,
         resolution,
         threads=1,

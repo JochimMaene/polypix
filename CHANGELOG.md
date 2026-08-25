@@ -4,6 +4,10 @@
 
 ### Added
 
+- Replaced the convex-only polygon entry point with `cover_polygon()`. Concave
+  arrays now work directly; `Polygon(outer, *holes)` and
+  `MultiPolygon(*polygons)` add holes and multipart regions without adding a
+  GIS or CRS object model. Convex arrays retain the existing native fast path.
 - Added scale-invariant batch direction-to-RING indexing through `cell_at()`,
   including automatic parallelism for large inputs.
 - Added exact spherical-cap coverage through `cover_cap()`.
@@ -80,7 +84,7 @@
   now cover once and reduce. Always fusing was measured at up to 47x the cost.
   The comparison lives in the kernel, next to the code whose cost it weighs,
   and declines before preparing anything so that falling back stays cheap.
-- Added typed `@overload` signatures to `cover_convex_polygon()`,
+- Added typed `@overload` signatures to `cover_polygon()`,
   `cover_cap()`, and `cover_sweep()`, so a `reduce=` call site resolves to
   `Coverage` or the accumulated array under `mypy --strict` instead of `Any`.
 - Narrowed the per-cell revisit statistics accumulator from 32 to 24 bytes,
@@ -115,7 +119,7 @@
 - Standardized public cell IDs, offsets, and revisit window bounds on signed
   `int64`.
 - Renamed the paired-edge operation from `cover_strip()` to `cover_sweep()` and
-  the canonical convex-region operation to `cover_convex_polygon()`. Renamed
+  the canonical convex-region operation to `cover_polygon()`. Renamed
   cell transforms to `cell_centers()` and `cell_corners()`.
 - Made zero- and one-sample sweeps consistently return empty segmented
   coverage.
@@ -145,7 +149,7 @@
   out the largest grids; the decision now also weighs the scan against the
   merge, and falls back to one sequential buffer when it does not clear both.
 - Covered the cells a footprint's longitude span ends on. `cover_sweep()` and
-  `cover_convex_polygon()` derive one longitude interval per footprint; when
+  `cover_polygon()` derive one longitude interval per footprint; when
   that span ended exactly on the prime meridian the interval was treated as
   unwrapped, so the cells at longitude zero - offset 0 of every unshifted ring -
   were never scanned. A footprint with a vertex on the meridian silently lost up
@@ -155,7 +159,7 @@
 ### Removed
 
 - Removed the pre-1.0 `cover_footprint()`, `centers()`, and `corners()` names;
-  use `cover_convex_polygon()`, `cell_centers()`, and `cell_corners()`.
+  use `cover_polygon()`, `cell_centers()`, and `cell_corners()`.
 - Removed the lossy `summarize_occupancy()` and `OccupancySummary`; use
   `revisit()` and calculate the required gap policy downstream.
 - Removed the derivable `Coverage` members `counts`, `segment_sizes`,
@@ -163,7 +167,7 @@
   inside Polypix than outside it: use `np.diff(coverage.offsets)`,
   `np.repeat(np.arange(len(coverage)), np.diff(coverage.offsets))`, and
   `len(coverage)`. `len()` and segment indexing remain.
-- Removed `cover_convex_polygon(..., vertex_offsets=...)`. A caller holding a
+- Removed `cover_polygon(..., vertex_offsets=...)`. A caller holding a
   packed buffer passes a sequence of slices into it and pays one `concatenate`,
   which measured within noise of building the offsets by hand.
 

@@ -254,7 +254,7 @@ def cover_cap(path: Path) -> None:
     save(figure, path)
 
 
-def cover_convex_polygon(path: Path) -> None:
+def cover_polygon(path: Path) -> None:
     """A convex polygon and the cells it selects."""
     page = guide()
     lon, lat = page["scene_lon"], page["scene_lat"]
@@ -468,7 +468,7 @@ def sphere_levels(path: Path) -> None:
 def main() -> None:
     center_sampling(DOC_FIGURE_DIR / "center-sampling.svg")
     cover_cap(DOC_FIGURE_DIR / "cover-cap.svg")
-    cover_convex_polygon(DOC_FIGURE_DIR / "cover-convex-polygon.svg")
+    cover_polygon(DOC_FIGURE_DIR / "cover-convex-polygon.svg")
     cover_sweep(DOC_FIGURE_DIR / "cover-sweep.svg")
     cell_at(DOC_FIGURE_DIR / "cell-at.svg")
     resolution_steps(DOC_FIGURE_DIR / "resolution-steps.svg")

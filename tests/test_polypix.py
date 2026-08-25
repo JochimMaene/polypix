@@ -204,7 +204,7 @@ class PolypixTests(unittest.TestCase):
     def test_cover_accepts_single_xyz_array(self) -> None:
         polygon = [(-5.0, -5.0), (12.0, -4.0), (10.0, 9.0), (-6.0, 7.0)]
 
-        coverage = px.cover_convex_polygon(vectors(polygon), resolution=2)
+        coverage = px.cover_polygon(vectors(polygon), resolution=2)
 
         self.assertIsInstance(coverage, px.Coverage)
         self.assertEqual(coverage.resolution, 2)
@@ -447,10 +447,8 @@ class PolypixTests(unittest.TestCase):
         ]
         ragged = [vectors(polygon) for polygon in polygons]
 
-        coverage = px.cover_convex_polygon(ragged, resolution=2)
-        expected = [
-            px.cover_convex_polygon(polygon, resolution=2).cells for polygon in ragged
-        ]
+        coverage = px.cover_polygon(ragged, resolution=2)
+        expected = [px.cover_polygon(polygon, resolution=2).cells for polygon in ragged]
 
         self.assertSegmentsEqual(coverage, expected)
         np.testing.assert_array_equal(
@@ -459,14 +457,14 @@ class PolypixTests(unittest.TestCase):
         )
 
         dense = np.stack((ragged[0], vectors(polygons[0]) * 7.0))
-        dense_coverage = px.cover_convex_polygon(dense, resolution=2)
+        dense_coverage = px.cover_polygon(dense, resolution=2)
         self.assertSegmentsEqual(dense_coverage, [expected[0], expected[0]])
 
-        ragged_quads = px.cover_convex_polygon(list(dense), resolution=2)
+        ragged_quads = px.cover_polygon(list(dense), resolution=2)
         np.testing.assert_array_equal(ragged_quads.cells, dense_coverage.cells)
         np.testing.assert_array_equal(ragged_quads.offsets, dense_coverage.offsets)
 
-        nested_quads = px.cover_convex_polygon(dense.tolist(), resolution=2)
+        nested_quads = px.cover_polygon(dense.tolist(), resolution=2)
         np.testing.assert_array_equal(nested_quads.cells, dense_coverage.cells)
         np.testing.assert_array_equal(nested_quads.offsets, dense_coverage.offsets)
 
@@ -474,8 +472,8 @@ class PolypixTests(unittest.TestCase):
         polygon = vectors([(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)])
         for values in (polygon, np.stack((polygon, polygon))):
             with self.subTest(ndim=values.ndim):
-                expected = px.cover_convex_polygon(values, resolution=3)
-                actual = px.cover_convex_polygon(ArrayOnly(values), resolution=3)
+                expected = px.cover_polygon(values, resolution=3)
+                actual = px.cover_polygon(ArrayOnly(values), resolution=3)
                 np.testing.assert_array_equal(actual.cells, expected.cells)
                 np.testing.assert_array_equal(actual.offsets, expected.offsets)
 
@@ -483,11 +481,9 @@ class PolypixTests(unittest.TestCase):
         triangle = vectors([(-5.0, -5.0), (5.0, -5.0), (0.0, 5.0)])
         closed = np.vstack((triangle, triangle[0]))
 
-        open_coverage = px.cover_convex_polygon(triangle, resolution=3, threads=1)
-        dense_closed = px.cover_convex_polygon(closed, resolution=3, threads=1)
-        ragged_closed = px.cover_convex_polygon(
-            [closed, triangle], resolution=3, threads=1
-        )
+        open_coverage = px.cover_polygon(triangle, resolution=3, threads=1)
+        dense_closed = px.cover_polygon(closed, resolution=3, threads=1)
+        ragged_closed = px.cover_polygon([closed, triangle], resolution=3, threads=1)
 
         np.testing.assert_array_equal(dense_closed.cells, open_coverage.cells)
         self.assertSegmentsEqual(
@@ -510,8 +506,8 @@ class PolypixTests(unittest.TestCase):
             densified = np.vstack((quad[:2], midpoint, quad[2:]))
 
             with self.subTest(half_size_degrees=half_size_degrees):
-                expected = px.cover_convex_polygon(quad, resolution=12, threads=1)
-                actual = px.cover_convex_polygon(densified, resolution=12, threads=1)
+                expected = px.cover_polygon(quad, resolution=12, threads=1)
+                actual = px.cover_polygon(densified, resolution=12, threads=1)
                 np.testing.assert_array_equal(actual.cells, expected.cells)
 
     def test_cover_sweep_covers_consecutive_edge_intervals(self) -> None:
@@ -536,7 +532,7 @@ class PolypixTests(unittest.TestCase):
             ]
         )
 
-        expected = px.cover_convex_polygon(footprints, resolution=3)
+        expected = px.cover_polygon(footprints, resolution=3)
         actual = px.cover_sweep(left, right, resolution=3)
 
         np.testing.assert_array_equal(actual.offsets, expected.offsets)
@@ -572,7 +568,7 @@ class PolypixTests(unittest.TestCase):
                 left, right = edges(step)
                 actual = px.cover_sweep(left, right, resolution=3, threads=1)
                 quad = np.asarray([left[0], right[0], right[1], left[1]])
-                expected = px.cover_convex_polygon(quad, resolution=3, threads=1)
+                expected = px.cover_polygon(quad, resolution=3, threads=1)
                 np.testing.assert_array_equal(actual.cells, expected.cells)
                 self.assertEqual(actual.cells.size, expected_count)
                 centers = px.cell_centers(actual.cells, resolution=3)
@@ -603,13 +599,13 @@ class PolypixTests(unittest.TestCase):
                 vectors([(20.0, -8.0), (43.0, -8.0), (43.0, 8.0), (20.0, 8.0)]),
             ]
         )
-        unfiltered = px.cover_convex_polygon(footprints, resolution=4)
+        unfiltered = px.cover_polygon(footprints, resolution=4)
         selected = unfiltered.cells[::2]
         candidates = np.concatenate(
             (selected[::-1], selected[:2], np.asarray([0], dtype=np.int64))
         )
 
-        actual = px.cover_convex_polygon(
+        actual = px.cover_polygon(
             footprints,
             resolution=4,
             candidate_cells=candidates,
@@ -622,7 +618,7 @@ class PolypixTests(unittest.TestCase):
 
     def test_empty_candidates_preserve_segment_offsets(self) -> None:
         polygon = vectors([(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)])
-        coverage = px.cover_convex_polygon(
+        coverage = px.cover_polygon(
             np.repeat(polygon[np.newaxis, :, :], 3, axis=0),
             resolution=4,
             candidate_cells=[],
@@ -643,20 +639,20 @@ class PolypixTests(unittest.TestCase):
         for candidates in invalid_candidates:
             with self.subTest(candidates=candidates):
                 with self.assertRaises((TypeError, ValueError)):
-                    px.cover_convex_polygon(
+                    px.cover_polygon(
                         polygon,
                         resolution=4,
                         candidate_cells=candidates,
                     )
 
         with self.assertRaisesRegex(ValueError, "scalar or one-dimensional"):
-            px.cover_convex_polygon(
+            px.cover_polygon(
                 polygon,
                 resolution=4,
                 candidate_cells=np.empty((1, 0), dtype=np.uint64),
             )
         with self.assertRaisesRegex(ValueError, "valid RING indices"):
-            px.cover_convex_polygon(
+            px.cover_polygon(
                 polygon,
                 resolution=4,
                 candidate_cells=[12 * 4**4],
@@ -671,9 +667,9 @@ class PolypixTests(unittest.TestCase):
         for polygon in cases:
             with self.subTest(polygon=polygon):
                 footprint = vectors(polygon)
-                unfiltered = px.cover_convex_polygon(footprint, resolution=4)
+                unfiltered = px.cover_polygon(footprint, resolution=4)
                 candidates = unfiltered.cells[::2][::-1]
-                actual = px.cover_convex_polygon(
+                actual = px.cover_polygon(
                     footprint,
                     resolution=4,
                     candidate_cells=candidates,
@@ -701,7 +697,7 @@ class PolypixTests(unittest.TestCase):
                 offset_point(-1.0, 2.0),
             ]
         )
-        actual = px.cover_convex_polygon(footprint, resolution, threads=1)
+        actual = px.cover_polygon(footprint, resolution, threads=1)
         self.assertIn(cell, actual.cells)
 
     def test_large_cap_vertices_select_the_minor_arc_antipodal_cap(self) -> None:
@@ -715,8 +711,8 @@ class PolypixTests(unittest.TestCase):
             math.radians(89.0),
             12,
         )
-        actual = px.cover_convex_polygon(north_91, resolution=3, threads=1)
-        expected = px.cover_convex_polygon(south_89, resolution=3, threads=1)
+        actual = px.cover_polygon(north_91, resolution=3, threads=1)
+        expected = px.cover_polygon(south_89, resolution=3, threads=1)
         np.testing.assert_array_equal(actual.cells, expected.cells)
 
     def test_centimetre_scale_footprint_is_valid_at_resolution_29(self) -> None:
@@ -725,7 +721,7 @@ class PolypixTests(unittest.TestCase):
             1.0e-8,
             4,
         )
-        coverage = px.cover_convex_polygon(
+        coverage = px.cover_polygon(
             polygon,
             resolution=29,
             candidate_cells=np.empty(0, dtype=np.uint64),
@@ -743,7 +739,7 @@ class PolypixTests(unittest.TestCase):
             4,
         )
         with self.assertRaisesRegex(ValueError, "degenerate"):
-            px.cover_convex_polygon(
+            px.cover_polygon(
                 polygon,
                 resolution=29,
                 candidate_cells=np.empty(0, dtype=np.uint64),
@@ -763,7 +759,7 @@ class PolypixTests(unittest.TestCase):
                 (longitude - 0.05, latitude + 0.05),
             ]
         )
-        coverage = px.cover_convex_polygon(
+        coverage = px.cover_polygon(
             polygon,
             resolution=29,
             candidate_cells=[],
@@ -785,7 +781,7 @@ class PolypixTests(unittest.TestCase):
             (longitude - half_width, latitude + half_height),
         ]
 
-        actual = px.cover_convex_polygon(vectors(polygon), resolution=5, threads=1)
+        actual = px.cover_polygon(vectors(polygon), resolution=5, threads=1)
         expected = brute_force_cover(polygon, resolution=5)
 
         self.assertGreater(expected.size, 0)
@@ -834,17 +830,17 @@ class PolypixTests(unittest.TestCase):
         for threads in (0, -1, True):
             with self.subTest(threads=threads):
                 with self.assertRaises((TypeError, ValueError)):
-                    px.cover_convex_polygon(polygon, resolution=2, threads=threads)
+                    px.cover_polygon(polygon, resolution=2, threads=threads)
 
-        sequential = px.cover_convex_polygon(polygon, resolution=2, threads=1)
-        bounded = px.cover_convex_polygon(polygon, resolution=2, threads=100_000)
+        sequential = px.cover_polygon(polygon, resolution=2, threads=1)
+        bounded = px.cover_polygon(polygon, resolution=2, threads=100_000)
         np.testing.assert_array_equal(bounded.cells, sequential.cells)
         np.testing.assert_array_equal(bounded.offsets, sequential.offsets)
 
     def test_concurrent_calls_are_deterministic(self) -> None:
         polygon = vectors([(-5.0, -5.0), (12.0, -4.0), (10.0, 9.0), (-6.0, 7.0)])
         footprints = np.repeat(polygon[np.newaxis, :, :], 2048, axis=0)
-        expected = px.cover_convex_polygon(
+        expected = px.cover_polygon(
             footprints,
             resolution=3,
             threads=2,
@@ -853,7 +849,7 @@ class PolypixTests(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=4) as executor:
             results = list(
                 executor.map(
-                    lambda _: px.cover_convex_polygon(
+                    lambda _: px.cover_polygon(
                         footprints,
                         resolution=3,
                         threads=2,
@@ -918,14 +914,14 @@ class PolypixTests(unittest.TestCase):
         for resolution in (2.0, "2", True):
             with self.subTest(resolution=resolution):
                 with self.assertRaises(TypeError):
-                    px.cover_convex_polygon(footprint, resolution=resolution)
+                    px.cover_polygon(footprint, resolution=resolution)
         for resolution in (-1, 30):
             with self.subTest(resolution=resolution):
                 with self.assertRaisesRegex(ValueError, "between 0 and 29"):
-                    px.cover_convex_polygon(footprint, resolution=resolution)
+                    px.cover_polygon(footprint, resolution=resolution)
 
         self.assertIsInstance(
-            px.cover_convex_polygon(footprint, resolution=np.int64(2)),
+            px.cover_polygon(footprint, resolution=np.int64(2)),
             px.Coverage,
         )
 
@@ -1058,7 +1054,7 @@ class PolypixTests(unittest.TestCase):
         self.assertFalse(polygon.flags.aligned)
         self.assertTrue(polygon.flags.c_contiguous)
 
-        coverage = px.cover_convex_polygon(polygon, resolution=5)
+        coverage = px.cover_polygon(polygon, resolution=5)
         self.assertEqual(coverage.cells.size, coverage.offsets[-1])
         self.assertGreater(coverage.cells.size, 0)
 
@@ -1096,14 +1092,14 @@ class PolypixTests(unittest.TestCase):
                 with self.assertRaisesRegex(
                     ValueError, r"^polygons_xyz must have shape"
                 ):
-                    px.cover_convex_polygon(invalid, resolution=2)
+                    px.cover_polygon(invalid, resolution=2)
 
     def test_cover_normalizes_arbitrary_vectors(self) -> None:
         footprint = vectors([(-5.0, -5.0), (12.0, -4.0), (10.0, 9.0), (-6.0, 7.0)])
         scales = np.asarray([2.0, 1e300, 1e-300, 7.0])[:, np.newaxis]
 
-        expected = px.cover_convex_polygon(footprint, resolution=3)
-        actual = px.cover_convex_polygon(footprint * scales, resolution=3)
+        expected = px.cover_polygon(footprint, resolution=3)
+        actual = px.cover_polygon(footprint * scales, resolution=3)
 
         np.testing.assert_array_equal(actual.cells, expected.cells)
         np.testing.assert_array_equal(actual.offsets, expected.offsets)
@@ -1120,9 +1116,9 @@ class PolypixTests(unittest.TestCase):
         for name, footprint in invalid.items():
             with self.subTest(name=name):
                 with self.assertRaises(ValueError):
-                    px.cover_convex_polygon(footprint, resolution=1)
+                    px.cover_polygon(footprint, resolution=1)
         with self.assertRaisesRegex(TypeError, "complex"):
-            px.cover_convex_polygon(valid.astype(np.complex128), resolution=1)
+            px.cover_polygon(valid.astype(np.complex128), resolution=1)
 
     def test_cover_rejects_invalid_polygon_geometry(self) -> None:
         invalid_polygons = {
@@ -1132,13 +1128,6 @@ class PolypixTests(unittest.TestCase):
                 (1.0, 0.0),
                 (1.0, 0.0),
                 (0.0, 1.0),
-            ],
-            "non_convex": [
-                (0.0, 0.0),
-                (2.0, 0.0),
-                (1.0, 1.0),
-                (2.0, 2.0),
-                (0.0, 2.0),
             ],
             "antipodal_edge": [(0.0, 0.0), (180.0, 0.0), (0.0, 20.0)],
             "self_intersecting": [
@@ -1159,7 +1148,7 @@ class PolypixTests(unittest.TestCase):
         for name, polygon in invalid_polygons.items():
             with self.subTest(name=name):
                 with self.assertRaises(ValueError):
-                    px.cover_convex_polygon(vectors(polygon), resolution=1)
+                    px.cover_polygon(vectors(polygon), resolution=1)
 
     def test_batch_geometry_errors_name_the_offending_polygon(self) -> None:
         valid = vectors([(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)])
@@ -1173,7 +1162,7 @@ class PolypixTests(unittest.TestCase):
                 with self.assertRaisesRegex(
                     ValueError, r"polygons_xyz\[3000\]: Polygon"
                 ):
-                    px.cover_convex_polygon(batch, resolution=3, threads=threads)
+                    px.cover_polygon(batch, resolution=3, threads=threads)
 
     def test_parallel_batch_reports_the_first_invalid_polygon(self) -> None:
         valid = vectors([(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)])
@@ -1186,12 +1175,12 @@ class PolypixTests(unittest.TestCase):
         for threads in (4, None):
             with self.subTest(threads=threads):
                 with self.assertRaisesRegex(ValueError, r"polygons_xyz\[10\]"):
-                    px.cover_convex_polygon(batch, resolution=3, threads=threads)
+                    px.cover_polygon(batch, resolution=3, threads=threads)
 
     def test_cover_accepts_empty_batches(self) -> None:
         for shape in ((0, 4, 3), (0, 0, 3)):
             with self.subTest(shape=shape):
-                coverage = px.cover_convex_polygon(
+                coverage = px.cover_polygon(
                     np.empty(shape, dtype=np.float64),
                     resolution=1,
                 )
@@ -1201,13 +1190,13 @@ class PolypixTests(unittest.TestCase):
                 np.testing.assert_array_equal(coverage.offsets, [0])
                 self.assertEqual(np.diff(coverage.offsets).shape, (0,))
 
-        list_coverage = px.cover_convex_polygon([], resolution=1)
+        list_coverage = px.cover_polygon([], resolution=1)
         np.testing.assert_array_equal(list_coverage.cells, [])
         np.testing.assert_array_equal(list_coverage.offsets, [0])
 
     def test_coverage_does_not_claim_array_value_equality(self) -> None:
-        first = px.cover_convex_polygon([], resolution=1)
-        second = px.cover_convex_polygon([], resolution=1)
+        first = px.cover_polygon([], resolution=1)
+        second = px.cover_polygon([], resolution=1)
         self.assertIsNot(first, second)
         self.assertFalse(first == second)
 
@@ -1253,7 +1242,7 @@ class PolypixTests(unittest.TestCase):
         with self.assertRaisesRegex(TypeError, "from_arrays"):
             px.Coverage([1], [0, 1], resolution=1)  # type: ignore[call-arg]
 
-        native = px.cover_convex_polygon([], resolution=1)
+        native = px.cover_polygon([], resolution=1)
         self.assertFalse(native.cells.flags.writeable)
         self.assertFalse(native.offsets.flags.writeable)
 
@@ -1261,7 +1250,7 @@ class PolypixTests(unittest.TestCase):
         for shape in ((0, 3), (1, 0, 3)):
             with self.subTest(shape=shape):
                 with self.assertRaises(ValueError):
-                    px.cover_convex_polygon(
+                    px.cover_polygon(
                         np.empty(shape, dtype=np.float64),
                         resolution=1,
                     )
@@ -1272,6 +1261,8 @@ class PolypixTests(unittest.TestCase):
             [
                 "Count",
                 "Coverage",
+                "MultiPolygon",
+                "Polygon",
                 "RevisitStats",
                 "Sum",
                 "__version__",
@@ -1280,7 +1271,7 @@ class PolypixTests(unittest.TestCase):
                 "cell_corners",
                 "cell_count",
                 "cover_cap",
-                "cover_convex_polygon",
+                "cover_polygon",
                 "cover_sweep",
                 "revisit",
             ],
@@ -1298,6 +1289,7 @@ class PolypixTests(unittest.TestCase):
             "children",
             "corners",
             "cover",
+            "cover_convex_polygon",
             "cover_footprint",
             "decode_cell_id",
             "encode_cell_id",
@@ -1310,7 +1302,7 @@ class PolypixTests(unittest.TestCase):
         # Removed keyword arguments are not module attributes either.
         self.assertNotIn(
             "vertex_offsets",
-            inspect.signature(px.cover_convex_polygon).parameters,
+            inspect.signature(px.cover_polygon).parameters,
         )
 
         # Coverage members live on the class, so they need their own check.
