@@ -661,9 +661,7 @@ impl PreparedFootprint {
             .collect::<Vec<_>>();
         match prepare_polygon(&raw_polygon) {
             Ok(polygon) => Ok(Self::Polygon(polygon)),
-            Err(error) => prepare_general_polygon(&[raw_polygon])
-                .map(Self::General)
-                .or(Err(error)),
+            Err(_) => prepare_general_polygon(&[raw_polygon]).map(Self::General),
         }
     }
 

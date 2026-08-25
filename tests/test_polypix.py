@@ -1159,9 +1159,7 @@ class PolypixTests(unittest.TestCase):
 
         for threads in (1, 4, None):
             with self.subTest(threads=threads):
-                with self.assertRaisesRegex(
-                    ValueError, r"polygons_xyz\[3000\]: Polygon"
-                ):
+                with self.assertRaisesRegex(ValueError, r"polygons_xyz\[3000\]: Ring"):
                     px.cover_polygon(batch, resolution=3, threads=threads)
 
     def test_parallel_batch_reports_the_first_invalid_polygon(self) -> None:

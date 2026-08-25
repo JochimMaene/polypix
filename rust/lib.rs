@@ -149,6 +149,7 @@ fn _validate_polygon(
         .map_err(PyValueError::new_err)
 }
 
+#[allow(clippy::too_many_arguments)]
 #[pyfunction(signature = (vertices_xyz, ring_offsets, polygon_offsets, region_offsets, resolution, candidate_cells=None, restrict_output=true, threads=None))]
 fn _cover_regions<'py>(
     py: Python<'py>,

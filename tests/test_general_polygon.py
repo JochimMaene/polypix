@@ -28,6 +28,23 @@ def cap_ring(angle: float, radius: float, vertex_count: int = 8) -> np.ndarray:
     )
 
 
+def gnomonic_ring(points: list[tuple[float, float]], scale: float = 1.0) -> np.ndarray:
+    ring = np.asarray([(1.0, scale * x, scale * y) for x, y in points])
+    return ring / np.linalg.norm(ring, axis=1, keepdims=True)
+
+
+def uneven_cap_ring(angle: float, radii: list[float]) -> np.ndarray:
+    angle_rad = np.radians(angle)
+    radius_rad = np.radians(radii)
+    axis = np.asarray([np.cos(angle_rad), np.sin(angle_rad), 0.0])
+    horizontal = np.asarray([-np.sin(angle_rad), np.cos(angle_rad), 0.0])
+    phase = np.linspace(0.0, 2.0 * np.pi, len(radii), endpoint=False)
+    return np.cos(radius_rad)[:, None] * axis + np.sin(radius_rad)[:, None] * (
+        np.cos(phase)[:, None] * horizontal
+        + np.sin(phase)[:, None] * np.asarray([0.0, 0.0, 1.0])
+    )
+
+
 def planar_contains(points: np.ndarray, queries: np.ndarray) -> np.ndarray:
     inside = np.zeros(len(queries), dtype=np.bool_)
     x = queries[:, 0]
@@ -151,6 +168,72 @@ def test_distant_holes_are_compared_in_the_outer_ring_hemisphere() -> None:
     )
 
     assert len(polygon.holes) == 2
+
+
+def test_hemisphere_validation_does_not_depend_on_vertex_density() -> None:
+    boundary = [(-10.0, -1.0), (10.0, -1.0)]
+    boundary.extend((10.0, float(y)) for y in np.linspace(-0.8, 1.0, 20))
+    boundary.extend([(-10.0, 1.0), (-5.0, 0.0)])
+
+    polygon = px.Polygon(gnomonic_ring(boundary))
+    simplified = px.Polygon(
+        gnomonic_ring(
+            [(-10.0, -1.0), (10.0, -1.0), (10.0, 1.0), (-10.0, 1.0), (-5.0, 0.0)]
+        )
+    )
+
+    assert len(polygon.outer) == len(boundary)
+    np.testing.assert_array_equal(
+        px.cover_polygon(polygon, 5).cells,
+        px.cover_polygon(simplified, 5).cells,
+    )
+
+
+def test_hole_must_stay_inside_the_outer_ring_hemisphere() -> None:
+    hole = uneven_cap_ring(85.0, [1.0, 29.0, 3.0, 9.0, 22.0])
+
+    with pytest.raises(ValueError, match="strictly inside"):
+        px.Polygon(cap_ring(0.0, 89.0, 48), hole)
+
+
+def test_small_simple_ring_is_not_mistaken_for_a_crossing_ring() -> None:
+    boundary = [
+        (0.3154391160499824, 0.1903668753093077),
+        (0.2601874926834980, 0.24717897398330543),
+        (-0.22379507620652334, 0.11621164013174248),
+        (-0.49887531843793076, 0.12282523093622569),
+        (0.8138773258877517, -0.24293848886683733),
+    ]
+
+    px.Polygon(gnomonic_ring(boundary, 3.0e-7))
+    with pytest.raises(ValueError, match="cross or touch itself"):
+        px.Polygon(
+            gnomonic_ring(
+                [(0.0, 0.0), (1.0, 1.0), (1.0, 0.0), (0.0, 1.0)],
+                3.0e-7,
+            )
+        )
+
+
+def test_raw_crossing_ring_reports_the_general_validation_error() -> None:
+    crossing = gnomonic_ring([(0.0, 0.0), (2.0, 2.0), (2.0, 0.0), (0.0, 2.0)])
+
+    with pytest.raises(ValueError, match="cross or touch itself"):
+        px.cover_polygon(crossing, 6)
+
+
+@pytest.mark.parametrize("structured_first", [False, True])
+def test_mixed_polygon_representations_have_one_clear_error(
+    structured_first: bool,
+) -> None:
+    array = gnomonic_ring([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+    polygon = px.Polygon(array)
+    batch = [polygon, array] if structured_first else [array, polygon]
+
+    with pytest.raises(
+        TypeError, match="Do not mix polygon arrays with Polygon objects"
+    ):
+        px.cover_polygon(batch, 3)
 
 
 def test_region_batch_reducers_count_each_region_once() -> None:

@@ -330,6 +330,7 @@ fn prepare_region(
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn cover_regions(
     vertices: &[f64],
     ring_offsets: &[u64],

@@ -785,16 +785,16 @@ def _as_structured_region_buffers(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
     if isinstance(values, (Polygon, MultiPolygon)):
         regions = [values]
-    elif (
-        isinstance(values, Sequence)
-        and values
-        and isinstance(values[0], (Polygon, MultiPolygon))
-    ):
-        if not all(isinstance(value, (Polygon, MultiPolygon)) for value in values):
+    elif isinstance(values, Sequence) and values:
+        regions = [
+            value for value in values if isinstance(value, (Polygon, MultiPolygon))
+        ]
+        if not regions:
+            return None
+        if len(regions) != len(values):
             raise TypeError(
                 "Do not mix polygon arrays with Polygon objects in one batch."
             )
-        regions = list(values)
     else:
         return None
 

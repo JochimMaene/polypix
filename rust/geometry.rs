@@ -10,6 +10,7 @@ const ZERO_NORM_EPSILON: f64 = 1.0e-15;
 // validation floor.
 const VALIDATION_TRIPLE_EPSILON: f64 = 0.5 * f64::EPSILON;
 const VERTEX_EQUALITY_EPSILON: f64 = 1.0e-12;
+const LINEAR_FEASIBILITY_EPSILON: f64 = 1.0e-12;
 const EDGE_BIN_MIN_VERTICES: usize = 32;
 const EDGE_BIN_MIN_COUNT: usize = 64;
 const EDGE_BIN_MAX_COUNT: usize = 256;
@@ -431,8 +432,18 @@ fn orient(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
     (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
 }
 
+fn orient_tolerance(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
+    let scale = (b[0] - a[0])
+        .abs()
+        .max((b[1] - a[1]).abs())
+        .max((c[0] - a[0]).abs())
+        .max((c[1] - a[1]).abs());
+    CONTAINMENT_EPSILON * scale.max(CONTAINMENT_EPSILON) * scale.max(1.0)
+}
+
 fn between(a: f64, b: f64, value: f64) -> bool {
-    value >= a.min(b) - CONTAINMENT_EPSILON && value <= a.max(b) + CONTAINMENT_EPSILON
+    let tolerance = CONTAINMENT_EPSILON * (1.0 + a.abs().max(b.abs()).max(value.abs()));
+    value >= a.min(b) - tolerance && value <= a.max(b) + tolerance
 }
 
 fn segments_touch_or_cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
@@ -440,22 +451,31 @@ fn segments_touch_or_cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -
     let ab_d = orient(a, b, d);
     let cd_a = orient(c, d, a);
     let cd_b = orient(c, d, b);
-    if ((ab_c > CONTAINMENT_EPSILON && ab_d < -CONTAINMENT_EPSILON)
-        || (ab_c < -CONTAINMENT_EPSILON && ab_d > CONTAINMENT_EPSILON))
-        && ((cd_a > CONTAINMENT_EPSILON && cd_b < -CONTAINMENT_EPSILON)
-            || (cd_a < -CONTAINMENT_EPSILON && cd_b > CONTAINMENT_EPSILON))
+    let ab_c_tolerance = orient_tolerance(a, b, c);
+    let ab_d_tolerance = orient_tolerance(a, b, d);
+    let cd_a_tolerance = orient_tolerance(c, d, a);
+    let cd_b_tolerance = orient_tolerance(c, d, b);
+    if ((ab_c > ab_c_tolerance && ab_d < -ab_d_tolerance)
+        || (ab_c < -ab_c_tolerance && ab_d > ab_d_tolerance))
+        && ((cd_a > cd_a_tolerance && cd_b < -cd_b_tolerance)
+            || (cd_a < -cd_a_tolerance && cd_b > cd_b_tolerance))
     {
         return true;
     }
-    [(ab_c, c), (ab_d, d)].into_iter().any(|(side, point)| {
-        side.abs() <= CONTAINMENT_EPSILON
-            && between(a[0], b[0], point[0])
-            && between(a[1], b[1], point[1])
-    }) || [(cd_a, a), (cd_b, b)].into_iter().any(|(side, point)| {
-        side.abs() <= CONTAINMENT_EPSILON
-            && between(c[0], d[0], point[0])
-            && between(c[1], d[1], point[1])
-    })
+    [(ab_c, ab_c_tolerance, c), (ab_d, ab_d_tolerance, d)]
+        .into_iter()
+        .any(|(side, tolerance, point)| {
+            side.abs() <= tolerance
+                && between(a[0], b[0], point[0])
+                && between(a[1], b[1], point[1])
+        })
+        || [(cd_a, cd_a_tolerance, a), (cd_b, cd_b_tolerance, b)]
+            .into_iter()
+            .any(|(side, tolerance, point)| {
+                side.abs() <= tolerance
+                    && between(c[0], d[0], point[0])
+                    && between(c[1], d[1], point[1])
+            })
 }
 
 fn rings_touch_or_cross(left: &Ring, right: &Ring, axis: Vec3) -> bool {
@@ -471,6 +491,112 @@ fn rings_touch_or_cross(left: &Ring, right: &Ring, axis: Vec3) -> bool {
                 .zip(right_projected.iter().cycle().skip(1))
                 .any(|(&c, &d)| segments_touch_or_cross(a, b, c, d))
         })
+}
+
+fn solve_line_constraints(constraints: &[[f64; 3]]) -> Option<[f64; 2]> {
+    let mut point = [0.0; 2];
+    for (index, &[a, b, constant]) in constraints.iter().enumerate() {
+        let value = a * point[0] + b * point[1] + constant;
+        if value >= -LINEAR_FEASIBILITY_EPSILON {
+            continue;
+        }
+        let squared_length = a * a + b * b;
+        if squared_length <= CONTAINMENT_EPSILON * CONTAINMENT_EPSILON {
+            return None;
+        }
+        let base = [
+            point[0] - value * a / squared_length,
+            point[1] - value * b / squared_length,
+        ];
+        let direction = [-b, a];
+        let mut lower = f64::NEG_INFINITY;
+        let mut upper = f64::INFINITY;
+        for &[other_a, other_b, other_constant] in &constraints[..index] {
+            let slope = other_a * direction[0] + other_b * direction[1];
+            let at_base = other_a * base[0] + other_b * base[1] + other_constant;
+            if slope.abs() <= CONTAINMENT_EPSILON {
+                if at_base < -LINEAR_FEASIBILITY_EPSILON {
+                    return None;
+                }
+            } else {
+                let boundary = -at_base / slope;
+                if slope > 0.0 {
+                    lower = lower.max(boundary);
+                } else {
+                    upper = upper.min(boundary);
+                }
+            }
+        }
+        if lower > upper + LINEAR_FEASIBILITY_EPSILON {
+            return None;
+        }
+        let parameter = if lower > 0.0 {
+            lower
+        } else if upper < 0.0 {
+            upper
+        } else {
+            0.0
+        };
+        point = [
+            base[0] + parameter * direction[0],
+            base[1] + parameter * direction[1],
+        ];
+    }
+    Some(point)
+}
+
+fn hemisphere_axis(vertices: &[Vec3]) -> Result<Vec3, String> {
+    let summed = vertices.iter().fold([0.0; 3], |mut sum, vertex| {
+        sum[0] += vertex[0];
+        sum[1] += vertex[1];
+        sum[2] += vertex[2];
+        sum
+    });
+    if let Ok(axis) = normalize(summed) {
+        if vertices
+            .iter()
+            .all(|&vertex| dot(axis, vertex) > CONTAINMENT_EPSILON)
+        {
+            return Ok(axis);
+        }
+    }
+
+    // A fitting direction can be scaled until its dot product with every
+    // vertex is at least one. Add each failed condition in turn, solving the
+    // earlier conditions on its boundary plane.
+    let mut point = [0.0; 3];
+    for (index, &vertex) in vertices.iter().enumerate() {
+        if dot(vertex, point) >= 1.0 - LINEAR_FEASIBILITY_EPSILON {
+            continue;
+        }
+        let (first, second) = projection_basis(vertex);
+        let constraints = vertices[..index]
+            .iter()
+            .map(|&other| {
+                [
+                    dot(other, first),
+                    dot(other, second),
+                    dot(other, vertex) - 1.0,
+                ]
+            })
+            .collect::<Vec<_>>();
+        let [x, y] = solve_line_constraints(&constraints)
+            .ok_or_else(|| "Ring does not fit inside an open hemisphere.".to_owned())?;
+        point = [
+            vertex[0] + x * first[0] + y * second[0],
+            vertex[1] + x * first[1] + y * second[1],
+            vertex[2] + x * first[2] + y * second[2],
+        ];
+    }
+    let axis =
+        normalize(point).map_err(|_| "Ring does not fit inside an open hemisphere.".to_owned())?;
+    if vertices
+        .iter()
+        .any(|&vertex| dot(axis, vertex) <= CONTAINMENT_EPSILON)
+    {
+        return Err("Ring does not fit inside an open hemisphere.".to_owned());
+    }
+    Ok(axis)
 }
 
 fn prepare_ring(raw_vertices: &[[f64; 3]]) -> Result<Ring, String> {
@@ -500,19 +626,7 @@ fn prepare_ring(raw_vertices: &[[f64; 3]]) -> Result<Ring, String> {
         .zip(vertices.iter().cycle().skip(1))
         .map(|(&left, &right)| normalized_edge(left, right))
         .collect::<Result<Vec<_>, _>>()?;
-    let axis = normalize(vertices.iter().fold([0.0; 3], |mut sum, vertex| {
-        sum[0] += vertex[0];
-        sum[1] += vertex[1];
-        sum[2] += vertex[2];
-        sum
-    }))
-    .map_err(|_| "Ring does not fit inside an open hemisphere.".to_owned())?;
-    if vertices
-        .iter()
-        .any(|&vertex| dot(axis, vertex) <= CONTAINMENT_EPSILON)
-    {
-        return Err("Ring does not fit inside an open hemisphere.".to_owned());
-    }
+    let axis = hemisphere_axis(&vertices)?;
     let (projection_x, projection_y) = projection_basis(axis);
     let projected = projected_vertices(&vertices, axis, projection_x, projection_y);
     let maximum_turn = projected
@@ -568,7 +682,11 @@ pub(crate) fn prepare_general_polygon(
         .map(|(index, ring)| prepare_ring(ring).map_err(|error| format!("holes[{index}]: {error}")))
         .collect::<Result<Vec<_>, _>>()?;
     for (index, hole) in holes.iter().enumerate() {
-        if rings_touch_or_cross(&outer, hole, outer.axis)
+        if hole
+            .vertices
+            .iter()
+            .any(|&vertex| dot(outer.axis, vertex) <= CONTAINMENT_EPSILON)
+            || rings_touch_or_cross(&outer, hole, outer.axis)
             || ring_location(&outer, hole.vertices[0]) != RingLocation::Inside
         {
             return Err(format!(
