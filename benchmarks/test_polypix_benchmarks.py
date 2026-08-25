@@ -84,6 +84,33 @@ def few_large_footprints() -> np.ndarray:
 
 
 @pytest.fixture(scope="module")
+def detailed_polygon_pair() -> tuple[px.Polygon, px.Polygon]:
+    vertex_count = 128
+    angles = np.arange(vertex_count) * (2.0 * np.pi / vertex_count)
+
+    def boundary(concave: bool) -> np.ndarray:
+        radii = np.full(vertex_count, math.radians(20.0))
+        if concave:
+            radii[1::2] = math.radians(17.0)
+        return np.column_stack(
+            (
+                np.cos(radii),
+                np.sin(radii) * np.cos(angles),
+                np.sin(radii) * np.sin(angles),
+            )
+        )
+
+    return px.Polygon(boundary(False)), px.Polygon(boundary(True))
+
+
+@pytest.fixture(scope="module")
+def detailed_polygon_candidates(
+    detailed_polygon_pair: tuple[px.Polygon, px.Polygon],
+) -> np.ndarray:
+    return px.cover_polygon(detailed_polygon_pair[0], 9, threads=1).cells
+
+
+@pytest.fixture(scope="module")
 def strip_edges() -> tuple[np.ndarray, np.ndarray]:
     latitudes = np.linspace(-40.0, 40.0, 501)
     left = np.asarray(
@@ -271,6 +298,50 @@ def test_cover_polygon_single_automatic_latency(
     coverage = benchmark(px.cover_polygon, footprints[0], 7)
 
     assert coverage.offsets.shape == (2,)
+
+
+@pytest.mark.parametrize("polygon_index", [0, 1], ids=["convex", "concave"])
+def test_cover_detailed_polygon(
+    benchmark,
+    detailed_polygon_pair: tuple[px.Polygon, px.Polygon],
+    polygon_index: int,
+) -> None:
+    coverage = benchmark(
+        px.cover_polygon,
+        detailed_polygon_pair[polygon_index],
+        9,
+        threads=1,
+    )
+
+    assert coverage.offsets.shape == (2,)
+
+
+def test_cover_detailed_concave_polygon_candidates(
+    benchmark,
+    detailed_polygon_pair: tuple[px.Polygon, px.Polygon],
+    detailed_polygon_candidates: np.ndarray,
+) -> None:
+    coverage = benchmark(
+        px.cover_polygon,
+        detailed_polygon_pair[1],
+        9,
+        candidate_cells=detailed_polygon_candidates,
+        threads=1,
+    )
+
+    assert coverage.offsets.shape == (2,)
+
+
+def test_cover_mixed_convex_concave_batch(
+    benchmark,
+    detailed_polygon_pair: tuple[px.Polygon, px.Polygon],
+) -> None:
+    polygons = np.repeat(detailed_polygon_pair[0].outer[np.newaxis], 32, axis=0)
+    polygons[-1] = detailed_polygon_pair[1].outer
+
+    coverage = benchmark(px.cover_polygon, polygons, 7, threads=1)
+
+    assert coverage.offsets.shape == (33,)
 
 
 @pytest.mark.parametrize(

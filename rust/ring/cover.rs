@@ -363,6 +363,8 @@ pub(crate) fn cover_regions(
                         push_coverage_cell(&mut coverage.cells, cell, 1024)?;
                     }
                 }
+            } else if let [polygon] = polygons.as_slice() {
+                polygon.cover(resolution, &mut coverage.cells)?;
             } else {
                 let mut region_cells = Vec::new();
                 for polygon in &polygons {

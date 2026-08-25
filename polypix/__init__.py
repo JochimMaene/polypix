@@ -1048,28 +1048,14 @@ def cover_polygon(
         )
     else:
         vertices, ring_offsets = _as_polygons(polygons_xyz)
-        try:
-            native = _cover(
-                vertices,
-                ring_offsets,
-                resolved,
-                candidates,
-                reducer is None,
-                thread_count,
-            )
-        except ValueError as error:
-            if "must be convex and non-self-intersecting" not in str(error):
-                raise
-            item_offsets = np.arange(len(ring_offsets), dtype=np.uint64)
-            native = _cover_regions(
-                vertices,
-                ring_offsets,
-                item_offsets,
-                item_offsets,
-                resolved,
-                candidates,
-                thread_count,
-            )
+        native = _cover(
+            vertices,
+            ring_offsets,
+            resolved,
+            candidates,
+            reducer is None,
+            thread_count,
+        )
     coverage = Coverage._from_native(*native, resolved)
     if reducer is None:
         return coverage

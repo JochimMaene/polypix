@@ -26,6 +26,13 @@
 
 ### Changed
 
+- Replaced the angle sum used for every concave polygon cell with a flat
+  crossing check, and grouped detailed boundaries by height so most cells only
+  inspect nearby edges. A 128-edge concave benchmark at resolution 9 fell from
+  313 to about 7 milliseconds; an 8-edge notched polygon fell from 5.5 to 0.9
+  milliseconds. The matched convex benchmarks stayed within run-to-run noise.
+  Raw batches also handle concave items in the native pass now, instead of
+  abandoning that pass and retrying the whole batch through the general path.
 - Validated a ragged polygon batch in one pass rather than one call per
   polygon. The shapes already had to be read to choose between the dense and
   ragged paths, and the offsets follow from them, so converting and checking

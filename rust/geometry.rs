@@ -10,6 +10,10 @@ const ZERO_NORM_EPSILON: f64 = 1.0e-15;
 // validation floor.
 const VALIDATION_TRIPLE_EPSILON: f64 = 0.5 * f64::EPSILON;
 const VERTEX_EQUALITY_EPSILON: f64 = 1.0e-12;
+const EDGE_BIN_MIN_VERTICES: usize = 32;
+const EDGE_BIN_MIN_COUNT: usize = 64;
+const EDGE_BIN_MAX_COUNT: usize = 256;
+const EDGE_BIN_MAX_MEMBERSHIPS_PER_VERTEX: usize = 20;
 
 pub(crate) type Vec3 = [f64; 3];
 
@@ -234,6 +238,17 @@ pub(crate) struct Ring {
     pub(crate) vertices: Vec<Vec3>,
     pub(crate) edge_normals: Vec<Vec3>,
     axis: Vec3,
+    projection_y: Vec3,
+    projected_y: Vec<f64>,
+    edge_bins: Option<EdgeBins>,
+}
+
+struct EdgeBins {
+    minimum_y: f64,
+    maximum_y: f64,
+    scale: f64,
+    guard: f64,
+    bins: Vec<Vec<usize>>,
 }
 
 pub(crate) struct GeneralPolygon {
@@ -249,40 +264,130 @@ enum RingLocation {
 }
 
 fn ring_location(ring: &Ring, point: Vec3) -> RingLocation {
-    if dot(ring.axis, point) <= 0.0 {
+    let projection_scale = dot(ring.axis, point);
+    if projection_scale <= 0.0 {
         return RingLocation::Outside;
     }
-    let mut winding = 0.0;
-    for ((&start, &end), &normal) in ring
-        .vertices
-        .iter()
-        .zip(ring.vertices.iter().cycle().skip(1))
-        .zip(&ring.edge_normals)
-    {
-        let edge_cosine = dot(start, end);
-        if dot(normal, point).abs() <= CONTAINMENT_EPSILON
-            && dot(start, point) >= edge_cosine - CONTAINMENT_EPSILON
-            && dot(end, point) >= edge_cosine - CONTAINMENT_EPSILON
+    // Looking from the ring axis turns its great-circle edges into straight
+    // lines, so this ordinary crossing test is exact without angle sums.
+    let point_y = dot(ring.projection_y, point) / projection_scale;
+    let projection_guard = CONTAINMENT_EPSILON * (1.0 + point_y.abs()) / projection_scale;
+    let mut inside = false;
+    let mut visit_edge = |index: usize| {
+        let next = if index + 1 == ring.vertices.len() {
+            0
+        } else {
+            index + 1
+        };
+        let start_y = ring.projected_y[index];
+        let end_y = ring.projected_y[next];
+        if point_y < start_y.min(end_y) - projection_guard
+            || point_y > start_y.max(end_y) + projection_guard
         {
+            return false;
+        }
+        let side = dot(ring.edge_normals[index], point);
+        if side.abs() <= CONTAINMENT_EPSILON {
+            let start = ring.vertices[index];
+            let end = ring.vertices[next];
+            let edge_cosine = dot(start, end);
+            if dot(start, point) >= edge_cosine - CONTAINMENT_EPSILON
+                && dot(end, point) >= edge_cosine - CONTAINMENT_EPSILON
+            {
+                return true;
+            }
+        }
+        // Together, the edge direction and side say whether its crossing is
+        // to the right of the point.
+        let crosses_ray = (side > 0.0 && end_y > start_y) || (side < 0.0 && end_y < start_y);
+        if (start_y > point_y) != (end_y > point_y) && crosses_ray {
+            inside = !inside;
+        }
+        false
+    };
+    if let Some(edge_bins) = &ring.edge_bins {
+        if point_y < edge_bins.minimum_y - projection_guard
+            || point_y > edge_bins.maximum_y + projection_guard
+        {
+            return RingLocation::Outside;
+        }
+        if projection_guard <= edge_bins.guard {
+            let bin = (((point_y - edge_bins.minimum_y) * edge_bins.scale) as usize)
+                .min(edge_bins.bins.len() - 1);
+            if edge_bins.bins[bin].iter().copied().any(&mut visit_edge) {
+                return RingLocation::Boundary;
+            }
+        } else if (0..ring.vertices.len()).any(&mut visit_edge) {
             return RingLocation::Boundary;
         }
-        let start_tangent = [
-            start[0] - point[0] * dot(point, start),
-            start[1] - point[1] * dot(point, start),
-            start[2] - point[2] * dot(point, start),
-        ];
-        let end_tangent = [
-            end[0] - point[0] * dot(point, end),
-            end[1] - point[1] * dot(point, end),
-            end[2] - point[2] * dot(point, end),
-        ];
-        winding +=
-            dot(point, cross(start_tangent, end_tangent)).atan2(dot(start_tangent, end_tangent));
+    } else if (0..ring.vertices.len()).any(&mut visit_edge) {
+        return RingLocation::Boundary;
     }
-    if winding.abs() > std::f64::consts::PI {
+    if inside {
         RingLocation::Inside
     } else {
         RingLocation::Outside
+    }
+}
+
+fn prepare_edge_bins(vertices: &[Vec3], projected_y: &[f64], axis: Vec3) -> Option<EdgeBins> {
+    // Detailed boundaries only need the edges near a point's height. Keep the
+    // table bounded, and use the plain edge loop when long edges make it bulky.
+    if vertices.len() < EDGE_BIN_MIN_VERTICES {
+        return None;
+    }
+    let minimum_y = projected_y.iter().copied().reduce(f64::min)?;
+    let maximum_y = projected_y.iter().copied().reduce(f64::max)?;
+    if minimum_y == maximum_y {
+        return None;
+    }
+    let minimum_scale = vertices
+        .iter()
+        .map(|&vertex| dot(axis, vertex))
+        .reduce(f64::min)?;
+    let guard = CONTAINMENT_EPSILON * (1.0 + minimum_y.abs().max(maximum_y.abs())) / minimum_scale;
+    let mut bin_count = vertices
+        .len()
+        .saturating_mul(2)
+        .clamp(EDGE_BIN_MIN_COUNT, EDGE_BIN_MAX_COUNT);
+    'retry: loop {
+        let scale = bin_count as f64 / (maximum_y - minimum_y);
+        let bin_for = |value: f64| (((value - minimum_y) * scale) as usize).min(bin_count - 1);
+        let mut bins = (0..bin_count).map(|_| Vec::new()).collect::<Vec<_>>();
+        let mut memberships = 0_usize;
+        for index in 0..vertices.len() {
+            let next = if index + 1 == vertices.len() {
+                0
+            } else {
+                index + 1
+            };
+            let first =
+                bin_for(projected_y[index].min(projected_y[next]) - guard).saturating_sub(1);
+            let last =
+                (bin_for(projected_y[index].max(projected_y[next]) + guard) + 1).min(bin_count - 1);
+            memberships = memberships.saturating_add(last - first + 1);
+            if memberships
+                > vertices
+                    .len()
+                    .saturating_mul(EDGE_BIN_MAX_MEMBERSHIPS_PER_VERTEX)
+            {
+                if bin_count == EDGE_BIN_MIN_COUNT {
+                    return None;
+                }
+                bin_count = (bin_count / 2).max(EDGE_BIN_MIN_COUNT);
+                continue 'retry;
+            }
+            for bin in &mut bins[first..=last] {
+                bin.push(index);
+            }
+        }
+        return Some(EdgeBins {
+            minimum_y,
+            maximum_y,
+            scale,
+            guard,
+            bins,
+        });
     }
 }
 
@@ -301,7 +406,7 @@ pub(crate) fn ring_contains(ring: &Ring, point: Vec3) -> bool {
     ring_location(ring, point) != RingLocation::Outside
 }
 
-fn projected_vertices(vertices: &[Vec3], axis: Vec3) -> Vec<[f64; 2]> {
+fn projection_basis(axis: Vec3) -> (Vec3, Vec3) {
     let reference = if axis[2].abs() < 0.9 {
         [0.0, 0.0, 1.0]
     } else {
@@ -309,6 +414,10 @@ fn projected_vertices(vertices: &[Vec3], axis: Vec3) -> Vec<[f64; 2]> {
     };
     let first = normalize(cross(reference, axis)).expect("basis vectors are not parallel");
     let second = cross(axis, first);
+    (first, second)
+}
+
+fn projected_vertices(vertices: &[Vec3], axis: Vec3, first: Vec3, second: Vec3) -> Vec<[f64; 2]> {
     vertices
         .iter()
         .map(|&vertex| {
@@ -350,8 +459,9 @@ fn segments_touch_or_cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -
 }
 
 fn rings_touch_or_cross(left: &Ring, right: &Ring) -> bool {
-    let left_projected = projected_vertices(&left.vertices, left.axis);
-    let right_projected = projected_vertices(&right.vertices, left.axis);
+    let (first, second) = projection_basis(left.axis);
+    let left_projected = projected_vertices(&left.vertices, left.axis, first, second);
+    let right_projected = projected_vertices(&right.vertices, left.axis, first, second);
     left_projected
         .iter()
         .zip(left_projected.iter().cycle().skip(1))
@@ -403,7 +513,8 @@ fn prepare_ring(raw_vertices: &[[f64; 3]]) -> Result<Ring, String> {
     {
         return Err("Ring does not fit inside an open hemisphere.".to_owned());
     }
-    let projected = projected_vertices(&vertices, axis);
+    let (projection_x, projection_y) = projection_basis(axis);
+    let projected = projected_vertices(&vertices, axis, projection_x, projection_y);
     let maximum_turn = projected
         .iter()
         .zip(projected.iter().cycle().skip(1))
@@ -431,10 +542,15 @@ fn prepare_ring(raw_vertices: &[[f64; 3]]) -> Result<Ring, String> {
             }
         }
     }
+    let projected_y = projected.iter().map(|vertex| vertex[1]).collect::<Vec<_>>();
+    let edge_bins = prepare_edge_bins(&vertices, &projected_y, axis);
     Ok(Ring {
         vertices,
         edge_normals,
         axis,
+        projection_y,
+        projected_y,
+        edge_bins,
     })
 }
 

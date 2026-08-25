@@ -51,6 +51,62 @@ def test_concave_polygon_matches_an_independent_center_check() -> None:
     np.testing.assert_array_equal(actual, expected)
 
 
+def test_detailed_concave_polygon_matches_an_independent_center_check() -> None:
+    vertex_count = 64
+    angles = np.arange(vertex_count) * (2.0 * np.pi / vertex_count)
+    radii = np.where(np.arange(vertex_count) % 2 == 0, 0.30, 0.24)
+    projected = np.column_stack((radii * np.cos(angles), radii * np.sin(angles)))
+    boundary = np.column_stack((np.ones(vertex_count), projected))
+    boundary /= np.linalg.norm(boundary, axis=1, keepdims=True)
+
+    resolution = 5
+    cells = np.arange(px.cell_count(resolution), dtype=np.int64)
+    centers = px.cell_centers(cells, resolution)
+    visible = centers[:, 0] > 0.0
+    inside = np.zeros(len(cells), dtype=np.bool_)
+    inside[visible] = planar_contains(
+        projected,
+        np.column_stack(
+            (
+                centers[visible, 1] / centers[visible, 0],
+                centers[visible, 2] / centers[visible, 0],
+            )
+        ),
+    )
+    expected = cells[inside]
+
+    np.testing.assert_array_equal(
+        px.cover_polygon(boundary, resolution).cells, expected
+    )
+
+
+def test_raw_batch_can_mix_convex_and_concave_polygons() -> None:
+    convex = vectors(
+        [
+            (-10, -5),
+            (-5, -10),
+            (5, -10),
+            (10, -5),
+            (10, 5),
+            (5, 10),
+            (-5, 10),
+            (-10, 5),
+        ]
+    )
+    concave = vectors(
+        [(-10, -10), (10, -10), (10, 10), (2, 10), (2, 0), (-2, 0), (-2, 10), (-10, 10)]
+    )
+
+    batch = px.cover_polygon(np.stack((convex, concave)), 6, threads=1)
+
+    np.testing.assert_array_equal(
+        batch[0], px.cover_polygon(convex, 6, threads=1).cells
+    )
+    np.testing.assert_array_equal(
+        batch[1], px.cover_polygon(concave, 6, threads=1).cells
+    )
+
+
 def test_polygon_holes_and_multipolygon_form_one_deduplicated_region() -> None:
     outer = vectors([(-10, -10), (10, -10), (10, 10), (-10, 10)])
     hole = vectors([(-3, -3), (3, -3), (3, 3), (-3, 3)])

@@ -145,11 +145,11 @@ to matter.
 
 ## Geometry shape
 
-Polygon coverage scans a conservative spherical bounding box and tests the
-centers inside it against every edge. Convex components keep the existing
-half-space shortcut; concave boundaries and holes use a general boundary check.
-A large diagonal footprint, one containing a pole, or an unnecessarily detailed
-boundary can cost far more per cell returned.
+Polygon coverage scans a conservative spherical bounding box. Convex components
+keep the existing half-space shortcut. Concave boundaries and holes use a flat
+crossing check; detailed boundaries are grouped by height so a center usually
+checks only nearby edges. A large diagonal footprint, one containing a pole, or
+a deeply notched boundary can still cost more per cell returned.
 
 Long thin regions are what `cover_sweep()` is for, since it keeps each interval's
 bounds tight. Caps use analytic per-ring longitude spans, and their dense counts
