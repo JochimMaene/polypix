@@ -4,6 +4,7 @@
 //! use, asks `shape` to visit the cells, and owns the buffers those cells land
 //! in.
 
+use std::borrow::Borrow;
 use std::ops::Range;
 
 use rayon::prelude::*;
@@ -284,7 +285,30 @@ pub(crate) fn cover(
     )
 }
 
-fn prepare_region_polygon(
+pub(crate) struct PreparedRegionPolygon {
+    footprint: PreparedFootprint,
+    estimated_fraction: f64,
+}
+
+impl PreparedRegionPolygon {
+    fn z_bounds(&self) -> (f64, f64) {
+        self.footprint.z_bounds()
+    }
+
+    fn contains(&self, point: Vec3) -> bool {
+        self.footprint.contains(point)
+    }
+
+    fn cover(&self, resolution: u8, cells: &mut Vec<u64>) -> NativeResult<()> {
+        self.footprint.cover(resolution, cells)
+    }
+
+    fn estimated_cells(&self, resolution: u8) -> usize {
+        (self.estimated_fraction * raw_cell_count(resolution) as f64) as usize
+    }
+}
+
+pub(crate) fn prepare_region_polygon(
     vertices: &[f64],
     ring_offsets: &[u64],
     first_ring: usize,
@@ -300,65 +324,69 @@ fn prepare_region_polygon(
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
-    PreparedRegionPolygon::from_rings(&rings)
+    let outer_start = ring_offsets[first_ring] as usize * 3;
+    let outer_end = ring_offsets[first_ring + 1] as usize * 3;
+    PreparedFootprint::from_rings(&rings).map(|footprint| PreparedRegionPolygon {
+        footprint,
+        estimated_fraction: estimated_cap_fraction(&vertices[outer_start..outer_end]),
+    })
 }
 
-pub(crate) fn validate_region_polygon(
-    vertices: &[f64],
-    ring_offsets: &[u64],
-) -> Result<(), String> {
-    prepare_region_polygon(vertices, ring_offsets, 0, ring_offsets.len() - 1).map(|_| ())
-}
-
-fn prepare_region(
-    vertices: &[f64],
-    ring_offsets: &[u64],
-    polygon_offsets: &[u64],
-    first_polygon: usize,
-    last_polygon: usize,
-) -> Result<Vec<PreparedRegionPolygon>, String> {
-    (first_polygon..last_polygon)
-        .map(|polygon| {
-            prepare_region_polygon(
-                vertices,
-                ring_offsets,
-                polygon_offsets[polygon] as usize,
-                polygon_offsets[polygon + 1] as usize,
-            )
-            .map_err(|error| format!("polygons[{polygon}]: {error}"))
+fn region_z_bounds<P: Borrow<PreparedRegionPolygon>>(polygons: &[P]) -> (f64, f64) {
+    polygons
+        .iter()
+        .map(|polygon| polygon.borrow().z_bounds())
+        .fold((1.0_f64, -1.0_f64), |bounds, (minimum, maximum)| {
+            (bounds.0.min(minimum), bounds.1.max(maximum))
         })
-        .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn cover_regions(
-    vertices: &[f64],
-    ring_offsets: &[u64],
-    polygon_offsets: &[u64],
-    region_offsets: &[u64],
+fn region_contains<P: Borrow<PreparedRegionPolygon>>(polygons: &[P], point: Vec3) -> bool {
+    polygons
+        .iter()
+        .any(|polygon| polygon.borrow().contains(point))
+}
+
+fn cover_prepared_region<P: Borrow<PreparedRegionPolygon>>(
+    polygons: &[P],
+    resolution: u8,
+    cells: &mut Vec<u64>,
+) -> NativeResult<()> {
+    if let [polygon] = polygons {
+        return polygon.borrow().cover(resolution, cells);
+    }
+    let mut region_cells = Vec::new();
+    for polygon in polygons {
+        polygon.borrow().cover(resolution, &mut region_cells)?;
+    }
+    region_cells.sort_unstable();
+    region_cells.dedup();
+    cells
+        .try_reserve(region_cells.len())
+        .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
+    cells.extend(region_cells);
+    Ok(())
+}
+
+pub(crate) fn cover_prepared_regions(
+    regions: &[Vec<&PreparedRegionPolygon>],
     resolution: u8,
     raw_candidates: Option<&[u64]>,
     restrict_output: bool,
     threads: Option<usize>,
 ) -> NativeResult<Coverage> {
     let candidates = candidate_cells(raw_candidates, resolution)?;
-    let region_count = region_offsets.len() - 1;
+    let region_count = regions.len();
     let estimated_cells = |region: usize| {
-        (region_offsets[region] as usize..region_offsets[region + 1] as usize).fold(
-            0_usize,
-            |total, polygon| {
-                let outer_ring = polygon_offsets[polygon] as usize;
-                let start = ring_offsets[outer_ring] as usize * 3;
-                let end = ring_offsets[outer_ring + 1] as usize * 3;
-                total.saturating_add(estimated_cap_cells(&vertices[start..end], resolution))
-            },
-        )
+        regions[region].iter().fold(0_usize, |total, polygon| {
+            total.saturating_add(polygon.estimated_cells(resolution))
+        })
     };
     if let Some(candidates) = candidates.as_deref().filter(|candidates| {
         should_test_candidates(
             restrict_output,
             sampled_total(region_count, estimated_cells) as f64,
-            polygon_offsets.len() - 1,
+            regions.iter().map(Vec::len).sum(),
             candidates.len(),
         )
     }) {
@@ -367,25 +395,9 @@ pub(crate) fn cover_regions(
             candidates,
             resolution,
             threads,
-            |region| {
-                prepare_region(
-                    vertices,
-                    ring_offsets,
-                    polygon_offsets,
-                    region_offsets[region] as usize,
-                    region_offsets[region + 1] as usize,
-                )
-                .map_err(|error| format!("regions[{region}]: {error}"))
-            },
-            |polygons| {
-                polygons
-                    .iter()
-                    .map(PreparedRegionPolygon::z_bounds)
-                    .fold((1.0_f64, -1.0_f64), |bounds, (minimum, maximum)| {
-                        (bounds.0.min(minimum), bounds.1.max(maximum))
-                    })
-            },
-            |polygons, point| polygons.iter().any(|polygon| polygon.contains(point)),
+            |region| Ok::<_, String>(regions[region].as_slice()),
+            |polygons| region_z_bounds(polygons),
+            |polygons, point| region_contains(polygons, point),
         );
     }
     let parallel_work = accumulated_scan_work(region_count, threads, estimated_cells);
@@ -400,29 +412,7 @@ pub(crate) fn cover_regions(
             };
             coverage.offsets.push(0);
             for region in range {
-                let polygons = prepare_region(
-                    vertices,
-                    ring_offsets,
-                    polygon_offsets,
-                    region_offsets[region] as usize,
-                    region_offsets[region + 1] as usize,
-                )
-                .map_err(|error| NativeError::from(format!("regions[{region}]: {error}")))?;
-                if let [polygon] = polygons.as_slice() {
-                    polygon.cover(resolution, &mut coverage.cells)?;
-                } else {
-                    let mut region_cells = Vec::new();
-                    for polygon in &polygons {
-                        polygon.cover(resolution, &mut region_cells)?;
-                    }
-                    region_cells.sort_unstable();
-                    region_cells.dedup();
-                    coverage
-                        .cells
-                        .try_reserve(region_cells.len())
-                        .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
-                    coverage.cells.extend(region_cells);
-                }
+                cover_prepared_region(&regions[region], resolution, &mut coverage.cells)?;
                 coverage.offsets.push(coverage.cells.len() as u64);
             }
             Ok(coverage)

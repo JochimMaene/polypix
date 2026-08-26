@@ -131,12 +131,17 @@ fn valid_offsets(offsets: &[u64], last: usize) -> bool {
         && offsets.windows(2).all(|pair| pair[0] <= pair[1])
 }
 
+#[pyclass(frozen, name = "_PreparedPolygon", module = "polypix._core")]
+struct PyPreparedPolygon {
+    polygon: ring::PreparedRegionPolygon,
+}
+
 #[pyfunction]
-fn _validate_polygon(
+fn _prepare_polygon(
     py: Python<'_>,
     vertices_xyz: PyReadonlyArray2<'_, f64>,
     ring_offsets: PyReadonlyArray1<'_, u64>,
-) -> PyResult<()> {
+) -> PyResult<PyPreparedPolygon> {
     if vertices_xyz.shape().get(1) != Some(&3) {
         return Err(PyValueError::new_err("Invalid internal polygon buffers."));
     }
@@ -145,49 +150,35 @@ fn _validate_polygon(
     if offsets.len() < 2 || !valid_offsets(offsets, vertices_xyz.shape()[0]) {
         return Err(PyValueError::new_err("Invalid internal polygon buffers."));
     }
-    py.detach(|| ring::validate_region_polygon(vertices, offsets))
+    py.detach(|| ring::prepare_region_polygon(vertices, offsets, 0, offsets.len() - 1))
+        .map(|polygon| PyPreparedPolygon { polygon })
         .map_err(PyValueError::new_err)
 }
 
-#[allow(clippy::too_many_arguments)]
-#[pyfunction(signature = (vertices_xyz, ring_offsets, polygon_offsets, region_offsets, resolution, candidate_cells=None, restrict_output=true, threads=None))]
-fn _cover_regions<'py>(
+#[pyfunction(signature = (regions, resolution, candidate_cells=None, restrict_output=true, threads=None))]
+fn _cover_prepared_regions<'py>(
     py: Python<'py>,
-    vertices_xyz: PyReadonlyArray2<'py, f64>,
-    ring_offsets: PyReadonlyArray1<'py, u64>,
-    polygon_offsets: PyReadonlyArray1<'py, u64>,
-    region_offsets: PyReadonlyArray1<'py, u64>,
+    regions: Vec<Vec<Py<PyPreparedPolygon>>>,
     resolution: u8,
     candidate_cells: Option<PyReadonlyArray1<'py, u64>>,
     restrict_output: bool,
     threads: Option<usize>,
 ) -> PyResult<PyCoverage<'py>> {
     validate_resolution(resolution)?;
-    if vertices_xyz.shape().get(1) != Some(&3) {
-        return Err(PyValueError::new_err("Invalid internal region buffers."));
-    }
-    let vertices = slice(&vertices_xyz, "vertices_xyz")?;
-    let rings = slice(&ring_offsets, "ring_offsets")?;
-    let polygons = slice(&polygon_offsets, "polygon_offsets")?;
-    let regions = slice(&region_offsets, "region_offsets")?;
-    if rings.is_empty()
-        || polygons.is_empty()
-        || regions.is_empty()
-        || !valid_offsets(rings, vertices_xyz.shape()[0])
-        || !valid_offsets(polygons, rings.len() - 1)
-        || !valid_offsets(regions, polygons.len() - 1)
-        || polygons.windows(2).any(|pair| pair[0] == pair[1])
-    {
-        return Err(PyValueError::new_err("Invalid internal region buffers."));
-    }
     let candidates = optional_slice(candidate_cells.as_ref(), "candidate_cells")?;
+    let prepared = regions
+        .iter()
+        .map(|region| {
+            region
+                .iter()
+                .map(|polygon| &polygon.get().polygon)
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
     let coverage = py
         .detach(|| {
-            ring::cover_regions(
-                vertices,
-                rings,
-                polygons,
-                regions,
+            ring::cover_prepared_regions(
+                &prepared,
                 resolution,
                 candidates,
                 restrict_output,
@@ -436,7 +427,7 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     module.add("_MAX_RESOLUTION", MAX_RESOLUTION)?;
     module.add_function(wrap_pyfunction!(_cover, module)?)?;
-    module.add_function(wrap_pyfunction!(_cover_regions, module)?)?;
+    module.add_function(wrap_pyfunction!(_cover_prepared_regions, module)?)?;
     module.add_function(wrap_pyfunction!(_cover_cap, module)?)?;
     module.add_function(wrap_pyfunction!(_cover_sweep, module)?)?;
     module.add_function(wrap_pyfunction!(_count_caps_per_cell, module)?)?;
@@ -444,7 +435,7 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_revisit_stats, module)?)?;
     module.add_function(wrap_pyfunction!(_sum_coverage_per_cell, module)?)?;
     module.add_function(wrap_pyfunction!(_validate_coverage, module)?)?;
-    module.add_function(wrap_pyfunction!(_validate_polygon, module)?)?;
+    module.add_function(wrap_pyfunction!(_prepare_polygon, module)?)?;
     module.add_function(wrap_pyfunction!(_cell_at, module)?)?;
     module.add_function(wrap_pyfunction!(_center, module)?)?;
     module.add_function(wrap_pyfunction!(_corner_many, module)?)?;

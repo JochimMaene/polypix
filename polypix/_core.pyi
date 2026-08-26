@@ -12,13 +12,13 @@ __all__ = [
     "_count_caps_per_cell",
     "_count_coverage_per_cell",
     "_cover",
-    "_cover_regions",
+    "_cover_prepared_regions",
     "_cover_cap",
     "_cover_sweep",
     "_revisit_stats",
     "_sum_coverage_per_cell",
     "_validate_coverage",
-    "_validate_polygon",
+    "_prepare_polygon",
 ]
 
 def _cover(
@@ -29,11 +29,8 @@ def _cover(
     restrict_output: bool = True,
     threads: int | None = None,
 ) -> tuple[npt.NDArray[np.uint64], npt.NDArray[np.uint64]]: ...
-def _cover_regions(
-    vertices_xyz: npt.NDArray[np.float64],
-    ring_offsets: npt.NDArray[np.uint64],
-    polygon_offsets: npt.NDArray[np.uint64],
-    region_offsets: npt.NDArray[np.uint64],
+def _cover_prepared_regions(
+    regions: list[list[object]],
     resolution: int,
     candidate_cells: npt.NDArray[np.uint64] | None = None,
     restrict_output: bool = True,
@@ -92,10 +89,10 @@ def _validate_coverage(
     offsets: npt.NDArray[np.uint64],
     resolution: int,
 ) -> None: ...
-def _validate_polygon(
+def _prepare_polygon(
     vertices_xyz: npt.NDArray[np.float64],
     ring_offsets: npt.NDArray[np.uint64],
-) -> None: ...
+) -> object: ...
 def _center(
     cells: npt.NDArray[np.uint64],
     resolution: int,

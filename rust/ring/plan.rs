@@ -195,29 +195,31 @@ pub(super) fn candidate_cache_range(plan: &CandidatePlan) -> Option<Range<usize>
     .then_some(plan.center_start..plan.center_end)
 }
 
-pub(super) fn estimated_cap_cells(raw: &[f64], resolution: u8) -> usize {
+pub(super) fn estimated_cap_fraction(raw: &[f64]) -> f64 {
     let mut center = [0.0; 3];
     for values in raw.chunks_exact(3) {
         let Ok(vertex) = normalize([values[0], values[1], values[2]]) else {
-            return 0;
+            return 0.0;
         };
         center[0] += vertex[0];
         center[1] += vertex[1];
         center[2] += vertex[2];
     }
     let Ok(center) = normalize(center) else {
-        return 0;
+        return 0.0;
     };
     let mut minimum_cosine = 1.0_f64;
     for values in raw.chunks_exact(3) {
         let Ok(vertex) = normalize([values[0], values[1], values[2]]) else {
-            return 0;
+            return 0.0;
         };
         minimum_cosine = minimum_cosine.min(dot(center, vertex));
     }
-    let sphere_fraction = 0.5 * (1.0 - minimum_cosine).clamp(0.0, 2.0);
-    let cell_count = raw_cell_count(resolution) as f64;
-    (sphere_fraction * cell_count) as usize
+    0.5 * (1.0 - minimum_cosine).clamp(0.0, 2.0)
+}
+
+pub(super) fn estimated_cap_cells(raw: &[f64], resolution: u8) -> usize {
+    (estimated_cap_fraction(raw) * raw_cell_count(resolution) as f64) as usize
 }
 
 /// Extrapolate a per-item estimate over a batch from an evenly spread sample.

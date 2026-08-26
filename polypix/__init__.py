@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import operator
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Never, SupportsIndex, cast, overload
 
 import numpy as np
@@ -20,12 +20,12 @@ from ._core import (
     _count_coverage_per_cell,
     _cover,
     _cover_cap,
-    _cover_regions,
+    _cover_prepared_regions,
     _cover_sweep,
+    _prepare_polygon,
     _revisit_stats,
     _sum_coverage_per_cell,
     _validate_coverage,
-    _validate_polygon,
 )
 
 _POLYGON_SHAPE_ERROR = (
@@ -62,10 +62,18 @@ class Polygon:
         The ``(vertices, 3)`` outer boundary.
     *holes : array_like
         Zero or more ``(vertices, 3)`` hole boundaries.
+
+    Notes
+    -----
+    Coverage uses the geometry copied and validated at construction. The
+    coordinate arrays are read-only to catch accidental writes; deliberately
+    changing their NumPy flags and contents is unsupported and does not alter
+    the prepared geometry.
     """
 
     outer: npt.NDArray[np.float64]
     holes: tuple[npt.NDArray[np.float64], ...]
+    _prepared: object = field(repr=False)
 
     def __init__(self, outer: object, *holes: object) -> None:
         owned_outer = np.array(
@@ -88,11 +96,15 @@ class Polygon:
             )
         )
         vertices = np.concatenate(rings) if rings else np.empty((0, 3), np.float64)
-        _validate_polygon(vertices, offsets)
+        prepared = _prepare_polygon(vertices, offsets)
         for ring in rings:
             _freeze_array(ring)
         object.__setattr__(self, "outer", owned_outer)
         object.__setattr__(self, "holes", owned_holes)
+        object.__setattr__(self, "_prepared", prepared)
+
+    def __reduce__(self) -> tuple[object, tuple[object, ...]]:
+        return Polygon, (self.outer, *self.holes)
 
 
 @dataclass(frozen=True, eq=False, init=False, slots=True)
@@ -780,9 +792,9 @@ def _as_polygons(
     return _ragged_polygons(values, shapes)
 
 
-def _as_structured_region_buffers(
+def _as_prepared_regions(
     values: object,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray] | None:
+) -> list[list[object]] | None:
     if isinstance(values, (Polygon, MultiPolygon)):
         regions = [values]
     elif isinstance(values, Sequence) and values:
@@ -802,35 +814,7 @@ def _as_structured_region_buffers(
         (region,) if isinstance(region, Polygon) else region.polygons
         for region in regions
     ]
-    rings = [
-        ring
-        for region in polygons
-        for polygon in region
-        for ring in (polygon.outer, *polygon.holes)
-    ]
-    vertices = np.concatenate(rings) if rings else np.empty((0, 3), dtype=np.float64)
-    ring_offsets = np.concatenate(
-        (
-            np.zeros(1, dtype=np.uint64),
-            np.cumsum([len(ring) for ring in rings], dtype=np.uint64),
-        )
-    )
-    polygon_offsets = np.concatenate(
-        (
-            np.zeros(1, dtype=np.uint64),
-            np.cumsum(
-                [1 + len(polygon.holes) for region in polygons for polygon in region],
-                dtype=np.uint64,
-            ),
-        )
-    )
-    region_offsets = np.concatenate(
-        (
-            np.zeros(1, dtype=np.uint64),
-            np.cumsum([len(region) for region in polygons], dtype=np.uint64),
-        )
-    )
-    return vertices, ring_offsets, polygon_offsets, region_offsets
+    return [[polygon._prepared for polygon in region] for region in polygons]
 
 
 @dataclass(frozen=True, eq=False, slots=True)
@@ -1031,17 +1015,13 @@ def cover_polygon(
     1
     """
     resolved = _as_resolution(resolution)
-    structured = _as_structured_region_buffers(polygons_xyz)
+    prepared_regions = _as_prepared_regions(polygons_xyz)
     reducer = _as_coverage_reducer(reduce)
     candidates, requested = _reduction_plan(candidate_cells, reducer, resolved)
     thread_count = _as_threads(threads)
-    if structured is not None:
-        vertices, ring_offsets, polygon_offsets, region_offsets = structured
-        native = _cover_regions(
-            vertices,
-            ring_offsets,
-            polygon_offsets,
-            region_offsets,
+    if prepared_regions is not None:
+        native = _cover_prepared_regions(
+            prepared_regions,
             resolved,
             candidates,
             reducer is None,

@@ -25,7 +25,8 @@ mod plan;
 mod shape;
 
 pub(crate) use cover::{
-    count_caps_per_cell, cover, cover_caps, cover_regions, cover_sweep, validate_region_polygon,
+    count_caps_per_cell, cover, cover_caps, cover_prepared_regions, cover_sweep,
+    prepare_region_polygon, PreparedRegionPolygon,
 };
 pub(crate) use grid::{
     cells_at, centers, corners, invalid_cell_message, raw_cell_count, validate_cell_range,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pickle
+
 import numpy as np
 import pytest
 
@@ -58,24 +60,23 @@ def planar_contains(points: np.ndarray, queries: np.ndarray) -> np.ndarray:
     return inside
 
 
-def all_center_longitudes_latitudes(resolution: int) -> tuple[np.ndarray, np.ndarray]:
+def all_cell_centers(resolution: int) -> tuple[np.ndarray, np.ndarray]:
     cells = np.arange(px.cell_count(resolution), dtype=np.int64)
-    centers = px.cell_centers(cells, resolution)
-    coordinates = np.column_stack(
-        (
-            np.degrees(np.arctan2(centers[:, 1], centers[:, 0])),
-            np.degrees(np.arcsin(centers[:, 2])),
-        )
-    )
-    return cells, coordinates
+    return cells, px.cell_centers(cells, resolution)
 
 
 def test_concave_polygon_matches_an_independent_center_check() -> None:
-    boundary = np.asarray([(0, 0), (10, 0), (10, 10), (5, 5), (0, 10)], float)
-    cells, coordinates = all_center_longitudes_latitudes(5)
+    boundary = vectors([(0, 0), (10, 0), (10, 10), (5, 5), (0, 10)])
+    cells, centers = all_cell_centers(5)
+    visible = centers[:, 0] > 0.0
+    inside = np.zeros(len(cells), dtype=np.bool_)
+    inside[visible] = planar_contains(
+        boundary[:, 1:] / boundary[:, :1],
+        centers[visible, 1:] / centers[visible, :1],
+    )
 
-    expected = cells[planar_contains(boundary, coordinates)]
-    actual = px.cover_polygon(vectors(boundary.tolist()), 5).cells
+    expected = cells[inside]
+    actual = px.cover_polygon(boundary, 5).cells
 
     np.testing.assert_array_equal(actual, expected)
 
@@ -270,6 +271,33 @@ def test_polygon_containers_validate_and_own_their_coordinates() -> None:
         )
     with pytest.raises(TypeError, match="Polygon objects"):
         px.MultiPolygon(polygon, polygon.outer)  # type: ignore[arg-type]
+
+
+def test_polygon_coverage_uses_the_geometry_validated_at_construction() -> None:
+    polygon = px.Polygon(vectors([(-10, -10), (10, -10), (10, 10), (-10, 10)]))
+    expected = px.cover_polygon(polygon, 5).cells
+
+    polygon.outer.setflags(write=True)
+    polygon.outer[:] = vectors([(80, -10), (100, -10), (100, 10), (80, 10)])
+    polygon.outer.setflags(write=False)
+
+    np.testing.assert_array_equal(px.cover_polygon(polygon, 5).cells, expected)
+
+
+def test_polygon_pickle_rebuilds_its_prepared_geometry() -> None:
+    polygon = px.Polygon(
+        vectors([(-10, -10), (10, -10), (10, 10), (-10, 10)]),
+        vectors([(-3, -3), (3, -3), (3, 3), (-3, 3)]),
+    )
+
+    restored = pickle.loads(pickle.dumps(polygon))
+
+    np.testing.assert_array_equal(restored.outer, polygon.outer)
+    np.testing.assert_array_equal(restored.holes[0], polygon.holes[0])
+    np.testing.assert_array_equal(
+        px.cover_polygon(restored, 5).cells,
+        px.cover_polygon(polygon, 5).cells,
+    )
 
 
 def test_empty_multipolygon_is_one_empty_region() -> None:

@@ -50,7 +50,7 @@ pub(super) struct Cap {
     pub(super) radial: f64,
 }
 
-pub(super) enum PreparedFootprint {
+pub(crate) enum PreparedFootprint {
     Quad(Quad),
     Polygon(Polygon),
     General(GeneralPolygon),
@@ -236,8 +236,6 @@ fn polygon_z_bounds_for(
     }
     (minimum, maximum)
 }
-
-pub(super) type PreparedRegionPolygon = PreparedFootprint;
 
 fn general_polygon_z_bounds(polygon: &GeneralPolygon) -> (f64, f64) {
     polygon_z_bounds_for(
