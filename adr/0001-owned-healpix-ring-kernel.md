@@ -27,10 +27,10 @@ Polypix owns the native, center-only HEALPix RING kernel. It walks the relevant
 rings, tests cell centres against validated geometry, and emits standard RING
 indices directly. It handles caps, convex spherical polygons, paired-edge
 sweeps, explicit candidate cells, and the public centre and corner transforms.
+It also supports immediate-neighbour lookup for one-cell expansion.
 
-RING is the one supported ordering. We are not adding NESTED, MOCs, neighbour
-operations, projections, a general polygon library, backend selection, or public
-algorithm controls.
+RING is the one supported ordering. We are not adding NESTED, MOCs, projections,
+a general polygon library, backend selection, or public algorithm controls.
 
 ## Consequences
 

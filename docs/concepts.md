@@ -171,7 +171,7 @@ arrays and fixed-resolution RING IDs. There is no frame object model to adopt,
 and no Astropy or geospatial runtime to install alongside it.
 
 Signed `int64` RING IDs go straight to healpy, astropy-healpix, or cdshealpix for
-everything Polypix leaves out, which includes ordering conversion, neighbors,
+everything Polypix leaves out, which includes ordering conversion,
 interpolation, resampling, harmonics, and file formats.
 
 Two things are worth watching when you hand data over:

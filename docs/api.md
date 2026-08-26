@@ -16,6 +16,7 @@
    cell_centers
    cell_corners
    cell_count
+   cell_neighbors
    revisit
    Coverage
    RevisitStats
@@ -48,6 +49,8 @@
 .. autofunction:: cell_corners
 
 .. autofunction:: cell_count
+
+.. autofunction:: cell_neighbors
 ```
 
 ## Reducing and summarizing

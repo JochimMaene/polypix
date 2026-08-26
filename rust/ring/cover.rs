@@ -12,7 +12,7 @@ use rayon::prelude::*;
 use crate::error::{NativeError, NativeResult, COVERAGE_OUT_OF_MEMORY};
 use crate::geometry::{normalize, Vec3};
 
-use super::grid::{center, raw_cell_count, validate_cell_range, MAX_RESOLUTION};
+use super::grid::{center, neighboring_cells, raw_cell_count, validate_cell_range, MAX_RESOLUTION};
 use super::parallel::run_with_parallelism;
 use super::plan::*;
 use super::shape::*;
@@ -20,6 +20,40 @@ use super::shape::*;
 pub(crate) struct Coverage {
     pub(crate) cells: Vec<u64>,
     pub(crate) offsets: Vec<u64>,
+}
+
+// Release measurements on eight workers cross over between 4K and 16K cells;
+// keep the threshold at the first measured batch with a clear parallel win.
+const NEIGHBOR_PARALLEL_MIN_CELLS: usize = 1 << 14;
+
+pub(crate) fn cell_neighbors(cells: &[u64], resolution: u8) -> NativeResult<Coverage> {
+    validate_cell_range(cells, resolution, "cells")?;
+    dispatch_coverage(
+        cells.len(),
+        cells.len() >= NEIGHBOR_PARALLEL_MIN_CELLS,
+        None,
+        |range| {
+            let oom =
+                || NativeError::out_of_memory("Neighbor result is too large to fit in memory.");
+            let mut output = Vec::new();
+            output
+                .try_reserve_exact(range.len() * 8)
+                .map_err(|_| oom())?;
+            let mut offsets = Vec::new();
+            offsets
+                .try_reserve_exact(range.len() + 1)
+                .map_err(|_| oom())?;
+            offsets.push(0);
+            for &cell in &cells[range] {
+                output.extend(neighboring_cells(cell, resolution).into_iter().flatten());
+                offsets.push(output.len() as u64);
+            }
+            Ok(Coverage {
+                cells: output,
+                offsets,
+            })
+        },
+    )
 }
 
 /// Push a cell onto a materialized result, growing by `batch` when full.

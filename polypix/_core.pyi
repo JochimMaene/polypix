@@ -9,6 +9,7 @@ __all__ = [
     "_corner_many",
     "_cell_at",
     "_center",
+    "_neighbors",
     "_count_caps_per_cell",
     "_count_coverage_per_cell",
     "_cover",
@@ -105,3 +106,7 @@ def _corner_many(
     cells: npt.NDArray[np.uint64],
     resolution: int,
 ) -> npt.NDArray[np.float64]: ...
+def _neighbors(
+    cells: npt.NDArray[np.uint64],
+    resolution: int,
+) -> tuple[npt.NDArray[np.uint64], npt.NDArray[np.uint64]]: ...

@@ -1,6 +1,6 @@
 # Project goal
 
-Last updated: 2026-08-22
+Last updated: 2026-08-26
 
 Polypix has a narrow aim. It takes large batches of already-resolved spherical
 regions and maps them to deterministic, center-sampled HEALPix cells. We want it
@@ -41,6 +41,8 @@ The grid is fixed-resolution HEALPix in RING order, from resolution 0 through 29
 Results carry standard RING IDs and preserve the input segments. On top of that
 the library supports sparse queries, per-cell counts and sums, and ordinal
 revisit summaries, which callers map to their own time edges and gap rules.
+Immediate topological neighbor lookup supports one-cell expansion and local
+connectivity without turning the package into a general map library.
 
 The full interface and its validation rules are in the API documentation.
 
@@ -66,7 +68,7 @@ switch to reach.
 
 Polypix does not provide orbit or sensor models, longitude/latitude or CRS
 objects, exact cell intersections, NESTED or
-mixed-resolution results, MOCs, neighbours, map algebra, timestamps, arbitrary
+mixed-resolution results, MOCs, map algebra, timestamps, arbitrary
 reducers, GPU or distributed execution, or a generic grid interface.
 
 Optional adapters and conversion recipes are welcome at the boundary. They must

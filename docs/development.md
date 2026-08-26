@@ -167,3 +167,5 @@ this site:
   on why the RING kernel is ours.
 - [`adr/0002-coverage-reductions-and-revisit-statistics.md`](https://github.com/JochimMaene/polypix/blob/main/adr/0002-coverage-reductions-and-revisit-statistics.md)
   on reducers and revisit statistics, with the benchmark evidence.
+- [`adr/0003-general-spherical-polygons.md`](https://github.com/JochimMaene/polypix/blob/main/adr/0003-general-spherical-polygons.md)
+  on concave, multipart, and holed boundaries.
