@@ -18,7 +18,7 @@ Four operations cover most of what people do with the library:
 | You have | Call | You get back |
 | --- | --- | --- |
 | Visibility circles, elevation-mask footprints, instantaneous fields of view | `cover_cap()` | the cells inside each circle |
-| Scenes, frames, convex sensor footprints | `cover_convex_polygon()` | the cells inside each polygon |
+| Scenes, frames, and areas of interest | `cover_polygon()` | the cells inside each polygonal region |
 | The swath a sensor paints as it moves | `cover_sweep()` | the cells under each interval of the swath |
 | Individual pointings, ground tracks, sample points | `cell_at()` | the one cell each direction falls in |
 
@@ -108,8 +108,8 @@ The two caps above, and the cells `cover_cap()` returned for them.
 
 ## Cover scenes and sensor footprints
 
-A convex polygon is the shape of an imaging scene, a detector frame projected on
-the ground, or any convex area of interest. Give the vertices in boundary order.
+A polygon is the shape of an imaging scene, a detector frame projected on
+the ground, or an area of interest. Give the vertices in boundary order.
 Adjacent vertices are joined by the shorter of the two great-circle arcs between
 them:
 
@@ -117,7 +117,7 @@ them:
 >>> scene_lon = [-9.0, 7.0, 11.0, -2.0]
 >>> scene_lat = [-6.0, -8.0, 4.0, 8.0]
 
->>> scene_coverage = px.cover_convex_polygon(
+>>> scene_coverage = px.cover_polygon(
 ...     unit_vector(scene_lon, scene_lat), resolution=4
 ... )
 >>> np.diff(scene_coverage.offsets)
@@ -127,6 +127,20 @@ array([1312, 1376, 1377, 1439, 1440, 1441])
 ```
 
 One polygon produces one segment in the result.
+
+Concave arrays work directly. Use `Polygon(outer, *holes)` when a component has
+holes and `MultiPolygon(*polygons)` when one region has separate components.
+The whole multipart region still produces one result segment, with overlaps
+removed before reducers are applied.
+
+That segment can be reused as an area-of-interest restriction:
+
+```python
+europe_cells = px.cover_polygon(europe, resolution=8).cells
+coverage = px.cover_polygon(
+    scenes, resolution=8, candidate_cells=europe_cells
+)
+```
 
 ```{figure} assets/generated/cover-convex-polygon.svg
 :alt: A convex polygon and the grid cells it covers.

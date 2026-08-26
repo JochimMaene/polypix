@@ -28,7 +28,8 @@ The core inputs are:
 
 - finite, non-zero Cartesian direction vectors in a caller-defined frame;
 - spherical caps;
-- convex spherical polygons whose edges use the shorter great-circle arcs;
+- convex or concave spherical polygons, including holes and multipart regions,
+  whose edges use the shorter great-circle arcs;
 - paired sampled edges, with one sweep segment between each pair of samples.
 
 Coverage is based on cell centres: a cell is included when its centre lies
@@ -64,7 +65,7 @@ switch to reach.
 ## What stays out
 
 Polypix does not provide orbit or sensor models, longitude/latitude or CRS
-objects, concave geometry, holes, exact cell intersections, NESTED or
+objects, exact cell intersections, NESTED or
 mixed-resolution results, MOCs, neighbours, map algebra, timestamps, arbitrary
 reducers, GPU or distributed execution, or a generic grid interface.
 

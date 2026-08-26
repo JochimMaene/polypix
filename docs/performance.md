@@ -34,7 +34,7 @@ they come:
 
 ```python
 for start in range(0, len(polygons), 10_000):
-    chunk = px.cover_convex_polygon(polygons[start : start + 10_000], resolution=8)
+    chunk = px.cover_polygon(polygons[start : start + 10_000], resolution=8)
     consume(chunk)
 ```
 
@@ -45,7 +45,7 @@ requirement.
 
 | What you need | Use | What you avoid |
 | --- | --- | --- |
-| Membership per region | `cover_cap()`, `cover_convex_polygon()`, `cover_sweep()` | nothing; membership is the point |
+| Membership per region | `cover_cap()`, `cover_polygon()`, `cover_sweep()` | nothing; membership is the point |
 | Counts or weighted values per cell | `reduce=Count()`, `reduce=Sum(values)` | sorting, Python accumulation, one repeated value per hit |
 | Caps per cell | `cover_cap(..., reduce=Count())` | one cell ID per cap-cell hit, plus a `bincount()` |
 | Per-cell counts and internal gaps | `revisit()` | expanding every hit as an event, then building every run just to reduce it away |
@@ -145,10 +145,11 @@ to matter.
 
 ## Geometry shape
 
-Polygon coverage scans a conservative spherical bounding box and tests the
-centers inside it against every edge, which makes compact convex footprints the
-fast path. A large diagonal footprint, or one containing a pole, can cost far more
-per cell returned.
+Polygon coverage scans a conservative spherical bounding box. Convex components
+keep the existing half-space shortcut. Concave boundaries and holes use a flat
+crossing check; detailed boundaries are grouped by height so a center usually
+checks only nearby edges. A large diagonal footprint, one containing a pole, or
+a deeply notched boundary can still cost more per cell returned.
 
 Long thin regions are what `cover_sweep()` is for, since it keeps each interval's
 bounds tight. Caps use analytic per-ring longitude spans, and their dense counts
@@ -169,8 +170,8 @@ another thread while a call is running.
 ## Threading
 
 ```python
-serial = px.cover_convex_polygon(batch, resolution=8, threads=1)
-automatic = px.cover_convex_polygon(batch, resolution=8)  # threads=None
+serial = px.cover_polygon(batch, resolution=8, threads=1)
+automatic = px.cover_polygon(batch, resolution=8)  # threads=None
 ```
 
 Automatic mode stays sequential below measured crossovers. `cell_at()`,

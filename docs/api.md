@@ -7,7 +7,9 @@
 .. autosummary::
    :nosignatures:
 
-   cover_convex_polygon
+   cover_polygon
+   Polygon
+   MultiPolygon
    cover_cap
    cover_sweep
    cell_at
@@ -24,7 +26,12 @@
 ## Covering regions
 
 ```{eval-rst}
-.. autofunction:: cover_convex_polygon
+.. autofunction:: cover_polygon
+
+.. autoclass:: Polygon
+
+.. autoclass:: MultiPolygon
+   :members: __len__, __iter__
 
 .. autofunction:: cover_cap
 
@@ -68,8 +75,8 @@
 (geometry-contract)=
 ## Geometry contract
 
-A polygon is given as vertices in boundary order. It must be convex and fit
-inside an open hemisphere. Adjacent vertices are joined by the shorter of the two
+A polygon is given as vertices in boundary order. It may be convex or concave,
+but each component must fit inside an open hemisphere. Adjacent vertices are joined by the shorter of the two
 great-circle arcs between them, so longitudes -179° and 179° are two degrees
 apart, and nothing as large as a hemisphere can be described this way.
 
@@ -78,13 +85,15 @@ Accepted:
 - either vertex orientation;
 - a repeated closing vertex;
 - redundant vertices on an existing edge, within floating-point precision;
+- explicit holes and multipart unions through `Polygon` and `MultiPolygon`;
 - a cell center lying exactly on an edge, which counts as covered.
 
 Rejected:
 
 - fewer than three distinct vertices;
 - duplicate, antipodal, or non-finite vertices;
-- degenerate edges, self-intersections, and concave geometry;
+- degenerate edges and self-intersections;
+- holes outside, touching, or crossing their outer ring or another hole;
 - exact-hemisphere boundaries, and anything else detectably ambiguous.
 
 Detectably is doing real work in that last item. Vertices that are individually

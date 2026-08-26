@@ -84,6 +84,33 @@ def few_large_footprints() -> np.ndarray:
 
 
 @pytest.fixture(scope="module")
+def detailed_polygon_pair() -> tuple[px.Polygon, px.Polygon]:
+    vertex_count = 128
+    angles = np.arange(vertex_count) * (2.0 * np.pi / vertex_count)
+
+    def boundary(concave: bool) -> np.ndarray:
+        radii = np.full(vertex_count, math.radians(20.0))
+        if concave:
+            radii[1::2] = math.radians(17.0)
+        return np.column_stack(
+            (
+                np.cos(radii),
+                np.sin(radii) * np.cos(angles),
+                np.sin(radii) * np.sin(angles),
+            )
+        )
+
+    return px.Polygon(boundary(False)), px.Polygon(boundary(True))
+
+
+@pytest.fixture(scope="module")
+def detailed_polygon_candidates(
+    detailed_polygon_pair: tuple[px.Polygon, px.Polygon],
+) -> np.ndarray:
+    return px.cover_polygon(detailed_polygon_pair[0], 9, threads=1).cells
+
+
+@pytest.fixture(scope="module")
 def strip_edges() -> tuple[np.ndarray, np.ndarray]:
     latitudes = np.linspace(-40.0, 40.0, 501)
     left = np.asarray(
@@ -219,7 +246,7 @@ def many_sparse_sources() -> list[px.Coverage]:
 
 @pytest.fixture(scope="module")
 def cells(footprints: np.ndarray) -> np.ndarray:
-    return px.cover_convex_polygon(footprints, resolution=7, threads=1).cells
+    return px.cover_polygon(footprints, resolution=7, threads=1).cells
 
 
 @pytest.fixture(scope="module")
@@ -250,37 +277,81 @@ def multi_million_sorted_resolution_12_cells() -> np.ndarray:
 @pytest.mark.parametrize(
     "resolution", [4, 6, 7], ids=lambda value: f"resolution_{value}"
 )
-def test_cover_convex_polygon_batch(
+def test_cover_polygon_batch(
     benchmark, footprints: np.ndarray, resolution: int
 ) -> None:
-    coverage = benchmark(px.cover_convex_polygon, footprints, resolution, threads=1)
+    coverage = benchmark(px.cover_polygon, footprints, resolution, threads=1)
 
     assert coverage.offsets.shape == (footprints.shape[0] + 1,)
     assert coverage.cells.dtype == np.int64
 
 
-def test_cover_convex_polygon_single_latency(benchmark, footprints: np.ndarray) -> None:
-    coverage = benchmark(px.cover_convex_polygon, footprints[0], 7, threads=1)
+def test_cover_polygon_single_latency(benchmark, footprints: np.ndarray) -> None:
+    coverage = benchmark(px.cover_polygon, footprints[0], 7, threads=1)
 
     assert coverage.offsets.shape == (2,)
 
 
-def test_cover_convex_polygon_single_automatic_latency(
+def test_cover_polygon_single_automatic_latency(
     benchmark, footprints: np.ndarray
 ) -> None:
-    coverage = benchmark(px.cover_convex_polygon, footprints[0], 7)
+    coverage = benchmark(px.cover_polygon, footprints[0], 7)
 
     assert coverage.offsets.shape == (2,)
+
+
+@pytest.mark.parametrize("polygon_index", [0, 1], ids=["convex", "concave"])
+def test_cover_detailed_polygon(
+    benchmark,
+    detailed_polygon_pair: tuple[px.Polygon, px.Polygon],
+    polygon_index: int,
+) -> None:
+    coverage = benchmark(
+        px.cover_polygon,
+        detailed_polygon_pair[polygon_index],
+        9,
+        threads=1,
+    )
+
+    assert coverage.offsets.shape == (2,)
+
+
+def test_cover_detailed_concave_polygon_candidates(
+    benchmark,
+    detailed_polygon_pair: tuple[px.Polygon, px.Polygon],
+    detailed_polygon_candidates: np.ndarray,
+) -> None:
+    coverage = benchmark(
+        px.cover_polygon,
+        detailed_polygon_pair[1],
+        9,
+        candidate_cells=detailed_polygon_candidates,
+        threads=1,
+    )
+
+    assert coverage.offsets.shape == (2,)
+
+
+def test_cover_mixed_convex_concave_batch(
+    benchmark,
+    detailed_polygon_pair: tuple[px.Polygon, px.Polygon],
+) -> None:
+    polygons = np.repeat(detailed_polygon_pair[0].outer[np.newaxis], 32, axis=0)
+    polygons[-1] = detailed_polygon_pair[1].outer
+
+    coverage = benchmark(px.cover_polygon, polygons, 7, threads=1)
+
+    assert coverage.offsets.shape == (33,)
 
 
 @pytest.mark.parametrize(
     "resolution", [6, 7, 9], ids=lambda value: f"resolution_{value}"
 )
 @pytest.mark.parallel
-def test_cover_convex_polygon_automatic_parallel(
+def test_cover_polygon_automatic_parallel(
     benchmark, large_footprints: np.ndarray, resolution: int
 ) -> None:
-    coverage = benchmark(px.cover_convex_polygon, large_footprints, resolution)
+    coverage = benchmark(px.cover_polygon, large_footprints, resolution)
 
     assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
 
@@ -296,7 +367,7 @@ def test_cover_few_large_footprints(
     threads: int | None,
 ) -> None:
     coverage = benchmark(
-        px.cover_convex_polygon,
+        px.cover_polygon,
         few_large_footprints,
         10,
         threads=threads,
@@ -306,45 +377,45 @@ def test_cover_few_large_footprints(
 
 
 @pytest.mark.parametrize("resolution", [6, 12], ids=lambda value: f"resolution_{value}")
-def test_cover_convex_polygon_automatic_light_batch(
+def test_cover_polygon_automatic_light_batch(
     benchmark, footprints: np.ndarray, resolution: int
 ) -> None:
-    coverage = benchmark(px.cover_convex_polygon, footprints[:300], resolution)
+    coverage = benchmark(px.cover_polygon, footprints[:300], resolution)
 
     assert coverage.offsets.shape == (301,)
 
 
 @pytest.mark.parametrize("threads", [1, None], ids=["serial", "automatic"])
-def test_cover_convex_polygon_automatic_prepass_cost(
+def test_cover_polygon_automatic_prepass_cost(
     benchmark,
     large_footprints: np.ndarray,
     threads: int | None,
 ) -> None:
     footprints = large_footprints[:2_000]
-    coverage = benchmark(px.cover_convex_polygon, footprints, 2, threads=threads)
+    coverage = benchmark(px.cover_polygon, footprints, 2, threads=threads)
 
     assert coverage.offsets.shape == (2_001,)
 
 
 @pytest.mark.parallel
-def test_cover_convex_polygon_explicit_pool_reuse(
+def test_cover_polygon_explicit_pool_reuse(
     benchmark, large_footprints: np.ndarray
 ) -> None:
-    coverage = benchmark(px.cover_convex_polygon, large_footprints, 9, threads=4)
+    coverage = benchmark(px.cover_polygon, large_footprints, 9, threads=4)
 
     assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
 
 
-def test_cover_convex_polygon_dense_nested_list(
+def test_cover_polygon_dense_nested_list(
     benchmark, large_footprints: np.ndarray
 ) -> None:
     nested = large_footprints.tolist()
-    coverage = benchmark(px.cover_convex_polygon, nested, 7, threads=1)
+    coverage = benchmark(px.cover_polygon, nested, 7, threads=1)
 
     assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
 
 
-def test_cover_convex_polygon_mixed_ragged_batch(
+def test_cover_polygon_mixed_ragged_batch(
     benchmark, large_footprints: np.ndarray
 ) -> None:
     midpoint = large_footprints[-1, 1] + large_footprints[-1, 2]
@@ -352,13 +423,13 @@ def test_cover_convex_polygon_mixed_ragged_batch(
     pentagon = np.vstack((large_footprints[-1, :2], midpoint, large_footprints[-1, 2:]))
     ragged = tuple(large_footprints[:-1]) + (pentagon,)
 
-    coverage = benchmark(px.cover_convex_polygon, ragged, 9, threads=1)
+    coverage = benchmark(px.cover_polygon, ragged, 9, threads=1)
 
     assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
 
 
 @pytest.mark.parallel
-def test_cover_convex_polygon_mixed_ragged_batch_automatic(
+def test_cover_polygon_mixed_ragged_batch_automatic(
     benchmark, large_footprints: np.ndarray
 ) -> None:
     midpoint = large_footprints[-1, 1] + large_footprints[-1, 2]
@@ -366,7 +437,7 @@ def test_cover_convex_polygon_mixed_ragged_batch_automatic(
     pentagon = np.vstack((large_footprints[-1, :2], midpoint, large_footprints[-1, 2:]))
     ragged = tuple(large_footprints[:-1]) + (pentagon,)
 
-    coverage = benchmark(px.cover_convex_polygon, ragged, 9)
+    coverage = benchmark(px.cover_polygon, ragged, 9)
 
     assert coverage.offsets.shape == (large_footprints.shape[0] + 1,)
 
@@ -402,7 +473,7 @@ def many_ragged_polygons() -> list[np.ndarray]:
     return rows
 
 
-def test_cover_convex_polygon_many_ragged_polygons(
+def test_cover_polygon_many_ragged_polygons(
     benchmark, many_ragged_polygons: list[np.ndarray]
 ) -> None:
     """Preparation must not dominate a large ragged batch.
@@ -411,12 +482,12 @@ def test_cover_convex_polygon_many_ragged_polygons(
     which on this shape exceeded the covering work; one `concatenate` and one
     whole-buffer check replaced it.
     """
-    coverage = benchmark(px.cover_convex_polygon, many_ragged_polygons, 7, threads=1)
+    coverage = benchmark(px.cover_polygon, many_ragged_polygons, 7, threads=1)
 
     assert coverage.offsets.shape == (len(many_ragged_polygons) + 1,)
 
 
-def test_cover_convex_polygon_with_large_sparse_candidate_set(
+def test_cover_polygon_with_large_sparse_candidate_set(
     benchmark,
     large_footprints: np.ndarray,
     large_sparse_resolution_12_cells: np.ndarray,
@@ -424,7 +495,7 @@ def test_cover_convex_polygon_with_large_sparse_candidate_set(
     resolution = 12
 
     coverage = benchmark(
-        px.cover_convex_polygon,
+        px.cover_polygon,
         large_footprints,
         resolution,
         candidate_cells=large_sparse_resolution_12_cells,
@@ -439,14 +510,14 @@ def test_cover_convex_polygon_with_large_sparse_candidate_set(
     [1, pytest.param(None, marks=pytest.mark.parallel)],
     ids=["serial", "automatic"],
 )
-def test_cover_convex_polygon_with_candidates_parallel_scaling(
+def test_cover_polygon_with_candidates_parallel_scaling(
     benchmark,
     large_footprints: np.ndarray,
     multi_million_sorted_resolution_12_cells: np.ndarray,
     threads: int | None,
 ) -> None:
     coverage = benchmark(
-        px.cover_convex_polygon,
+        px.cover_polygon,
         large_footprints,
         12,
         candidate_cells=multi_million_sorted_resolution_12_cells,
@@ -461,14 +532,14 @@ def test_cover_convex_polygon_with_candidates_parallel_scaling(
     [1, pytest.param(None, marks=pytest.mark.parallel)],
     ids=["serial", "automatic"],
 )
-def test_cover_convex_polygon_with_small_sparse_candidate_set(
+def test_cover_polygon_with_small_sparse_candidate_set(
     benchmark,
     large_footprints: np.ndarray,
     sparse_resolution_12_cells: np.ndarray,
     threads: int | None,
 ) -> None:
     coverage = benchmark(
-        px.cover_convex_polygon,
+        px.cover_polygon,
         large_footprints,
         12,
         candidate_cells=sparse_resolution_12_cells,
@@ -484,7 +555,7 @@ def test_cover_single_with_large_sparse_candidate_set(
     large_sparse_resolution_12_cells: np.ndarray,
 ) -> None:
     coverage = benchmark(
-        px.cover_convex_polygon,
+        px.cover_polygon,
         large_footprints[0],
         12,
         candidate_cells=large_sparse_resolution_12_cells,
@@ -500,7 +571,7 @@ def test_cover_with_multi_million_sorted_candidates(
     multi_million_sorted_resolution_12_cells: np.ndarray,
 ) -> None:
     coverage = benchmark(
-        px.cover_convex_polygon,
+        px.cover_polygon,
         large_footprints[:64],
         12,
         candidate_cells=multi_million_sorted_resolution_12_cells,
@@ -688,7 +759,7 @@ def test_cover_polygon_selected_count_small_request(
     """
     requested = np.arange(1000, dtype=np.int64) * 3001
     counts = benchmark(
-        px.cover_convex_polygon,
+        px.cover_polygon,
         footprints,
         9,
         candidate_cells=requested,
@@ -699,7 +770,7 @@ def test_cover_polygon_selected_count_small_request(
     assert counts.shape == requested.shape
     np.testing.assert_array_equal(
         counts,
-        px.cover_convex_polygon(footprints, 9).reduce(px.Count(), cells=requested),
+        px.cover_polygon(footprints, 9).reduce(px.Count(), cells=requested),
     )
 
 
@@ -714,7 +785,7 @@ def test_cover_polygon_selected_count_large_request(
     """
     requested = np.arange(200_000, dtype=np.int64)
     counts = benchmark(
-        px.cover_convex_polygon,
+        px.cover_polygon,
         footprints,
         9,
         candidate_cells=requested,
@@ -725,7 +796,7 @@ def test_cover_polygon_selected_count_large_request(
     assert counts.shape == requested.shape
     np.testing.assert_array_equal(
         counts,
-        px.cover_convex_polygon(footprints, 9).reduce(px.Count(), cells=requested),
+        px.cover_polygon(footprints, 9).reduce(px.Count(), cells=requested),
     )
 
 

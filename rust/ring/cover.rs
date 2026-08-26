@@ -4,6 +4,7 @@
 //! use, asks `shape` to visit the cells, and owns the buffers those cells land
 //! in.
 
+use std::borrow::Borrow;
 use std::ops::Range;
 
 use rayon::prelude::*;
@@ -116,12 +117,14 @@ pub(super) fn dispatch_coverage(
     })?
 }
 
-pub(super) fn compute_candidate_coverage(
+pub(super) fn compute_candidate_coverage<T: Send + Sync>(
     item_count: usize,
     candidates: &[u64],
     resolution: u8,
     threads: Option<usize>,
-    prepare: impl Fn(usize) -> Result<PreparedFootprint, String> + Send + Sync,
+    prepare: impl Fn(usize) -> Result<T, String> + Send + Sync,
+    z_bounds: impl Fn(&T) -> (f64, f64) + Send + Sync,
+    contains: impl Fn(&T, Vec3) -> bool + Send + Sync,
 ) -> NativeResult<Coverage> {
     let prepare_all = |parallel| {
         let prepared = if parallel {
@@ -136,19 +139,17 @@ pub(super) fn compute_candidate_coverage(
         // footprint is stable across thread counts.
         prepared.into_iter().collect::<Result<Vec<_>, _>>()
     };
-    let plan_for = |footprints: &[PreparedFootprint], parallel| {
-        plan_item_candidates(footprints, candidates, resolution, parallel, |footprint| {
-            footprint.z_bounds()
-        })
+    let plan_for = |items: &[T], parallel| {
+        plan_item_candidates(items, candidates, resolution, parallel, &z_bounds)
     };
-    let compute_planned = |footprints: &[PreparedFootprint], plan: &CandidatePlan, parallel| {
+    let compute_planned = |items: &[T], plan: &CandidatePlan, parallel| {
         compute_planned_candidates(
             item_count,
             plan,
             candidates,
             resolution,
             parallel,
-            |index, point| footprints[index].contains(point),
+            |index, point| contains(&items[index], point),
         )
     };
     // Footprint preparation happens here too, so it counts toward the decision.
@@ -251,6 +252,8 @@ pub(super) fn compute_mixed_coverage(
                 PreparedFootprint::from_raw(&vertices[start * 3..end * 3])
                     .map_err(|error| format!("polygons_xyz[{index}]: {error}"))
             },
+            PreparedFootprint::z_bounds,
+            PreparedFootprint::contains,
         );
     }
     let parallel_work = accumulated_scan_work(polygon_count, threads, estimated_cells);
@@ -279,6 +282,141 @@ pub(crate) fn cover(
         candidates.as_deref(),
         restrict_output,
         threads,
+    )
+}
+
+pub(crate) struct PreparedRegionPolygon {
+    footprint: PreparedFootprint,
+    estimated_fraction: f64,
+}
+
+impl PreparedRegionPolygon {
+    fn z_bounds(&self) -> (f64, f64) {
+        self.footprint.z_bounds()
+    }
+
+    fn contains(&self, point: Vec3) -> bool {
+        self.footprint.contains(point)
+    }
+
+    fn cover(&self, resolution: u8, cells: &mut Vec<u64>) -> NativeResult<()> {
+        self.footprint.cover(resolution, cells)
+    }
+
+    fn estimated_cells(&self, resolution: u8) -> usize {
+        (self.estimated_fraction * raw_cell_count(resolution) as f64) as usize
+    }
+}
+
+pub(crate) fn prepare_region_polygon(
+    vertices: &[f64],
+    ring_offsets: &[u64],
+    first_ring: usize,
+    last_ring: usize,
+) -> Result<PreparedRegionPolygon, String> {
+    let rings = (first_ring..last_ring)
+        .map(|ring| {
+            let start = ring_offsets[ring] as usize * 3;
+            let end = ring_offsets[ring + 1] as usize * 3;
+            vertices[start..end]
+                .chunks_exact(3)
+                .map(|value| [value[0], value[1], value[2]])
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let outer_start = ring_offsets[first_ring] as usize * 3;
+    let outer_end = ring_offsets[first_ring + 1] as usize * 3;
+    PreparedFootprint::from_rings(&rings).map(|footprint| PreparedRegionPolygon {
+        footprint,
+        estimated_fraction: estimated_cap_fraction(&vertices[outer_start..outer_end]),
+    })
+}
+
+fn region_z_bounds<P: Borrow<PreparedRegionPolygon>>(polygons: &[P]) -> (f64, f64) {
+    polygons
+        .iter()
+        .map(|polygon| polygon.borrow().z_bounds())
+        .fold((1.0_f64, -1.0_f64), |bounds, (minimum, maximum)| {
+            (bounds.0.min(minimum), bounds.1.max(maximum))
+        })
+}
+
+fn region_contains<P: Borrow<PreparedRegionPolygon>>(polygons: &[P], point: Vec3) -> bool {
+    polygons
+        .iter()
+        .any(|polygon| polygon.borrow().contains(point))
+}
+
+fn cover_prepared_region<P: Borrow<PreparedRegionPolygon>>(
+    polygons: &[P],
+    resolution: u8,
+    cells: &mut Vec<u64>,
+) -> NativeResult<()> {
+    if let [polygon] = polygons {
+        return polygon.borrow().cover(resolution, cells);
+    }
+    let mut region_cells = Vec::new();
+    for polygon in polygons {
+        polygon.borrow().cover(resolution, &mut region_cells)?;
+    }
+    region_cells.sort_unstable();
+    region_cells.dedup();
+    cells
+        .try_reserve(region_cells.len())
+        .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
+    cells.extend(region_cells);
+    Ok(())
+}
+
+pub(crate) fn cover_prepared_regions(
+    regions: &[Vec<&PreparedRegionPolygon>],
+    resolution: u8,
+    raw_candidates: Option<&[u64]>,
+    restrict_output: bool,
+    threads: Option<usize>,
+) -> NativeResult<Coverage> {
+    let candidates = candidate_cells(raw_candidates, resolution)?;
+    let region_count = regions.len();
+    let estimated_cells = |region: usize| {
+        regions[region].iter().fold(0_usize, |total, polygon| {
+            total.saturating_add(polygon.estimated_cells(resolution))
+        })
+    };
+    if let Some(candidates) = candidates.as_deref().filter(|candidates| {
+        should_test_candidates(
+            restrict_output,
+            sampled_total(region_count, estimated_cells) as f64,
+            regions.iter().map(Vec::len).sum(),
+            candidates.len(),
+        )
+    }) {
+        return compute_candidate_coverage(
+            region_count,
+            candidates,
+            resolution,
+            threads,
+            |region| Ok::<_, String>(regions[region].as_slice()),
+            |polygons| region_z_bounds(polygons),
+            |polygons, point| region_contains(polygons, point),
+        );
+    }
+    let parallel_work = accumulated_scan_work(region_count, threads, estimated_cells);
+    dispatch_coverage(
+        region_count,
+        parallel_work >= SCAN_PARALLEL_MIN_WORK,
+        threads,
+        |range| {
+            let mut coverage = Coverage {
+                cells: Vec::new(),
+                offsets: Vec::with_capacity(range.len() + 1),
+            };
+            coverage.offsets.push(0);
+            for region in range {
+                cover_prepared_region(&regions[region], resolution, &mut coverage.cells)?;
+                coverage.offsets.push(coverage.cells.len() as u64);
+            }
+            Ok(coverage)
+        },
     )
 }
 
@@ -629,6 +767,8 @@ pub(crate) fn cover_sweep(
             resolution,
             threads,
             |index| prepare_sweep_footprint(&normalized_left, &normalized_right, index),
+            PreparedFootprint::z_bounds,
+            PreparedFootprint::contains,
         );
     }
     let parallel_work = accumulated_scan_work(segment_count, threads, estimated_cells);

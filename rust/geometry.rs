@@ -10,6 +10,11 @@ const ZERO_NORM_EPSILON: f64 = 1.0e-15;
 // validation floor.
 const VALIDATION_TRIPLE_EPSILON: f64 = 0.5 * f64::EPSILON;
 const VERTEX_EQUALITY_EPSILON: f64 = 1.0e-12;
+const LINEAR_FEASIBILITY_EPSILON: f64 = 1.0e-12;
+const EDGE_BIN_MIN_VERTICES: usize = 32;
+const EDGE_BIN_MIN_COUNT: usize = 64;
+const EDGE_BIN_MAX_COUNT: usize = 256;
+const EDGE_BIN_MAX_MEMBERSHIPS_PER_VERTEX: usize = 20;
 
 pub(crate) type Vec3 = [f64; 3];
 
@@ -28,7 +33,7 @@ pub(crate) fn dot(left: Vec3, right: Vec3) -> f64 {
     left[0] * right[0] + left[1] * right[1] + left[2] * right[2]
 }
 
-fn cross(left: Vec3, right: Vec3) -> Vec3 {
+pub(crate) fn cross(left: Vec3, right: Vec3) -> Vec3 {
     [
         left[1] * right[2] - left[2] * right[1],
         left[2] * right[0] - left[0] * right[2],
@@ -36,7 +41,7 @@ fn cross(left: Vec3, right: Vec3) -> Vec3 {
     ]
 }
 
-fn norm(vector: Vec3) -> f64 {
+pub(crate) fn norm(vector: Vec3) -> f64 {
     vector[0].hypot(vector[1]).hypot(vector[2])
 }
 
@@ -228,4 +233,476 @@ pub(crate) fn contains_center(edge_normals: &[Vec3], center: Vec3) -> bool {
     edge_normals
         .iter()
         .all(|&normal| dot(normal, center) >= -CONTAINMENT_EPSILON)
+}
+
+pub(crate) struct Ring {
+    pub(crate) vertices: Vec<Vec3>,
+    pub(crate) edge_normals: Vec<Vec3>,
+    axis: Vec3,
+    projection_y: Vec3,
+    projected_y: Vec<f64>,
+    edge_bins: Option<EdgeBins>,
+}
+
+struct EdgeBins {
+    minimum_y: f64,
+    maximum_y: f64,
+    scale: f64,
+    guard: f64,
+    bins: Vec<Vec<usize>>,
+}
+
+pub(crate) struct GeneralPolygon {
+    pub(crate) outer: Ring,
+    pub(crate) holes: Vec<Ring>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RingLocation {
+    Outside,
+    Boundary,
+    Inside,
+}
+
+fn ring_location(ring: &Ring, point: Vec3) -> RingLocation {
+    let projection_scale = dot(ring.axis, point);
+    if projection_scale <= 0.0 {
+        return RingLocation::Outside;
+    }
+    // Looking from the ring axis turns its great-circle edges into straight
+    // lines, so this ordinary crossing test is exact without angle sums.
+    let point_y = dot(ring.projection_y, point) / projection_scale;
+    let projection_guard = CONTAINMENT_EPSILON * (1.0 + point_y.abs()) / projection_scale;
+    let mut inside = false;
+    let mut visit_edge = |index: usize| {
+        let next = if index + 1 == ring.vertices.len() {
+            0
+        } else {
+            index + 1
+        };
+        let start_y = ring.projected_y[index];
+        let end_y = ring.projected_y[next];
+        if point_y < start_y.min(end_y) - projection_guard
+            || point_y > start_y.max(end_y) + projection_guard
+        {
+            return false;
+        }
+        let side = dot(ring.edge_normals[index], point);
+        if side.abs() <= CONTAINMENT_EPSILON {
+            let start = ring.vertices[index];
+            let end = ring.vertices[next];
+            let edge_cosine = dot(start, end);
+            if dot(start, point) >= edge_cosine - CONTAINMENT_EPSILON
+                && dot(end, point) >= edge_cosine - CONTAINMENT_EPSILON
+            {
+                return true;
+            }
+        }
+        // Together, the edge direction and side say whether its crossing is
+        // to the right of the point.
+        let crosses_ray = (side > 0.0 && end_y > start_y) || (side < 0.0 && end_y < start_y);
+        if (start_y > point_y) != (end_y > point_y) && crosses_ray {
+            inside = !inside;
+        }
+        false
+    };
+    if let Some(edge_bins) = &ring.edge_bins {
+        if point_y < edge_bins.minimum_y - projection_guard
+            || point_y > edge_bins.maximum_y + projection_guard
+        {
+            return RingLocation::Outside;
+        }
+        if projection_guard <= edge_bins.guard {
+            let bin = (((point_y - edge_bins.minimum_y) * edge_bins.scale) as usize)
+                .min(edge_bins.bins.len() - 1);
+            if edge_bins.bins[bin].iter().copied().any(&mut visit_edge) {
+                return RingLocation::Boundary;
+            }
+        } else if (0..ring.vertices.len()).any(&mut visit_edge) {
+            return RingLocation::Boundary;
+        }
+    } else if (0..ring.vertices.len()).any(&mut visit_edge) {
+        return RingLocation::Boundary;
+    }
+    if inside {
+        RingLocation::Inside
+    } else {
+        RingLocation::Outside
+    }
+}
+
+fn prepare_edge_bins(vertices: &[Vec3], projected_y: &[f64], axis: Vec3) -> Option<EdgeBins> {
+    // Detailed boundaries only need the edges near a point's height. Keep the
+    // table bounded, and use the plain edge loop when long edges make it bulky.
+    if vertices.len() < EDGE_BIN_MIN_VERTICES {
+        return None;
+    }
+    let minimum_y = projected_y.iter().copied().reduce(f64::min)?;
+    let maximum_y = projected_y.iter().copied().reduce(f64::max)?;
+    if minimum_y == maximum_y {
+        return None;
+    }
+    let minimum_scale = vertices
+        .iter()
+        .map(|&vertex| dot(axis, vertex))
+        .reduce(f64::min)?;
+    let guard = CONTAINMENT_EPSILON * (1.0 + minimum_y.abs().max(maximum_y.abs())) / minimum_scale;
+    let mut bin_count = vertices
+        .len()
+        .saturating_mul(2)
+        .clamp(EDGE_BIN_MIN_COUNT, EDGE_BIN_MAX_COUNT);
+    'retry: loop {
+        let scale = bin_count as f64 / (maximum_y - minimum_y);
+        let bin_for = |value: f64| (((value - minimum_y) * scale) as usize).min(bin_count - 1);
+        let mut bins = (0..bin_count).map(|_| Vec::new()).collect::<Vec<_>>();
+        let mut memberships = 0_usize;
+        for index in 0..vertices.len() {
+            let next = if index + 1 == vertices.len() {
+                0
+            } else {
+                index + 1
+            };
+            let first =
+                bin_for(projected_y[index].min(projected_y[next]) - guard).saturating_sub(1);
+            let last =
+                (bin_for(projected_y[index].max(projected_y[next]) + guard) + 1).min(bin_count - 1);
+            memberships = memberships.saturating_add(last - first + 1);
+            if memberships
+                > vertices
+                    .len()
+                    .saturating_mul(EDGE_BIN_MAX_MEMBERSHIPS_PER_VERTEX)
+            {
+                if bin_count == EDGE_BIN_MIN_COUNT {
+                    return None;
+                }
+                bin_count = (bin_count / 2).max(EDGE_BIN_MIN_COUNT);
+                continue 'retry;
+            }
+            for bin in &mut bins[first..=last] {
+                bin.push(index);
+            }
+        }
+        return Some(EdgeBins {
+            minimum_y,
+            maximum_y,
+            scale,
+            guard,
+            bins,
+        });
+    }
+}
+
+pub(crate) fn general_polygon_contains(polygon: &GeneralPolygon, point: Vec3) -> bool {
+    match ring_location(&polygon.outer, point) {
+        RingLocation::Outside => false,
+        RingLocation::Boundary => true,
+        RingLocation::Inside => polygon
+            .holes
+            .iter()
+            .all(|hole| ring_location(hole, point) != RingLocation::Inside),
+    }
+}
+
+pub(crate) fn ring_contains(ring: &Ring, point: Vec3) -> bool {
+    ring_location(ring, point) != RingLocation::Outside
+}
+
+fn projection_basis(axis: Vec3) -> (Vec3, Vec3) {
+    let reference = if axis[2].abs() < 0.9 {
+        [0.0, 0.0, 1.0]
+    } else {
+        [1.0, 0.0, 0.0]
+    };
+    let first = normalize(cross(reference, axis)).expect("basis vectors are not parallel");
+    let second = cross(axis, first);
+    (first, second)
+}
+
+fn projected_vertices(vertices: &[Vec3], axis: Vec3, first: Vec3, second: Vec3) -> Vec<[f64; 2]> {
+    vertices
+        .iter()
+        .map(|&vertex| {
+            let scale = dot(axis, vertex);
+            [dot(first, vertex) / scale, dot(second, vertex) / scale]
+        })
+        .collect()
+}
+
+fn orient(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
+    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+}
+
+fn orient_tolerance(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> f64 {
+    let scale = (b[0] - a[0])
+        .abs()
+        .max((b[1] - a[1]).abs())
+        .max((c[0] - a[0]).abs())
+        .max((c[1] - a[1]).abs());
+    CONTAINMENT_EPSILON * scale.max(CONTAINMENT_EPSILON) * scale.max(1.0)
+}
+
+fn between(a: f64, b: f64, value: f64) -> bool {
+    let tolerance = CONTAINMENT_EPSILON * (1.0 + a.abs().max(b.abs()).max(value.abs()));
+    value >= a.min(b) - tolerance && value <= a.max(b) + tolerance
+}
+
+fn segments_touch_or_cross(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
+    let ab_c = orient(a, b, c);
+    let ab_d = orient(a, b, d);
+    let cd_a = orient(c, d, a);
+    let cd_b = orient(c, d, b);
+    let ab_c_tolerance = orient_tolerance(a, b, c);
+    let ab_d_tolerance = orient_tolerance(a, b, d);
+    let cd_a_tolerance = orient_tolerance(c, d, a);
+    let cd_b_tolerance = orient_tolerance(c, d, b);
+    if ((ab_c > ab_c_tolerance && ab_d < -ab_d_tolerance)
+        || (ab_c < -ab_c_tolerance && ab_d > ab_d_tolerance))
+        && ((cd_a > cd_a_tolerance && cd_b < -cd_b_tolerance)
+            || (cd_a < -cd_a_tolerance && cd_b > cd_b_tolerance))
+    {
+        return true;
+    }
+    [(ab_c, ab_c_tolerance, c), (ab_d, ab_d_tolerance, d)]
+        .into_iter()
+        .any(|(side, tolerance, point)| {
+            side.abs() <= tolerance
+                && between(a[0], b[0], point[0])
+                && between(a[1], b[1], point[1])
+        })
+        || [(cd_a, cd_a_tolerance, a), (cd_b, cd_b_tolerance, b)]
+            .into_iter()
+            .any(|(side, tolerance, point)| {
+                side.abs() <= tolerance
+                    && between(c[0], d[0], point[0])
+                    && between(c[1], d[1], point[1])
+            })
+}
+
+fn rings_touch_or_cross(left: &Ring, right: &Ring, axis: Vec3) -> bool {
+    let (first, second) = projection_basis(axis);
+    let left_projected = projected_vertices(&left.vertices, axis, first, second);
+    let right_projected = projected_vertices(&right.vertices, axis, first, second);
+    left_projected
+        .iter()
+        .zip(left_projected.iter().cycle().skip(1))
+        .any(|(&a, &b)| {
+            right_projected
+                .iter()
+                .zip(right_projected.iter().cycle().skip(1))
+                .any(|(&c, &d)| segments_touch_or_cross(a, b, c, d))
+        })
+}
+
+fn solve_line_constraints(constraints: &[[f64; 3]]) -> Option<[f64; 2]> {
+    let mut point = [0.0; 2];
+    for (index, &[a, b, constant]) in constraints.iter().enumerate() {
+        let value = a * point[0] + b * point[1] + constant;
+        if value >= -LINEAR_FEASIBILITY_EPSILON {
+            continue;
+        }
+        let squared_length = a * a + b * b;
+        if squared_length <= CONTAINMENT_EPSILON * CONTAINMENT_EPSILON {
+            return None;
+        }
+        let base = [
+            point[0] - value * a / squared_length,
+            point[1] - value * b / squared_length,
+        ];
+        let direction = [-b, a];
+        let mut lower = f64::NEG_INFINITY;
+        let mut upper = f64::INFINITY;
+        for &[other_a, other_b, other_constant] in &constraints[..index] {
+            let slope = other_a * direction[0] + other_b * direction[1];
+            let at_base = other_a * base[0] + other_b * base[1] + other_constant;
+            if slope.abs() <= CONTAINMENT_EPSILON {
+                if at_base < -LINEAR_FEASIBILITY_EPSILON {
+                    return None;
+                }
+            } else {
+                let boundary = -at_base / slope;
+                if slope > 0.0 {
+                    lower = lower.max(boundary);
+                } else {
+                    upper = upper.min(boundary);
+                }
+            }
+        }
+        if lower > upper + LINEAR_FEASIBILITY_EPSILON {
+            return None;
+        }
+        let parameter = if lower > 0.0 {
+            lower
+        } else if upper < 0.0 {
+            upper
+        } else {
+            0.0
+        };
+        point = [
+            base[0] + parameter * direction[0],
+            base[1] + parameter * direction[1],
+        ];
+    }
+    Some(point)
+}
+
+fn hemisphere_axis(vertices: &[Vec3]) -> Result<Vec3, String> {
+    let summed = vertices.iter().fold([0.0; 3], |mut sum, vertex| {
+        sum[0] += vertex[0];
+        sum[1] += vertex[1];
+        sum[2] += vertex[2];
+        sum
+    });
+    if let Ok(axis) = normalize(summed) {
+        if vertices
+            .iter()
+            .all(|&vertex| dot(axis, vertex) > CONTAINMENT_EPSILON)
+        {
+            return Ok(axis);
+        }
+    }
+
+    // A fitting direction can be scaled until its dot product with every
+    // vertex is at least one. Add each failed condition in turn, solving the
+    // earlier conditions on its boundary plane.
+    let mut point = [0.0; 3];
+    for (index, &vertex) in vertices.iter().enumerate() {
+        if dot(vertex, point) >= 1.0 - LINEAR_FEASIBILITY_EPSILON {
+            continue;
+        }
+        let (first, second) = projection_basis(vertex);
+        let constraints = vertices[..index]
+            .iter()
+            .map(|&other| {
+                [
+                    dot(other, first),
+                    dot(other, second),
+                    dot(other, vertex) - 1.0,
+                ]
+            })
+            .collect::<Vec<_>>();
+        let [x, y] = solve_line_constraints(&constraints)
+            .ok_or_else(|| "Ring does not fit inside an open hemisphere.".to_owned())?;
+        point = [
+            vertex[0] + x * first[0] + y * second[0],
+            vertex[1] + x * first[1] + y * second[1],
+            vertex[2] + x * first[2] + y * second[2],
+        ];
+    }
+    let axis =
+        normalize(point).map_err(|_| "Ring does not fit inside an open hemisphere.".to_owned())?;
+    if vertices
+        .iter()
+        .any(|&vertex| dot(axis, vertex) <= CONTAINMENT_EPSILON)
+    {
+        return Err("Ring does not fit inside an open hemisphere.".to_owned());
+    }
+    Ok(axis)
+}
+
+fn prepare_ring(raw_vertices: &[[f64; 3]]) -> Result<Ring, String> {
+    if raw_vertices.len() < 3 {
+        return Err("Each ring needs at least three vertices.".to_owned());
+    }
+    let mut vertices = raw_vertices
+        .iter()
+        .copied()
+        .map(|vertex| normalize(vertex).map_err(|error| format!("vector {error}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    if nearly_equal(vertices[0], *vertices.last().expect("non-empty ring")) {
+        vertices.pop();
+    }
+    if vertices.len() < 3 {
+        return Err("Each ring needs at least three unique vertices.".to_owned());
+    }
+    for left in 0..vertices.len() {
+        for other in (left + 1)..vertices.len() {
+            if nearly_equal(vertices[left], vertices[other]) {
+                return Err("Ring contains duplicate vertices.".to_owned());
+            }
+        }
+    }
+    let edge_normals = vertices
+        .iter()
+        .zip(vertices.iter().cycle().skip(1))
+        .map(|(&left, &right)| normalized_edge(left, right))
+        .collect::<Result<Vec<_>, _>>()?;
+    let axis = hemisphere_axis(&vertices)?;
+    let (projection_x, projection_y) = projection_basis(axis);
+    let projected = projected_vertices(&vertices, axis, projection_x, projection_y);
+    let maximum_turn = projected
+        .iter()
+        .zip(projected.iter().cycle().skip(1))
+        .zip(projected.iter().cycle().skip(2))
+        .take(projected.len())
+        .map(|((&a, &b), &c)| orient(a, b, c).abs())
+        .fold(0.0_f64, f64::max);
+    if maximum_turn <= VALIDATION_TRIPLE_EPSILON {
+        return Err("Ring is degenerate.".to_owned());
+    }
+    for first in 0..projected.len() {
+        let first_next = (first + 1) % projected.len();
+        for second in (first + 1)..projected.len() {
+            let second_next = (second + 1) % projected.len();
+            if first == second || first_next == second || second_next == first {
+                continue;
+            }
+            if segments_touch_or_cross(
+                projected[first],
+                projected[first_next],
+                projected[second],
+                projected[second_next],
+            ) {
+                return Err("Ring must not cross or touch itself.".to_owned());
+            }
+        }
+    }
+    let projected_y = projected.iter().map(|vertex| vertex[1]).collect::<Vec<_>>();
+    let edge_bins = prepare_edge_bins(&vertices, &projected_y, axis);
+    Ok(Ring {
+        vertices,
+        edge_normals,
+        axis,
+        projection_y,
+        projected_y,
+        edge_bins,
+    })
+}
+
+pub(crate) fn prepare_general_polygon(
+    raw_rings: &[Vec<[f64; 3]>],
+) -> Result<GeneralPolygon, String> {
+    let Some(raw_outer) = raw_rings.first() else {
+        return Err("A polygon needs an outer ring.".to_owned());
+    };
+    let outer = prepare_ring(raw_outer)?;
+    let holes = raw_rings
+        .iter()
+        .skip(1)
+        .enumerate()
+        .map(|(index, ring)| prepare_ring(ring).map_err(|error| format!("holes[{index}]: {error}")))
+        .collect::<Result<Vec<_>, _>>()?;
+    for (index, hole) in holes.iter().enumerate() {
+        if hole
+            .vertices
+            .iter()
+            .any(|&vertex| dot(outer.axis, vertex) <= CONTAINMENT_EPSILON)
+            || rings_touch_or_cross(&outer, hole, outer.axis)
+            || ring_location(&outer, hole.vertices[0]) != RingLocation::Inside
+        {
+            return Err(format!(
+                "holes[{index}] must be strictly inside the outer ring."
+            ));
+        }
+        for (other_index, other) in holes[..index].iter().enumerate() {
+            if rings_touch_or_cross(hole, other, outer.axis)
+                || ring_location(hole, other.vertices[0]) != RingLocation::Outside
+                || ring_location(other, hole.vertices[0]) != RingLocation::Outside
+            {
+                return Err(format!(
+                    "holes[{other_index}] and holes[{index}] must not overlap or touch."
+                ));
+            }
+        }
+    }
+    Ok(GeneralPolygon { outer, holes })
 }

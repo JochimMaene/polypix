@@ -86,7 +86,8 @@ pair.
 
 ## Batches and segments
 
-`cover_convex_polygon()` takes one footprint, a dense batch, or a ragged sequence.
+`cover_polygon()` takes one simple polygon, a dense or ragged batch, a `Polygon`
+with holes, or a `MultiPolygon`. Each shape object is one result segment.
 `cover_cap()` takes one center or a batch, with a shared radius or one per cap.
 `cover_sweep()` turns consecutive pairs of two sampled edges into independent
 quadrilaterals. All three hand back a single `Coverage`:

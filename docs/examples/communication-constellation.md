@@ -80,6 +80,52 @@ the cap-cell pairs at all. Over the hour that is 657,031 caps and 137 million
 cap-cell hits, none of which is ever stored: the running total is one array of
 49,152 integers.
 
+## Analyze only Germany
+
+Now, we take the same Starlink example, butj only want analyze the results for Germany.
+
+```{literalinclude} ../../examples/communication_constellation.py
+:language: python
+:caption: examples/communication_constellation.py
+:start-after: "--8<-- [start:germany-aoi]"
+:end-before: "--8<-- [end:germany-aoi]"
+```
+
+Then pass those cells through the same analysis:
+
+```python
+aoi_cells = germany_cells()
+germany = analyze(resolution=GERMANY_RESOLUTION, candidate_cells=aoi_cells)
+```
+
+`germany.mean_visible` now has one value per cell in `aoi_cells`, in the same
+order.
+
+```{figure} ../assets/generated/communications-germany.png
+:alt: Mean Starlink visibility in cells whose centers lie inside a concave outline of Germany
+:figclass: example-figure
+
+Mean simultaneous catalogued Starlink objects visible above 25° within the
+Germany area of interest. The red line shows the concave polygon supplied to
+`cover_polygon()`.
+```
+
+This uses resolution 9, with roughly 13 km between neighboring cell centers.
+The boundary is a bundled Natural Earth extract, so the example remains
+reproducible and does not download map data while building the docs.
+
+On the same machine used for the global timing above, one measured run took:
+
+| Stage | Time |
+| --- | ---: |
+| Cover the concave Germany boundary once (2,180 cells) | 3 ms |
+| 61 restricted `cover_cap(reduce=Count())` calls | **907 ms** |
+| Complete restricted analysis | 966 ms |
+
+That is about 15 ms per timestamp for all 10,771 catalogued objects. These are
+wall-clock measurements from one machine, so use them to judge the scale of the
+work rather than as a controlled benchmark.
+
 ## Run the example
 
 ```bash
