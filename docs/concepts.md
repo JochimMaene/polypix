@@ -24,8 +24,8 @@ the ground, and what a dense map would cost.
 
 What comes back are ordinary RING pixel indices in `[0, cell_count)`. They are
 not packed tokens, and they do not encode their own resolution; the result object
-carries that. For ordering conversion, neighbors, hierarchy, or map algebra, hand
-the IDs to a fuller HEALPix library, since Polypix does none of it.
+carries that. For ordering conversion, hierarchy, or map algebra, hand the IDs
+to a fuller HEALPix library, since Polypix does none of it.
 
 ## Direction geometry
 
