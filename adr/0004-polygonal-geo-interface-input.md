@@ -25,8 +25,8 @@ are converted to Cartesian directions in the Python boundary; the existing
 spherical validation, open-hemisphere restriction, and great-circle edges then
 apply unchanged.
 
-Empty polygonal geometry and a Feature with null geometry produce one empty
-region. Metadata is ignored. Non-polygonal geometry, geometry collections,
+Polygonal geometry with no rings and a Feature with null geometry produce one
+empty region. Metadata is ignored. Non-polygonal geometry, geometry collections,
 feature collections, and mixed-representation batches are rejected. Projected
 coordinates are outside the contract; range validation catches obvious cases,
 but Polypix does not inspect CRS metadata, reproject, repair, simplify, densify,

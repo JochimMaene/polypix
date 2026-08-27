@@ -414,6 +414,56 @@ def test_object_array_points_to_the_documented_batch_form() -> None:
         px.cover_polygon(geometries, 3)
 
 
+def test_empty_object_array_remains_an_empty_batch() -> None:
+    coverage = px.cover_polygon(np.empty(0, dtype=object), 3)
+
+    assert len(coverage) == 0
+    np.testing.assert_array_equal(coverage.offsets, [0])
+
+
+@pytest.mark.parametrize("geometry", [None, object()])
+def test_non_array_objects_keep_the_numeric_input_error(geometry: object) -> None:
+    with pytest.raises(TypeError, match="geometry must contain real numbers"):
+        px.cover_polygon(geometry, 3)
+
+
+def test_non_sequence_iterable_points_to_the_sequence_batch_form() -> None:
+    with pytest.raises(TypeError, match=r"non-sequence iterables.*list\(geometry\)"):
+        px.cover_polygon(iter(()), 3)
+
+
+def test_sequence_subclass_can_expose_geo_interface() -> None:
+    mapping = {
+        "type": "Polygon",
+        "coordinates": [[(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)]],
+    }
+
+    class TupleGeo(tuple[()]):
+        @property
+        def __geo_interface__(self) -> dict[str, object]:
+            return mapping
+
+    coverage = px.cover_polygon([TupleGeo(), TupleGeo()], 3)
+
+    assert len(coverage) == 2
+
+
+def test_geo_interface_takes_precedence_over_mapping_subclass() -> None:
+    mapping = {
+        "type": "Polygon",
+        "coordinates": [[(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)]],
+    }
+
+    class MappingGeo(dict[str, object]):
+        @property
+        def __geo_interface__(self) -> dict[str, object]:
+            return mapping
+
+    coverage = px.cover_polygon(MappingGeo(not_geojson=True), 3)
+
+    assert len(coverage) == 1
+
+
 def test_region_batch_reducers_count_each_region_once() -> None:
     first = px.MultiPolygon(
         px.Polygon(vectors([(-5, -5), (5, -5), (5, 5), (-5, 5)])),

@@ -116,9 +116,9 @@ Positions are `(longitude, latitude)` or `(longitude, latitude, altitude)` in
 decimal degrees, interpreted directly as angles on a unit sphere. The datum and
 frame belong to the caller, and altitude is ignored. Longitudes must lie in
 `[-180, 180]` and latitudes in `[-90, 90]`; Polypix neither reads nor transforms
-a CRS. Empty polygonal geometry and a Feature with null geometry produce one
-empty segment. Feature properties, IDs, bounding boxes, and foreign members are
-ignored.
+a CRS. Polygonal geometry with no rings and a Feature with null geometry produce
+one empty segment. Feature properties, IDs, bounding boxes, and foreign members
+are ignored.
 
 Points, lines, geometry collections, and feature collections are rejected.
 Homogeneous sequences form batches, but geographic mappings, Cartesian arrays,

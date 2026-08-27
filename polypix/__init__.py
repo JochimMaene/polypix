@@ -33,6 +33,7 @@ _GEOMETRY_SHAPE_ERROR = (
     "geometry must have shape (vertices, 3), "
     "(polygons, vertices, 3), or be a sequence of (vertices, 3) arrays."
 )
+_MISSING = object()
 
 # Spellings for the argument shapes that repeat across this module. They are
 # not part of the public API - ``__all__`` is - and exist so that one signature
@@ -788,11 +789,20 @@ def _as_polygons(
     values: object,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Accept one polygon, a uniform batch, or a batch of differing lengths."""
+    if isinstance(values, Iterable) and not isinstance(
+        values, (Sequence, np.ndarray, str, bytes, Mapping)
+    ):
+        raise TypeError(
+            "non-sequence iterables are not accepted; pass list(geometry) for a "
+            "geometry batch."
+        )
     if not isinstance(values, Sequence) or isinstance(values, np.ndarray):
         array = np.asarray(values)
+        if array.ndim == 1 and array.size == 0:
+            return np.empty((0, 3), dtype=np.float64), np.zeros(1, dtype=np.uint64)
         # An ndarray means numeric coordinates here. Giving object arrays a
         # second meaning as geometry batches would make dispatch dtype-dependent.
-        if array.dtype == np.dtype("O"):
+        if array.ndim > 0 and array.dtype == np.dtype("O"):
             raise TypeError(
                 "object-dtype arrays are not accepted; pass list(geometry)."
             )
@@ -815,12 +825,9 @@ def _as_polygons(
 
 
 def _geo_mapping(value: object, name: str) -> Mapping[str, object] | None:
-    if isinstance(value, Mapping):
-        return cast(Mapping[str, object], value)
-    try:
-        mapping = cast(_GeoInterface, value).__geo_interface__
-    except AttributeError:
-        return None
+    mapping = getattr(value, "__geo_interface__", _MISSING)
+    if mapping is _MISSING:
+        return cast(Mapping[str, object], value) if isinstance(value, Mapping) else None
     if not isinstance(mapping, Mapping):
         raise TypeError(f"{name}.__geo_interface__ must be a mapping.")
     return mapping
@@ -926,22 +933,26 @@ def _as_prepared_regions(
     elif isinstance(values, Sequence) and values:
         native_regions = []
         mappings = []
-        unknown_indices = []
+        unknown_index = None
         for index, value in enumerate(values):
             if isinstance(value, (Polygon, MultiPolygon)):
                 native_regions.append(value)
+            # Raw coordinate containers dominate large ragged batches. Avoid
+            # paying for Mapping and geo-interface probes on every entry.
+            elif type(value) in (np.ndarray, list, tuple):
+                if unknown_index is None:
+                    unknown_index = index
             elif (mapping := _geo_mapping(value, f"geometry[{index}]")) is not None:
                 mappings.append((index, mapping))
-            else:
-                unknown_indices.append(index)
+            elif unknown_index is None:
+                unknown_index = index
         if not native_regions and not mappings:
             return None
-        if unknown_indices:
-            index = unknown_indices[0]
+        if unknown_index is not None:
             raise TypeError(
-                f"geometry[{index}] cannot be used in a structured geometry batch; "
-                "pass only Polygon/MultiPolygon objects, only geo-interface objects, "
-                "or only polygon arrays."
+                f"geometry[{unknown_index}] cannot be used in a structured geometry "
+                "batch; pass only Polygon/MultiPolygon objects, only geo-interface "
+                "objects, or only polygon arrays."
             )
         if native_regions and mappings:
             raise TypeError(
