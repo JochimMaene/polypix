@@ -1089,9 +1089,7 @@ class PolypixTests(unittest.TestCase):
         polygon = vectors([(-5.0, -5.0), (12.0, -4.0), (10.0, 9.0), (-6.0, 7.0)])
         for invalid in (polygon[:, :2], polygon[:, :2].tolist()):
             with self.subTest(input_type=type(invalid).__name__):
-                with self.assertRaisesRegex(
-                    ValueError, r"^polygons_xyz must have shape"
-                ):
+                with self.assertRaisesRegex(ValueError, r"^geometry must have shape"):
                     px.cover_polygon(invalid, resolution=2)
 
     def test_cover_normalizes_arbitrary_vectors(self) -> None:
@@ -1159,7 +1157,7 @@ class PolypixTests(unittest.TestCase):
 
         for threads in (1, 4, None):
             with self.subTest(threads=threads):
-                with self.assertRaisesRegex(ValueError, r"polygons_xyz\[3000\]: Ring"):
+                with self.assertRaisesRegex(ValueError, r"geometry\[3000\]: Ring"):
                     px.cover_polygon(batch, resolution=3, threads=threads)
 
     def test_parallel_batch_reports_the_first_invalid_polygon(self) -> None:
@@ -1172,7 +1170,7 @@ class PolypixTests(unittest.TestCase):
 
         for threads in (4, None):
             with self.subTest(threads=threads):
-                with self.assertRaisesRegex(ValueError, r"polygons_xyz\[10\]"):
+                with self.assertRaisesRegex(ValueError, r"geometry\[10\]"):
                     px.cover_polygon(batch, resolution=3, threads=threads)
 
     def test_cover_accepts_empty_batches(self) -> None:

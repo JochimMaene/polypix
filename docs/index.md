@@ -21,6 +21,9 @@ come back? Which cells did a ten-day survey never reach?
 
 Polypix helps answer those questions You hand it batches of spherical regions and it hands back standard HEALPix cell IDs, which you then use for coverage maps, visibility counts, and revisit analysis.
 
+Polygon coverage accepts Cartesian directions as well as GeoJSON-like mappings
+and individual Shapely or other `__geo_interface__` geometries.
+
 ## Why Polypix
 
 The library was written for mission analysis, and a few decisions follow from

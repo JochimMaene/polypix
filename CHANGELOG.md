@@ -7,8 +7,15 @@ documentation. Internal refactors, tests, and CI changes are omitted.
 
 ## Unreleased
 
+### Breaking changes
+
+- Renamed the first `cover_polygon()` parameter from `polygons_xyz` to
+  `geometry`.
+
 ### Features
 
+- Accepted polygonal `__geo_interface__` objects and GeoJSON-like mappings in
+  `cover_polygon()`, including holes, multipart unions, and single Features.
 - Added `cell_neighbors()` for batched immediate HEALPix neighbor lookup.
 
 ## [0.4.0] — 2026-08-26

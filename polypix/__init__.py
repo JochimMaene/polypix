@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import operator
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Never, SupportsIndex, cast, overload
+from typing import Any, Never, Protocol, SupportsIndex, cast, overload
 
 import numpy as np
 import numpy.typing as npt
@@ -29,10 +29,11 @@ from ._core import (
     _validate_coverage,
 )
 
-_POLYGON_SHAPE_ERROR = (
-    "polygons_xyz must have shape (vertices, 3), "
+_GEOMETRY_SHAPE_ERROR = (
+    "geometry must have shape (vertices, 3), "
     "(polygons, vertices, 3), or be a sequence of (vertices, 3) arrays."
 )
+_MISSING = object()
 
 # Spellings for the argument shapes that repeat across this module. They are
 # not part of the public API - ``__all__`` is - and exist so that one signature
@@ -48,6 +49,14 @@ PolygonsLike = (
 )
 EdgesLike = Sequence[Sequence[float]] | npt.ArrayLike
 ValuesLike = float | Sequence[float] | npt.ArrayLike
+
+
+class _GeoInterface(Protocol):
+    @property
+    def __geo_interface__(self) -> Mapping[str, object]: ...
+
+
+_GeoLike = Mapping[str, object] | _GeoInterface
 
 
 @dataclass(frozen=True, eq=False, init=False, slots=True)
@@ -130,7 +139,13 @@ class MultiPolygon:
         return iter(self.polygons)
 
 
-RegionLike = PolygonsLike | Polygon | MultiPolygon | Sequence[Polygon | MultiPolygon]
+RegionLike = (
+    PolygonsLike
+    | Polygon
+    | MultiPolygon
+    | _GeoLike
+    | Sequence[Polygon | MultiPolygon | _GeoLike]
+)
 
 
 @dataclass(frozen=True, eq=False, init=False, slots=True)
@@ -716,16 +731,16 @@ def _dense_polygons(array: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
 
 
 def _require_dense_polygons(values: object) -> tuple[np.ndarray, np.ndarray]:
-    dense = _dense_polygons(_as_float_array(values, "polygons_xyz"))
+    dense = _dense_polygons(_as_float_array(values, "geometry"))
     if dense is None:
-        raise ValueError(_POLYGON_SHAPE_ERROR)
+        raise ValueError(_GEOMETRY_SHAPE_ERROR)
     return dense
 
 
 def _name_ragged_failure(values: Sequence[object]) -> None:
     """Reraise a ragged batch failure against the entry that caused it."""
     for index, polygon in enumerate(values):
-        _as_float_matrix(polygon, 3, f"polygons_xyz[{index}]")
+        _as_float_matrix(polygon, 3, f"geometry[{index}]")
 
 
 def _ragged_polygons(
@@ -751,7 +766,7 @@ def _ragged_polygons(
         vertices = _as_float_matrix(
             np.concatenate(values, axis=0),  # type: ignore[arg-type]
             3,
-            "polygons_xyz",
+            "geometry",
         )
     except (TypeError, ValueError):
         _name_ragged_failure(values)
@@ -763,7 +778,7 @@ def _ragged_polygons(
         # No entry can hide vertices from ``concatenate``, so reaching this
         # means one reported a length its own data does not have.
         _name_ragged_failure(values)
-        raise ValueError(_POLYGON_SHAPE_ERROR)
+        raise ValueError(_GEOMETRY_SHAPE_ERROR)
     offsets = np.concatenate(
         (np.zeros(1, dtype=np.uint64), np.cumsum(counts, dtype=np.uint64))
     )
@@ -774,8 +789,24 @@ def _as_polygons(
     values: object,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Accept one polygon, a uniform batch, or a batch of differing lengths."""
+    if isinstance(values, Iterable) and not isinstance(
+        values, (Sequence, np.ndarray, str, bytes, Mapping)
+    ):
+        raise TypeError(
+            "non-sequence iterables are not accepted; pass list(geometry) for a "
+            "geometry batch."
+        )
     if not isinstance(values, Sequence) or isinstance(values, np.ndarray):
-        return _require_dense_polygons(values)
+        array = np.asarray(values)
+        if array.ndim == 1 and array.size == 0:
+            return np.empty((0, 3), dtype=np.float64), np.zeros(1, dtype=np.uint64)
+        # An ndarray means numeric coordinates here. Giving object arrays a
+        # second meaning as geometry batches would make dispatch dtype-dependent.
+        if array.ndim > 0 and array.dtype == np.dtype("O"):
+            raise TypeError(
+                "object-dtype arrays are not accepted; pass list(geometry)."
+            )
+        return _require_dense_polygons(array)
     if len(values) == 0:
         return np.empty((0, 3), dtype=np.float64), np.zeros(1, dtype=np.uint64)
     if np.ndim(values[0]) != 2:
@@ -793,21 +824,143 @@ def _as_polygons(
     return _ragged_polygons(values, shapes)
 
 
+def _geo_mapping(value: object, name: str) -> Mapping[str, object] | None:
+    mapping = getattr(value, "__geo_interface__", _MISSING)
+    if mapping is _MISSING:
+        return cast(Mapping[str, object], value) if isinstance(value, Mapping) else None
+    if not isinstance(mapping, Mapping):
+        raise TypeError(f"{name}.__geo_interface__ must be a mapping.")
+    return mapping
+
+
+def _geo_sequence(value: object, name: str) -> list[object]:
+    if isinstance(value, (str, bytes, Mapping)):
+        raise TypeError(f"{name} must be a sequence.")
+    try:
+        return list(cast(Iterable[object], value))
+    except TypeError:
+        raise TypeError(f"{name} must be a sequence.") from None
+
+
+def _geo_ring_to_xyz(value: object, name: str) -> np.ndarray:
+    shape_error = f"{name} must have shape (positions, 2) or (positions, 3)."
+    try:
+        coordinates = _as_float_array(value, name)
+    except ValueError:
+        raise ValueError(shape_error) from None
+    if coordinates.ndim != 2 or coordinates.shape[1] not in (2, 3):
+        raise ValueError(shape_error)
+    if not np.isfinite(coordinates).all():
+        raise ValueError(f"{name} must contain only finite coordinates.")
+    longitude = coordinates[:, 0]
+    latitude = coordinates[:, 1]
+    if np.any((longitude < -180.0) | (longitude > 180.0)):
+        raise ValueError(f"{name} longitude must be between -180 and 180 degrees.")
+    if np.any((latitude < -90.0) | (latitude > 90.0)):
+        raise ValueError(f"{name} latitude must be between -90 and 90 degrees.")
+    longitude_rad = np.radians(longitude)
+    latitude_rad = np.radians(latitude)
+    radial = np.cos(latitude_rad)
+    return np.column_stack(
+        (
+            radial * np.cos(longitude_rad),
+            radial * np.sin(longitude_rad),
+            np.sin(latitude_rad),
+        )
+    )
+
+
+def _geo_polygon(value: object, name: str) -> Polygon | None:
+    rings = _geo_sequence(value, name)
+    if not rings:
+        return None
+    converted = [
+        _geo_ring_to_xyz(ring, f"{name}[{index}]") for index, ring in enumerate(rings)
+    ]
+    try:
+        return Polygon(converted[0], *converted[1:])
+    except ValueError as error:
+        raise ValueError(f"{name}: {error}") from None
+
+
+def _geo_region(mapping: Mapping[str, object], name: str) -> Polygon | MultiPolygon:
+    geometry_type = mapping.get("type")
+    if not isinstance(geometry_type, str):
+        raise TypeError(f"{name}['type'] must be a string.")
+    if geometry_type == "Feature":
+        if "geometry" not in mapping:
+            raise ValueError(f"{name} is missing 'geometry'.")
+        geometry = mapping["geometry"]
+        if geometry is None:
+            return MultiPolygon()
+        if not isinstance(geometry, Mapping):
+            raise TypeError(f"{name}['geometry'] must be a mapping or None.")
+        nested = cast(Mapping[str, object], geometry)
+        if nested.get("type") == "Feature":
+            raise ValueError(f"{name} cannot contain another Feature.")
+        return _geo_region(nested, f"{name}['geometry']")
+    if geometry_type == "FeatureCollection":
+        raise ValueError(
+            f"{name} has unsupported geometry type 'FeatureCollection'; "
+            "pass a sequence of geometries for a batch."
+        )
+    if geometry_type not in ("Polygon", "MultiPolygon"):
+        raise ValueError(
+            f"{name} has unsupported geometry type {geometry_type!r}; "
+            "expected Polygon, MultiPolygon, or Feature."
+        )
+    if "coordinates" not in mapping:
+        raise ValueError(f"{name} is missing 'coordinates'.")
+    coordinates = mapping["coordinates"]
+    if geometry_type == "Polygon":
+        return _geo_polygon(coordinates, f"{name}['coordinates']") or MultiPolygon()
+    polygons = []
+    for index, value in enumerate(_geo_sequence(coordinates, f"{name}['coordinates']")):
+        polygon = _geo_polygon(value, f"{name}['coordinates'][{index}]")
+        if polygon is not None:
+            polygons.append(polygon)
+    return MultiPolygon(*polygons)
+
+
 def _as_prepared_regions(
     values: object,
 ) -> list[list[object]] | None:
-    if isinstance(values, (Polygon, MultiPolygon)):
+    mapping = _geo_mapping(values, "geometry")
+    if mapping is not None:
+        regions = [_geo_region(mapping, "geometry")]
+    elif isinstance(values, (Polygon, MultiPolygon)):
         regions = [values]
     elif isinstance(values, Sequence) and values:
-        regions = [
-            value for value in values if isinstance(value, (Polygon, MultiPolygon))
-        ]
-        if not regions:
+        native_regions = []
+        mappings = []
+        unknown_index = None
+        for index, value in enumerate(values):
+            if isinstance(value, (Polygon, MultiPolygon)):
+                native_regions.append(value)
+            # Raw coordinate containers dominate large ragged batches. Avoid
+            # paying for Mapping and geo-interface probes on every entry.
+            elif type(value) in (np.ndarray, list, tuple):
+                if unknown_index is None:
+                    unknown_index = index
+            elif (mapping := _geo_mapping(value, f"geometry[{index}]")) is not None:
+                mappings.append((index, mapping))
+            elif unknown_index is None:
+                unknown_index = index
+        if not native_regions and not mappings:
             return None
-        if len(regions) != len(values):
+        if unknown_index is not None:
             raise TypeError(
-                "Do not mix polygon arrays with Polygon objects in one batch."
+                f"geometry[{unknown_index}] cannot be used in a structured geometry "
+                "batch; pass only Polygon/MultiPolygon objects, only geo-interface "
+                "objects, or only polygon arrays."
             )
+        if native_regions and mappings:
+            raise TypeError(
+                "Do not mix geo-interface objects with Polygon objects in one batch."
+            )
+        regions = native_regions or [
+            _geo_region(mapping, f"geometry[{index}]") for index, mapping in mappings
+        ]
     else:
         return None
 
@@ -880,7 +1033,7 @@ CoverageReducer = Count | Sum
 
 @overload
 def cover_polygon(
-    polygons_xyz: RegionLike,
+    geometry: RegionLike,
     resolution: int,
     *,
     candidate_cells: CellsLike | None = None,
@@ -891,7 +1044,7 @@ def cover_polygon(
 
 @overload
 def cover_polygon(
-    polygons_xyz: RegionLike,
+    geometry: RegionLike,
     resolution: int,
     *,
     candidate_cells: CellsLike | None = None,
@@ -902,7 +1055,7 @@ def cover_polygon(
 
 @overload
 def cover_polygon(
-    polygons_xyz: RegionLike,
+    geometry: RegionLike,
     resolution: int,
     *,
     candidate_cells: CellsLike | None = None,
@@ -912,7 +1065,7 @@ def cover_polygon(
 
 
 def cover_polygon(
-    polygons_xyz: RegionLike,
+    geometry: RegionLike,
     resolution: int,
     *,
     candidate_cells: CellsLike | None = None,
@@ -928,14 +1081,18 @@ def cover_polygon(
 
     Parameters
     ----------
-    polygons_xyz : array_like, Polygon, MultiPolygon, or sequence
+    geometry : array_like, Polygon, MultiPolygon, mapping, or sequence
         One ``(vertices, 3)`` polygon, a dense ``(polygons, vertices, 3)``
         batch, or a sequence of ``(vertices, 3)`` arrays when the polygons
         have different vertex counts. A ``Polygon`` or ``MultiPolygon`` is
-        one result segment; a sequence of those objects is a batch. Vectors
-        are Cartesian directions in one frame of your choosing, finite and
-        nonzero; we normalize the magnitudes internally. The accepted geometry
-        is described under :ref:`geometry-contract`.
+        one result segment; a sequence of those objects is a batch. An object
+        implementing ``__geo_interface__``, or its mapping directly, may hold a
+        ``Polygon``, ``MultiPolygon``, or one polygonal ``Feature`` in longitude
+        and latitude degrees. Pass ``list(series)`` for a GeoPandas GeoSeries;
+        its own geo-interface mapping is a FeatureCollection rather than one
+        polygonal region. Vectors are Cartesian directions in one frame of your
+        choosing, finite and nonzero; we normalize the magnitudes internally.
+        The accepted geometry is described under :ref:`geometry-contract`.
     resolution : int
         HEALPix resolution, 0 through 29. Returned cells satisfy
         ``0 <= cell < cell_count(resolution)``.
@@ -975,6 +1132,16 @@ def cover_polygon(
     A cell is selected when its center lies inside the polygon or exactly
     on its boundary. Cells that the boundary merely clips are not included,
     so this is not a conservative spatial index.
+
+    Geo-interface coordinates must be longitude and latitude in decimal
+    degrees, interpreted directly as angles on a unit sphere, with optional
+    altitude ignored. The datum and frame belong to the caller. Longitude is
+    limited to ``[-180, 180]`` and latitude to ``[-90, 90]``. Polypix does not
+    inspect or transform a CRS. Mapping properties, IDs, bounding boxes, and
+    foreign members are ignored; non-polygonal geometries and collections are
+    rejected.
+    Supplied vertices retain Polypix's shorter great-circle edges rather than
+    GeoJSON's planar longitude/latitude interpolation.
 
     An empty sequence, a one-dimensional empty array, and a dense
     ``(0, vertices, 3)`` array all describe a batch of zero polygons. A
@@ -1016,7 +1183,7 @@ def cover_polygon(
     1
     """
     resolved = _as_resolution(resolution)
-    prepared_regions = _as_prepared_regions(polygons_xyz)
+    prepared_regions = _as_prepared_regions(geometry)
     reducer = _as_coverage_reducer(reduce)
     candidates, requested = _reduction_plan(candidate_cells, reducer, resolved)
     thread_count = _as_threads(threads)
@@ -1029,7 +1196,7 @@ def cover_polygon(
             thread_count,
         )
     else:
-        vertices, ring_offsets = _as_polygons(polygons_xyz)
+        vertices, ring_offsets = _as_polygons(geometry)
         native = _cover(
             vertices,
             ring_offsets,

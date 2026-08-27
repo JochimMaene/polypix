@@ -26,6 +26,8 @@ Hand Polypix a batch of spherical regions and it gives you back the HEALPix
 cells they cover, as standard RING IDs in NumPy arrays. The spherical geometry
 runs in a native kernel, which uses several cores for large calls. Use the
 result for coverage maps, visibility counts, and revisit analysis.
+Polygon coverage also accepts GeoJSON-like mappings and objects implementing
+`__geo_interface__`, including individual Shapely geometries.
 
 ## How many Starlink satellites can you see?
 

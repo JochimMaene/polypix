@@ -8,6 +8,11 @@ import pytest
 import polypix as px
 
 
+class GeoObject:
+    def __init__(self, mapping: object) -> None:
+        self.__geo_interface__ = mapping
+
+
 def vectors(points: list[tuple[float, float]]) -> np.ndarray:
     lon_lat = np.radians(points)
     longitude = lon_lat[:, 0]
@@ -161,6 +166,150 @@ def test_polygon_holes_and_multipolygon_form_one_deduplicated_region() -> None:
     )
 
 
+def test_geo_interface_preserves_holes_multipart_union_and_altitude() -> None:
+    outer = [(-10, -10), (10, -10), (10, 10), (-10, 10), (-10, -10)]
+    hole = [(-3, -3), (3, -3), (3, 3), (-3, 3), (-3, -3)]
+    overlap = [(5, -5), (15, -5), (15, 5), (5, 5), (5, -5)]
+    mapping = {
+        "type": "MultiPolygon",
+        "coordinates": [
+            [
+                [(*position, 100.0) for position in outer],
+                [(*position, 0.0) for position in hole],
+            ],
+            [[(*position, -50.0) for position in overlap]],
+        ],
+    }
+    expected = px.MultiPolygon(
+        px.Polygon(vectors(outer), vectors(hole)),
+        px.Polygon(vectors(overlap)),
+    )
+
+    coverage = px.cover_polygon(GeoObject(mapping), 6)
+
+    np.testing.assert_array_equal(coverage.cells, px.cover_polygon(expected, 6).cells)
+    np.testing.assert_array_equal(
+        px.cover_polygon(geometry=mapping, resolution=6).cells,
+        coverage.cells,
+    )
+
+
+def test_geo_interface_feature_and_batch_keep_one_segment_per_input() -> None:
+    first = {
+        "type": "Polygon",
+        "coordinates": [[(-5, -5), (5, -5), (5, 5), (-5, 5), (-5, -5)]],
+    }
+    second_geometry = {
+        "type": "Polygon",
+        "coordinates": [[(20, 0), (25, 0), (25, 5), (20, 5), (20, 0)]],
+    }
+    second = {
+        "type": "Feature",
+        "id": "ignored",
+        "properties": {"also": "ignored"},
+        "geometry": second_geometry,
+    }
+
+    coverage = px.cover_polygon([GeoObject(first), second], 5)
+
+    assert len(coverage) == 2
+    np.testing.assert_array_equal(
+        coverage[0],
+        px.cover_polygon(px.Polygon(vectors(first["coordinates"][0])), 5).cells,
+    )
+    np.testing.assert_array_equal(
+        coverage[1],
+        px.cover_polygon(
+            px.Polygon(vectors(second_geometry["coordinates"][0])), 5
+        ).cells,
+    )
+
+
+@pytest.mark.parametrize(
+    "mapping",
+    [
+        {"type": "Polygon", "coordinates": []},
+        {"type": "MultiPolygon", "coordinates": []},
+        {"type": "Feature", "properties": {}, "geometry": None},
+    ],
+)
+def test_empty_geo_interface_is_one_empty_region(mapping: dict[str, object]) -> None:
+    coverage = px.cover_polygon(mapping, 3)
+    assert len(coverage) == 1
+    assert coverage.cells.size == 0
+
+
+@pytest.mark.parametrize(
+    ("mapping", "message"),
+    [
+        ({"type": "Point", "coordinates": (0, 0)}, "unsupported geometry type"),
+        ({"type": "FeatureCollection", "features": []}, "sequence of geometries"),
+        ({"type": "GeometryCollection", "geometries": []}, "unsupported geometry type"),
+        (
+            {
+                "type": "Polygon",
+                "coordinates": [[(181, 0), (1, 0), (0, 1), (181, 0)]],
+            },
+            "longitude",
+        ),
+        (
+            {
+                "type": "Polygon",
+                "coordinates": [[(0, 0), (1, 91), (1, 0), (0, 0)]],
+            },
+            "latitude",
+        ),
+        (
+            {
+                "type": "Polygon",
+                "coordinates": [[(0, 0, 0, 0), (1, 0, 0, 0), (0, 1, 0, 0)]],
+            },
+            "shape",
+        ),
+        (
+            {
+                "type": "Polygon",
+                "coordinates": [[(0, 0, 1), (1, 0), (1, 1), (0, 0, 1)]],
+            },
+            "shape",
+        ),
+        (
+            {
+                "type": "Polygon",
+                "coordinates": [[(0, 0), (1, 0), (0, np.inf), (0, 0)]],
+            },
+            "finite coordinates",
+        ),
+    ],
+)
+def test_invalid_geo_interface_has_a_clear_error(
+    mapping: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        px.cover_polygon(mapping, 3)
+
+
+def test_geo_interface_property_must_be_a_mapping() -> None:
+    with pytest.raises(TypeError, match="__geo_interface__ must be a mapping"):
+        px.cover_polygon(GeoObject(None), 3)
+
+
+def test_geo_interface_batch_names_native_validation_failure() -> None:
+    good = {
+        "type": "Polygon",
+        "coordinates": [[(0, 0), (2, 0), (2, 2), (0, 2), (0, 0)]],
+    }
+    crossing = {
+        "type": "Polygon",
+        "coordinates": [[(0, 0), (2, 2), (0, 2), (2, 0), (0, 0)]],
+    }
+
+    with pytest.raises(
+        ValueError, match=r"geometry\[1\]\['coordinates'\]: Ring must not cross"
+    ):
+        px.cover_polygon([good, crossing, good], 3)
+
+
 def test_distant_holes_are_compared_in_the_outer_ring_hemisphere() -> None:
     polygon = px.Polygon(
         cap_ring(0.0, 89.0, 48),
@@ -232,9 +381,87 @@ def test_mixed_polygon_representations_have_one_clear_error(
     batch = [polygon, array] if structured_first else [array, polygon]
 
     with pytest.raises(
-        TypeError, match="Do not mix polygon arrays with Polygon objects"
+        TypeError, match="cannot be used in a structured geometry batch"
     ):
         px.cover_polygon(batch, 3)
+
+
+def test_geo_interface_cannot_mix_with_other_representations() -> None:
+    array = gnomonic_ring([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+    mapping = {
+        "type": "Polygon",
+        "coordinates": [[(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)]],
+    }
+
+    with pytest.raises(TypeError, match="geo-interface objects with Polygon objects"):
+        px.cover_polygon([GeoObject(mapping), px.Polygon(array)], 3)
+    with pytest.raises(
+        TypeError, match="cannot be used in a structured geometry batch"
+    ):
+        px.cover_polygon([mapping, array], 3)
+    with pytest.raises(TypeError, match=r"geometry\[1\] cannot be used"):
+        px.cover_polygon([mapping, None], 3)
+
+
+def test_object_array_points_to_the_documented_batch_form() -> None:
+    mapping = {
+        "type": "Polygon",
+        "coordinates": [[(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)]],
+    }
+    geometries = np.asarray([GeoObject(mapping), GeoObject(mapping)], dtype=object)
+
+    with pytest.raises(TypeError, match=r"object-dtype arrays.*list\(geometry\)"):
+        px.cover_polygon(geometries, 3)
+
+
+def test_empty_object_array_remains_an_empty_batch() -> None:
+    coverage = px.cover_polygon(np.empty(0, dtype=object), 3)
+
+    assert len(coverage) == 0
+    np.testing.assert_array_equal(coverage.offsets, [0])
+
+
+@pytest.mark.parametrize("geometry", [None, object()])
+def test_non_array_objects_keep_the_numeric_input_error(geometry: object) -> None:
+    with pytest.raises(TypeError, match="geometry must contain real numbers"):
+        px.cover_polygon(geometry, 3)
+
+
+def test_non_sequence_iterable_points_to_the_sequence_batch_form() -> None:
+    with pytest.raises(TypeError, match=r"non-sequence iterables.*list\(geometry\)"):
+        px.cover_polygon(iter(()), 3)
+
+
+def test_sequence_subclass_can_expose_geo_interface() -> None:
+    mapping = {
+        "type": "Polygon",
+        "coordinates": [[(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)]],
+    }
+
+    class TupleGeo(tuple[()]):
+        @property
+        def __geo_interface__(self) -> dict[str, object]:
+            return mapping
+
+    coverage = px.cover_polygon([TupleGeo(), TupleGeo()], 3)
+
+    assert len(coverage) == 2
+
+
+def test_geo_interface_takes_precedence_over_mapping_subclass() -> None:
+    mapping = {
+        "type": "Polygon",
+        "coordinates": [[(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)]],
+    }
+
+    class MappingGeo(dict[str, object]):
+        @property
+        def __geo_interface__(self) -> dict[str, object]:
+            return mapping
+
+    coverage = px.cover_polygon(MappingGeo(not_geojson=True), 3)
+
+    assert len(coverage) == 1
 
 
 def test_region_batch_reducers_count_each_region_once() -> None:
