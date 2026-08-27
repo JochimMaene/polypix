@@ -79,9 +79,10 @@
 ## Geometry contract
 
 A polygon is given as vertices in boundary order. It may be convex or concave,
-but each component must fit inside an open hemisphere. Adjacent vertices are joined by the shorter of the two
-great-circle arcs between them, so longitudes -179° and 179° are two degrees
-apart, and nothing as large as a hemisphere can be described this way.
+but each component must fit inside an open hemisphere. Adjacent vertices are
+joined by the shorter of the two great-circle arcs between them, so longitudes
+-179° and 179° are two degrees apart, and nothing as large as a hemisphere can
+be described this way.
 
 Accepted:
 
@@ -102,6 +103,32 @@ Rejected:
 Detectably is doing real work in that last item. Vertices that are individually
 valid but were meant to describe the other side of the sphere look like any other
 polygon from here.
+
+### Geographic interface inputs
+
+`cover_polygon()` accepts a mapping directly or an object whose
+`__geo_interface__` property returns one. The mapping may describe a `Polygon`,
+`MultiPolygon`, or one `Feature` containing either. The first polygon ring is
+the outer boundary and the rest are holes; each multipolygon component becomes
+one `Polygon` in a single union region.
+
+Positions are `(longitude, latitude)` or `(longitude, latitude, altitude)` in
+decimal degrees, interpreted directly as angles on a unit sphere. The datum and
+frame belong to the caller, and altitude is ignored. Longitudes must lie in
+`[-180, 180]` and latitudes in `[-90, 90]`; Polypix neither reads nor transforms
+a CRS. Empty polygonal geometry and a Feature with null geometry produce one
+empty segment. Feature properties, IDs, bounding boxes, and foreign members are
+ignored.
+
+Points, lines, geometry collections, and feature collections are rejected.
+Homogeneous sequences form batches, but geographic mappings, Cartesian arrays,
+and Polypix geometry objects cannot be mixed in one batch. These inputs import
+vertices and ring topology, not GeoJSON edge interpolation: the shorter
+great-circle rule above remains authoritative. Reproject, repair, simplify, or
+densify with a GIS library before the call when needed.
+
+A whole-world longitude/latitude bounding box is not a spherical polygon:
+`-180` and `180` are the same meridian, and every longitude meets at each pole.
 
 ### Numerical limits
 

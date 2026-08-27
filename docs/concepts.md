@@ -29,11 +29,18 @@ to a fuller HEALPix library, since Polypix does none of it.
 
 ## Direction geometry
 
-Everything going in and coming out is a Cartesian direction `(x, y, z)` on the
-unit sphere. Magnitudes are ignored, so position vectors work as well as unit
-vectors. The frame is yours to choose: body-fixed for a planet, celestial for a
-sky survey. We neither label it nor transform between frames, so the only rule is
-that every vector in one call lives in the same one.
+Polypix's native geometry going in and coming out is a Cartesian direction
+`(x, y, z)` on the unit sphere. Magnitudes are ignored, so position vectors work
+as well as unit vectors. The frame is yours to choose: body-fixed for a planet,
+celestial for a sky survey. We neither label it nor transform between frames, so
+the only rule is that every vector in one call lives in the same one.
+
+The one geographic adapter is `cover_polygon()`: an incoming polygonal
+`__geo_interface__` object or mapping is interpreted as longitude and latitude
+in decimal degrees, used directly as angles on a unit sphere. Its datum and frame
+belong to the caller. It carries no reliable CRS, so projected geometry must
+still be transformed upstream. The adapter does not change the polygon contract:
+supplied vertices are joined by shorter great-circle arcs.
 
 Working in three dimensions is also why the poles and the longitude seam need no
 special handling here at all. If another library hands you component-major
@@ -51,10 +58,10 @@ Cell centers round-trip exactly and arbitrary directions do not. A direction
 sitting numerically on a cell edge is a floating-point tie; the answer is
 repeatable for one build and platform, but we do not promise it across platforms.
 
-No frame, datum, unit, or epoch metadata is attached to any of this. Coordinate
-transforms, orbit propagation, attitude, and sensor projection all happen
-upstream, and what you pass in are the directions and regions that come out of
-them.
+No frame, datum, unit, or epoch metadata is attached to results or Cartesian
+inputs. Coordinate transforms, orbit propagation, attitude, and sensor
+projection all happen upstream, and what you pass in are the directions and
+regions that come out of them.
 
 ## Center-sampled coverage
 
@@ -87,7 +94,8 @@ pair.
 ## Batches and segments
 
 `cover_polygon()` takes one simple polygon, a dense or ragged batch, a `Polygon`
-with holes, or a `MultiPolygon`. Each shape object is one result segment.
+with holes, a `MultiPolygon`, or the polygonal geographic mapping described
+above. Each shape object is one result segment.
 `cover_cap()` takes one center or a batch, with a shared radius or one per cap.
 `cover_sweep()` turns consecutive pairs of two sampled edges into independent
 quadrilaterals. All three hand back a single `Coverage`:

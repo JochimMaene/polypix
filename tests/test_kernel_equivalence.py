@@ -384,7 +384,7 @@ def test_results_are_invariant_across_thread_counts(threads: int) -> None:
         (
             "polygon",
             px.cover_polygon,
-            {"polygons_xyz": polygons},
+            {"geometry": polygons},
             polygon_values,
         ),
         ("cap", px.cover_cap, {"centers_xyz": caps, "radii_rad": radii}, cap_values),

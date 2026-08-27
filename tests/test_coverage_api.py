@@ -43,7 +43,7 @@ def test_polygon_api_accepts_packed_and_ragged_vertices() -> None:
     assert len(ragged) == 2
     np.testing.assert_array_equal(ragged[0], sequence[0])
 
-    with pytest.raises(ValueError, match="polygons_xyz"):
+    with pytest.raises(ValueError, match="geometry"):
         px.cover_polygon(np.ones((2, 2)), resolution=1)
 
 
@@ -53,7 +53,7 @@ def test_malformed_ragged_polygon_uses_the_public_validation_error() -> None:
         dtype=np.float64,
     )
 
-    with pytest.raises(ValueError, match=r"polygons_xyz\[1\].*shape"):
+    with pytest.raises(ValueError, match=r"geometry\[1\].*shape"):
         px.cover_polygon([quad, 1], resolution=4)
 
 

@@ -26,15 +26,17 @@ All four take batches, and every angular argument is in radians.
 
 ## Setup
 
-Everything you pass in is a Cartesian direction `(x, y, z)`. Magnitudes are
+Numeric geometry arrays are Cartesian directions `(x, y, z)`. Magnitudes are
 ignored, so position vectors work as well as unit vectors, and the frame is
 whichever one you are already working in: Earth-fixed for a ground footprint,
 celestial for a sky survey. Polypix neither labels the frame nor transforms
-between frames.
+between frames. `cover_polygon()` additionally accepts polygonal
+`__geo_interface__` objects and mappings as longitude and latitude in degrees,
+used directly as angles in the caller's spherical frame.
 
-If your data is longitude and latitude, convert it once on the way in and
-convert cell centers back on the way out. The two helpers below are all that
-takes, and the rest of this page uses them throughout:
+Convert other longitude/latitude inputs once on the way in and cell centers back
+on the way out. The two helpers below are all that takes, and the rest of this
+page uses them throughout:
 
 ```{doctest}
 >>> import numpy as np
@@ -55,8 +57,7 @@ takes, and the rest of this page uses them throughout:
 ...     return np.stack((longitude, latitude), axis=-1)
 ```
 
-[Direction geometry](concepts.md#direction-geometry) explains why these
-conversions stay outside Polypix.
+[Direction geometry](concepts.md#direction-geometry) explains the distinction.
 
 The examples all work at resolution 4, where a cell is about 400 km across. That
 is coarse enough that you can count the cells in each picture and check them
@@ -127,6 +128,37 @@ array([1312, 1376, 1377, 1439, 1440, 1441])
 ```
 
 One polygon produces one segment in the result.
+
+A GeoJSON-like mapping, or an object exposing the same mapping through
+`__geo_interface__`, reaches the same spherical polygon without a GIS runtime:
+
+```{doctest}
+>>> scene_geo = {
+...     "type": "Polygon",
+...     "coordinates": [[
+...         (-9.0, -6.0), (7.0, -8.0), (11.0, 4.0),
+...         (-2.0, 8.0), (-9.0, -6.0),
+...     ]],
+... }
+>>> np.array_equal(
+...     px.cover_polygon(scene_geo, resolution=4).cells,
+...     scene_coverage.cells,
+... )
+True
+```
+
+A GeoPandas GeoSeries exposes a FeatureCollection rather than one polygonal
+region. Pass its geometries as the batch:
+
+```python
+coverage = px.cover_polygon(list(gdf.geometry), resolution=8)
+```
+
+Only `Polygon`, `MultiPolygon`, and a single polygonal `Feature` are accepted.
+The coordinates are longitude and latitude in decimal degrees, used directly as
+spherical angles; reproject upstream, since the interface carries no reliable
+CRS. The datum and frame belong to the caller. Altitude, properties, and bounding
+boxes are ignored.
 
 Concave arrays work directly. Use `Polygon(outer, *holes)` when a component has
 holes and `MultiPolygon(*polygons)` when one region has separate components.

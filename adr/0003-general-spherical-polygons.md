@@ -1,6 +1,6 @@
 # ADR-0003: Cover general spherical polygons
 
-- Status: Accepted
+- Status: Accepted; geographic input amended by ADR-0004
 - Date: 2026-08-25
 
 ## Context
@@ -21,7 +21,8 @@ The native kernel scans conservative HEALPix RING bounds and checks cell centers
 against the outer boundary and holes. Convex components reuse the existing
 half-space path. Multipart hits are sorted and deduplicated before reductions.
 Polypix still does not accept longitude/latitude, GeoJSON, CRS objects, or GIS
-operations.
+operations. ADR-0004 later adds a narrow geographic input adapter without
+changing the native geometry model or adding CRS operations.
 
 ## Consequences
 
