@@ -11,7 +11,7 @@ separately.
 | PyO3 | Apache-2.0, selected from `MIT OR Apache-2.0` | https://github.com/PyO3/pyo3 |
 | rust-numpy | BSD-2-Clause | https://github.com/PyO3/rust-numpy |
 | Rayon | Apache-2.0, selected from `MIT OR Apache-2.0` | https://github.com/rayon-rs/rayon |
-| HEALPix RING-to-face and face-coordinate transforms adapted from Astrometry.net | BSD-3-Clause | https://github.com/dstndstn/astrometry.net |
+| HEALPix RING/face-coordinate transforms and neighbor topology adapted from Astrometry.net | BSD-3-Clause | https://github.com/dstndstn/astrometry.net |
 
 `Cargo.lock` records the exact versions and dependency graph; it does not
 replace the notices below. Dependencies offering Apache-2.0 use that option.

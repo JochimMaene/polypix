@@ -18,7 +18,6 @@ benchmarks/           CodSpeed public-call regression benchmarks
 examples/             the two documented case studies and their shared helpers
 tools/                external-oracle fixture generation and CI guards
 docs/                 Sphinx/MyST documentation sources
-  project-goal.md     project direction and scope
 adr/                  architecture decision records, kept out of the site
 ```
 
@@ -158,12 +157,12 @@ find out what the arguments accept.
 
 ## Project documents
 
-The [project goal](project-goal.md) describes the boundary and the scope. The
-architecture decision records explain the choices that would be awkward to
-undo, and they live in the `adr/` directory of the repository instead of on
-this site:
+The architecture decision records explain choices that would be awkward to undo,
+and they live in the `adr/` directory of the repository instead of on this site:
 
 - [`adr/0001-owned-healpix-ring-kernel.md`](https://github.com/JochimMaene/polypix/blob/main/adr/0001-owned-healpix-ring-kernel.md)
   on why the RING kernel is ours.
 - [`adr/0002-coverage-reductions-and-revisit-statistics.md`](https://github.com/JochimMaene/polypix/blob/main/adr/0002-coverage-reductions-and-revisit-statistics.md)
   on reducers and revisit statistics, with the benchmark evidence.
+- [`adr/0003-general-spherical-polygons.md`](https://github.com/JochimMaene/polypix/blob/main/adr/0003-general-spherical-polygons.md)
+  on concave, multipart, and holed boundaries.

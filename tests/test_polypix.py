@@ -1268,6 +1268,7 @@ class PolypixTests(unittest.TestCase):
                 "cell_centers",
                 "cell_corners",
                 "cell_count",
+                "cell_neighbors",
                 "cover_cap",
                 "cover_polygon",
                 "cover_sweep",

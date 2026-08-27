@@ -945,6 +945,14 @@ def test_corners(benchmark, cells: np.ndarray) -> None:
     assert corners.dtype == np.float64
 
 
+@pytest.mark.parallel
+def test_neighbors(benchmark) -> None:
+    cells = np.arange(1 << 14, dtype=np.uint64)
+    neighbors = benchmark(px.cell_neighbors, cells, 10)
+
+    assert neighbors.offsets.shape == (cells.size + 1,)
+
+
 @pytest.mark.parametrize(
     "count",
     [1_000, pytest.param(1_000_000, marks=pytest.mark.parallel)],

@@ -7,6 +7,10 @@ documentation. Internal refactors, tests, and CI changes are omitted.
 
 ## Unreleased
 
+### Features
+
+- Added `cell_neighbors()` for batched immediate HEALPix neighbor lookup.
+
 ## [0.4.0] — 2026-08-26
 
 ### Breaking changes

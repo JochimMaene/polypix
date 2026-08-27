@@ -22,6 +22,7 @@ from ._core import (
     _cover_cap,
     _cover_prepared_regions,
     _cover_sweep,
+    _neighbors,
     _prepare_polygon,
     _revisit_stats,
     _sum_coverage_per_cell,
@@ -136,15 +137,15 @@ RegionLike = PolygonsLike | Polygon | MultiPolygon | Sequence[Polygon | MultiPol
 class Coverage:
     """Segmented HEALPix RING coverage, validated and read-only.
 
-    One segment is one input item: one polygon, one cap, one sweep interval.
+    One segment is one input item: one polygon, cap, sweep interval, or cell.
     Every cell is stored in the flat ``cells`` array, and ``offsets`` records
     where each segment begins and ends. So ``len(coverage)`` counts input
     items and not cells, and ``coverage[i]`` is a zero-copy view of the
     cells found for item ``i``.
 
-    The covering functions return this type. Calling ``Coverage(...)``
-    directly raises :exc:`TypeError`; use :meth:`from_arrays` to bring
-    segmented arrays back in from storage.
+    The covering functions and :func:`cell_neighbors` return this type.
+    Calling ``Coverage(...)`` directly raises :exc:`TypeError`; use
+    :meth:`from_arrays` to bring segmented arrays back in from storage.
 
     Attributes
     ----------
@@ -1719,6 +1720,50 @@ def cell_corners(
     return _corner_many(ring, resolved)
 
 
+def cell_neighbors(
+    cells: CellsLike,
+    resolution: int,
+) -> Coverage:
+    """Return the topological neighbors of each HEALPix cell.
+
+    Cells touching at an edge or corner are neighbors. The input cell itself
+    is excluded. Most cells have eight neighbors. The 24 cells meeting at
+    eight exceptional grid vertices have seven, and cells at resolution 0
+    have six.
+
+    Parameters
+    ----------
+    cells : int or array_like of int
+        RING indices at ``resolution``.
+    resolution : int
+        HEALPix resolution, 0 through 29.
+
+    Returns
+    -------
+    Coverage
+        One unordered segment per input cell, preserving input alignment.
+        A scalar input produces one segment.
+
+    Raises
+    ------
+    TypeError
+        If ``cells`` is not an integer array.
+    ValueError
+        If the resolution is invalid, or an index is negative or off the
+        grid.
+
+    Examples
+    --------
+    >>> import polypix as px
+    >>> neighbors = px.cell_neighbors(4, resolution=0)
+    >>> sorted(neighbors[0].tolist())
+    [0, 3, 5, 7, 8, 11]
+    """
+    resolved = _as_resolution(resolution)
+    ring = _as_uint64_vector(cells, "cells", native_range_checked=True)
+    return Coverage._from_native(*_neighbors(ring, resolved), resolved)
+
+
 __all__ = [
     "Count",
     "Coverage",
@@ -1731,6 +1776,7 @@ __all__ = [
     "cell_centers",
     "cell_corners",
     "cell_count",
+    "cell_neighbors",
     "cover_cap",
     "cover_polygon",
     "cover_sweep",

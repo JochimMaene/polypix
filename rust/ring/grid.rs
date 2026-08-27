@@ -298,6 +298,121 @@ pub(super) fn ring_to_face_xy(cell: u64, nside: u64) -> (u8, i64, i64) {
     (face as u8, vertical - y, y)
 }
 
+// The face-to-RING transform is adapted from Astrometry.net's BSD-3-Clause
+// `healpix_xy_to_ring` implementation; see THIRD_PARTY_NOTICES.md.
+fn face_xy_to_ring(face: u8, x: i64, y: i64, nside: u64) -> u64 {
+    let nside = nside as i64;
+    let face_row = i64::from(face / 4);
+    let ring = (face_row + 2) * nside - x - y - 1;
+    let longitude_index = if ring <= nside {
+        nside - 1 - y + i64::from(face % 4) * ring
+    } else if ring >= 3 * nside {
+        let south_ring = 4 * nside - ring;
+        x + i64::from(face % 4) * south_ring
+    } else {
+        let phase = (ring - nside) % 2;
+        let face_phase = 2 * i64::from(face % 4) - face_row % 2 + 1;
+        (face_phase * nside + x - y + phase)
+            .div_euclid(2)
+            .rem_euclid(4 * nside)
+    };
+    ring_start(nside as u64, ring as u64) + longitude_index as u64
+}
+
+// The face transitions are adapted from Astrometry.net's BSD-3-Clause HEALPix
+// neighbor implementation; see THIRD_PARTY_NOTICES.md.
+fn neighboring_face(face: u8, dx: i64, dy: i64) -> Option<u8> {
+    let panel = face % 4;
+    if face <= 3 {
+        match (dx, dy) {
+            (1, 0) => Some((panel + 1) % 4),
+            (0, 1) => Some((panel + 3) % 4),
+            (1, 1) => Some((panel + 2) % 4),
+            (-1, 0) => Some(face + 4),
+            (0, -1) => Some(4 + (panel + 1) % 4),
+            (-1, -1) => Some(face + 8),
+            _ => None,
+        }
+    } else if face >= 8 {
+        match (dx, dy) {
+            (1, 0) => Some(4 + (panel + 1) % 4),
+            (0, 1) => Some(face - 4),
+            (-1, 0) => Some(8 + (panel + 3) % 4),
+            (0, -1) => Some(8 + (panel + 1) % 4),
+            (-1, -1) => Some(8 + (panel + 2) % 4),
+            (1, 1) => Some(face - 8),
+            _ => None,
+        }
+    } else {
+        match (dx, dy) {
+            (1, 0) => Some(face - 4),
+            (0, 1) => Some((panel + 3) % 4),
+            (-1, 0) => Some(8 + (panel + 3) % 4),
+            (0, -1) => Some(face + 4),
+            (1, -1) => Some(4 + (panel + 1) % 4),
+            (-1, 1) => Some(4 + (panel + 3) % 4),
+            _ => None,
+        }
+    }
+}
+
+pub(super) fn neighboring_cells(cell: u64, resolution: u8) -> [Option<u64>; 8] {
+    const DIRECTIONS: [(i64, i64); 8] = [
+        (1, 0),
+        (1, 1),
+        (0, 1),
+        (-1, 1),
+        (-1, 0),
+        (-1, -1),
+        (0, -1),
+        (1, -1),
+    ];
+
+    let nside = 1_i64 << resolution;
+    let (face, x, y) = ring_to_face_xy(cell, nside as u64);
+    DIRECTIONS.map(|(dx, dy)| {
+        let raw_x = x + dx;
+        let raw_y = y + dy;
+        let crossed_x = !(0..nside).contains(&raw_x);
+        let crossed_y = !(0..nside).contains(&raw_y);
+        let mut neighbor_x = raw_x.rem_euclid(nside);
+        let mut neighbor_y = raw_y.rem_euclid(nside);
+        let neighbor_face = match (crossed_x, crossed_y) {
+            (false, false) => Some(face),
+            (true, true) => neighboring_face(face, dx, dy),
+            (true, false) => neighboring_face(face, dx, 0),
+            (false, true) => neighboring_face(face, 0, dy),
+        }?;
+
+        // Polar face edges meet with opposite local axes. Clamp the crossed
+        // coordinate to that edge, then swap axes into the neighbor's frame.
+        if face <= 3 && (raw_x >= nside || raw_y >= nside) {
+            if raw_x >= nside {
+                neighbor_x = nside - 1;
+            }
+            if raw_y >= nside {
+                neighbor_y = nside - 1;
+            }
+            std::mem::swap(&mut neighbor_x, &mut neighbor_y);
+        } else if face >= 8 && (raw_x < 0 || raw_y < 0) {
+            if raw_x < 0 {
+                neighbor_x = 0;
+            }
+            if raw_y < 0 {
+                neighbor_y = 0;
+            }
+            std::mem::swap(&mut neighbor_x, &mut neighbor_y);
+        }
+
+        Some(face_xy_to_ring(
+            neighbor_face,
+            neighbor_x,
+            neighbor_y,
+            nside as u64,
+        ))
+    })
+}
+
 // The face-coordinate transform follows the analytical HEALPix mapping used
 // by Astrometry.net (BSD-3-Clause); see THIRD_PARTY_NOTICES.md.
 pub(super) fn face_coordinate(face: u8, x: i64, y: i64, nside: u64, dx: f64, dy: f64) -> Vec3 {

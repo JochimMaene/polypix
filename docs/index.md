@@ -156,5 +156,4 @@ examples/earth-observation-constellation
 api
 release-notes
 development
-project-goal
 ```

@@ -235,6 +235,31 @@ array([1374, 1695, 1441, 1762])
 `cell_at()` gives you the cell a direction falls in. `cell_centers()` then gives that cell's center, which is the arrow head, not where you started.
 ```
 
+## Find adjacent cells
+
+`cell_neighbors()` returns the cells touching each input cell at an edge or
+corner. The input cell itself is not included:
+
+```{doctest}
+>>> neighbors = px.cell_neighbors(point_cells, resolution=4)
+>>> len(neighbors)
+4
+>>> np.diff(neighbors.offsets)
+array([8, 8, 8, 8])
+```
+
+One common use is expanding a selected area by one cell:
+
+```{doctest}
+>>> expanded = np.unique(np.concatenate((point_cells, neighbors.cells)))
+>>> expanded.size
+36
+```
+
+The neighbor segments are unordered. Most cells have eight neighbors; the 24
+cells meeting at eight exceptional grid vertices have seven, and resolution-0
+cells have six.
+
 ## Turn cells into a map
 
 Cell IDs are integers in `[0, cell_count(resolution))`, so a global map is just

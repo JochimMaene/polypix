@@ -422,6 +422,23 @@ fn _corner_many<'py>(
         .into_pyarray(py))
 }
 
+#[pyfunction]
+fn _neighbors<'py>(
+    py: Python<'py>,
+    cells: PyReadonlyArray1<'py, u64>,
+    resolution: u8,
+) -> PyResult<PyCoverage<'py>> {
+    validate_resolution(resolution)?;
+    let raw_cells = slice(&cells, "cells")?;
+    let coverage = py
+        .detach(|| ring::cell_neighbors(raw_cells, resolution))
+        .map_err(native_error)?;
+    Ok((
+        readonly_vec(coverage.cells, py),
+        readonly_vec(coverage.offsets, py),
+    ))
+}
+
 #[pymodule]
 fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
@@ -439,5 +456,6 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_cell_at, module)?)?;
     module.add_function(wrap_pyfunction!(_center, module)?)?;
     module.add_function(wrap_pyfunction!(_corner_many, module)?)?;
+    module.add_function(wrap_pyfunction!(_neighbors, module)?)?;
     Ok(())
 }

@@ -349,10 +349,10 @@ def touching_cells(resolution: int) -> dict[int, set[int]]:
     """Return which cells share an edge, keyed by cell.
 
     Cells sharing an edge share two corners, so counting shared corners is
-    enough and needs no neighbour lookup the library does not offer. Cells that
-    meet at a single point are deliberately not counted: a shared vertex is not
-    visible enough to read as one region, and including it makes the graph too
-    dense to color from a small palette.
+    enough. `cell_neighbors()` is deliberately not used here: it also returns
+    cells meeting at a single point, and those are not counted. A shared vertex
+    is not visible enough to read as one region, and including it makes the
+    graph too dense to color from a small palette.
     """
     cells = np.arange(12 * 4**resolution, dtype=np.int64)
     corners = np.round(px.cell_corners(cells, resolution), 7)

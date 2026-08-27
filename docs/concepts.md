@@ -24,8 +24,8 @@ the ground, and what a dense map would cost.
 
 What comes back are ordinary RING pixel indices in `[0, cell_count)`. They are
 not packed tokens, and they do not encode their own resolution; the result object
-carries that. For ordering conversion, neighbors, hierarchy, or map algebra, hand
-the IDs to a fuller HEALPix library, since Polypix does none of it.
+carries that. For ordering conversion, hierarchy, or map algebra, hand the IDs
+to a fuller HEALPix library, since Polypix does none of it.
 
 ## Direction geometry
 
@@ -171,7 +171,7 @@ arrays and fixed-resolution RING IDs. There is no frame object model to adopt,
 and no Astropy or geospatial runtime to install alongside it.
 
 Signed `int64` RING IDs go straight to healpy, astropy-healpix, or cdshealpix for
-everything Polypix leaves out, which includes ordering conversion, neighbors,
+everything Polypix leaves out, which includes ordering conversion,
 interpolation, resampling, harmonics, and file formats.
 
 Two things are worth watching when you hand data over:

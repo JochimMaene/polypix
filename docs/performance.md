@@ -22,6 +22,7 @@ chunks:
 | `cell_at()` | 8 bytes per direction |
 | `cell_centers()` | 24 bytes per cell |
 | `cell_corners()` | 96 bytes per cell |
+| `cell_neighbors()` | up to `64 * input_cell_count + 8 * (input_cell_count + 1)` bytes |
 | Dense cap counts | `8 * cell_count` bytes |
 | `RevisitStats` | `48 * represented_cell_count` bytes |
 
@@ -175,8 +176,10 @@ automatic = px.cover_polygon(batch, resolution=8)  # threads=None
 ```
 
 Automatic mode stays sequential below measured crossovers. `cell_at()`,
-`cell_centers()`, and `cell_corners()` parallelize large arrays as well, but they
-expose no control over it.
+`cell_centers()`, `cell_corners()`, and `cell_neighbors()` parallelize large
+arrays as well, but they expose no control over it. Where each crossover falls
+depends on the machine, so treat the batch size that starts to benefit as
+something to measure rather than a fixed number.
 
 If you already run several Polypix calls at once from your own executor, pass
 `threads=1` inside each of them to avoid oversubscription. The thread count never
