@@ -96,8 +96,9 @@ you a read-only view of one of them:
 array([1374, 1375, 1438, 1439, 1502, 1503, 1566, 1567, 1631])
 ```
 
-All of the region operations follow the same rule: a cell is selected when its
-center lies inside the region.
+All region operations default to selecting a cell when its center lies inside
+the region. Pass `mode="overlap"` when every touched cell is the intended
+answer.
 
 ```{figure} assets/generated/cover-cap.svg
 :alt: Two spherical caps and the grid cells each one covers.
@@ -399,10 +400,10 @@ At high resolution, query only the cells you need:
 
 ## When a region comes back empty
 
-A cell is covered when its center falls inside your region, so a region smaller
-or thinner than a cell can quite legitimately come back empty. The fix is to
-raise `resolution` until the cells are smaller than the smallest feature you care
-about. [Resolutions](resolutions.md#picking-one) lists the sizes, and
+A center-selected region smaller or thinner than a cell can quite legitimately
+come back empty. Raise `resolution` when you want representative center samples;
+pass `mode="overlap"` when you need every cell the region touches instead.
+[Resolutions](resolutions.md#picking-one) lists the sizes, and
 [center-sampled coverage](concepts.md#center-sampled-coverage) shows exactly what
 the rule includes and leaves out.
 

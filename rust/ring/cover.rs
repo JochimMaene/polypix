@@ -207,11 +207,64 @@ pub(super) fn compute_candidate_coverage<T: Send + Sync>(
     )?
 }
 
+pub(super) fn compute_candidate_overlap_coverage<T: Send + Sync>(
+    item_count: usize,
+    candidates: &[u64],
+    resolution: u8,
+    threads: Option<usize>,
+    prepare: impl Fn(usize) -> Result<T, String> + Send + Sync,
+    z_bounds: impl Fn(&T) -> (f64, f64) + Send + Sync,
+    overlaps: impl Fn(&T, u64) -> bool + Send + Sync,
+) -> NativeResult<Coverage> {
+    let prepare_all = |parallel| {
+        let prepared = if parallel {
+            (0..item_count)
+                .into_par_iter()
+                .map(&prepare)
+                .collect::<Vec<_>>()
+        } else {
+            (0..item_count).map(&prepare).collect::<Vec<_>>()
+        };
+        prepared.into_iter().collect::<Result<Vec<_>, _>>()
+    };
+    let compute = |items: &[T], parallel| {
+        let plan = plan_item_candidates(items, candidates, resolution, parallel, &z_bounds);
+        compute_planned_candidate_cells(item_count, &plan, candidates, parallel, |index, cell| {
+            overlaps(&items[index], cell)
+        })
+    };
+    let preparation_work =
+        candidate_preparation_work(item_count, candidates.len(), CANDIDATE_PREPARATION_WORK);
+    if threads != Some(1) && preparation_work >= CANDIDATE_PARALLEL_MIN_VISITS {
+        return run_with_parallelism(item_count, true, threads, |parallel| {
+            let items = prepare_all(parallel)?;
+            compute(&items, parallel)
+        })?;
+    }
+    let items = prepare_all(false)?;
+    let plan = plan_item_candidates(&items, candidates, resolution, false, &z_bounds);
+    run_with_parallelism(
+        item_count,
+        plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS,
+        threads,
+        |parallel| {
+            compute_planned_candidate_cells(
+                item_count,
+                &plan,
+                candidates,
+                parallel,
+                |index, cell| overlaps(&items[index], cell),
+            )
+        },
+    )?
+}
+
 pub(super) fn compute_mixed_chunk(
     vertices: &[f64],
     offsets: &[u64],
     range: Range<usize>,
     resolution: u8,
+    overlap: bool,
 ) -> NativeResult<Coverage> {
     let expected_cells = range
         .len()
@@ -240,7 +293,11 @@ pub(super) fn compute_mixed_chunk(
         let raw = &vertices[start * 3..end * 3];
         let footprint = PreparedFootprint::from_raw(raw)
             .map_err(|error| NativeError::from(format!("geometry[{index}]: {error}")))?;
-        footprint.cover(resolution, &mut coverage.cells)?;
+        if overlap {
+            footprint.cover_overlap(resolution, &mut coverage.cells)?;
+        } else {
+            footprint.cover(resolution, &mut coverage.cells)?;
+        }
         coverage.offsets.push(coverage.cells.len() as u64);
     }
     Ok(coverage)
@@ -253,6 +310,7 @@ pub(super) fn compute_mixed_coverage(
     candidates: Option<&[u64]>,
     restrict_output: bool,
     threads: Option<usize>,
+    overlap: bool,
 ) -> NativeResult<Coverage> {
     debug_assert!(vertices.len().is_multiple_of(3));
     let vertex_count = vertices.len() / 3;
@@ -275,27 +333,40 @@ pub(super) fn compute_mixed_coverage(
             candidates.len(),
         )
     }) {
-        return compute_candidate_coverage(
-            polygon_count,
-            candidates,
-            resolution,
-            threads,
-            |index| {
-                let start = offsets[index] as usize;
-                let end = offsets[index + 1] as usize;
-                PreparedFootprint::from_raw(&vertices[start * 3..end * 3])
-                    .map_err(|error| format!("geometry[{index}]: {error}"))
-            },
-            PreparedFootprint::z_bounds,
-            PreparedFootprint::contains,
-        );
+        let prepare = |index| {
+            let start = offsets[index] as usize;
+            let end = offsets[index + 1] as usize;
+            PreparedFootprint::from_raw(&vertices[start * 3..end * 3])
+                .map_err(|error| format!("geometry[{index}]: {error}"))
+        };
+        return if overlap {
+            compute_candidate_overlap_coverage(
+                polygon_count,
+                candidates,
+                resolution,
+                threads,
+                prepare,
+                PreparedFootprint::z_bounds,
+                |footprint, cell| footprint.overlaps_cell(cell, resolution),
+            )
+        } else {
+            compute_candidate_coverage(
+                polygon_count,
+                candidates,
+                resolution,
+                threads,
+                prepare,
+                PreparedFootprint::z_bounds,
+                PreparedFootprint::contains,
+            )
+        };
     }
     let parallel_work = accumulated_scan_work(polygon_count, threads, estimated_cells);
     dispatch_coverage(
         polygon_count,
         parallel_work >= SCAN_PARALLEL_MIN_WORK,
         threads,
-        |range| compute_mixed_chunk(vertices, offsets, range, resolution),
+        |range| compute_mixed_chunk(vertices, offsets, range, resolution, overlap),
     )
 }
 
@@ -306,6 +377,7 @@ pub(crate) fn cover(
     raw_candidates: Option<&[u64]>,
     restrict_output: bool,
     threads: Option<usize>,
+    overlap: bool,
 ) -> NativeResult<Coverage> {
     debug_assert!(resolution <= MAX_RESOLUTION);
     let candidates = candidate_cells(raw_candidates, resolution)?;
@@ -316,6 +388,7 @@ pub(crate) fn cover(
         candidates.as_deref(),
         restrict_output,
         threads,
+        overlap,
     )
 }
 
@@ -333,8 +406,16 @@ impl PreparedRegionPolygon {
         self.footprint.contains(point)
     }
 
+    fn overlaps_cell(&self, cell: u64, resolution: u8) -> bool {
+        self.footprint.overlaps_cell(cell, resolution)
+    }
+
     fn cover(&self, resolution: u8, cells: &mut Vec<u64>) -> NativeResult<()> {
         self.footprint.cover(resolution, cells)
+    }
+
+    fn cover_overlap(&self, resolution: u8, cells: &mut Vec<u64>) -> NativeResult<()> {
+        self.footprint.cover_overlap(resolution, cells)
     }
 
     fn estimated_cells(&self, resolution: u8) -> usize {
@@ -381,17 +462,38 @@ fn region_contains<P: Borrow<PreparedRegionPolygon>>(polygons: &[P], point: Vec3
         .any(|polygon| polygon.borrow().contains(point))
 }
 
+fn region_overlaps_cell<P: Borrow<PreparedRegionPolygon>>(
+    polygons: &[P],
+    cell: u64,
+    resolution: u8,
+) -> bool {
+    polygons
+        .iter()
+        .any(|polygon| polygon.borrow().overlaps_cell(cell, resolution))
+}
+
 fn cover_prepared_region<P: Borrow<PreparedRegionPolygon>>(
     polygons: &[P],
     resolution: u8,
     cells: &mut Vec<u64>,
+    overlap: bool,
 ) -> NativeResult<()> {
     if let [polygon] = polygons {
-        return polygon.borrow().cover(resolution, cells);
+        return if overlap {
+            polygon.borrow().cover_overlap(resolution, cells)
+        } else {
+            polygon.borrow().cover(resolution, cells)
+        };
     }
     let mut region_cells = Vec::new();
     for polygon in polygons {
-        polygon.borrow().cover(resolution, &mut region_cells)?;
+        if overlap {
+            polygon
+                .borrow()
+                .cover_overlap(resolution, &mut region_cells)?;
+        } else {
+            polygon.borrow().cover(resolution, &mut region_cells)?;
+        }
     }
     region_cells.sort_unstable();
     region_cells.dedup();
@@ -408,6 +510,7 @@ pub(crate) fn cover_prepared_regions(
     raw_candidates: Option<&[u64]>,
     restrict_output: bool,
     threads: Option<usize>,
+    overlap: bool,
 ) -> NativeResult<Coverage> {
     let candidates = candidate_cells(raw_candidates, resolution)?;
     let region_count = regions.len();
@@ -424,15 +527,27 @@ pub(crate) fn cover_prepared_regions(
             candidates.len(),
         )
     }) {
-        return compute_candidate_coverage(
-            region_count,
-            candidates,
-            resolution,
-            threads,
-            |region| Ok::<_, String>(regions[region].as_slice()),
-            |polygons| region_z_bounds(polygons),
-            |polygons, point| region_contains(polygons, point),
-        );
+        return if overlap {
+            compute_candidate_overlap_coverage(
+                region_count,
+                candidates,
+                resolution,
+                threads,
+                |region| Ok::<_, String>(regions[region].as_slice()),
+                |polygons| region_z_bounds(polygons),
+                |polygons, cell| region_overlaps_cell(polygons, cell, resolution),
+            )
+        } else {
+            compute_candidate_coverage(
+                region_count,
+                candidates,
+                resolution,
+                threads,
+                |region| Ok::<_, String>(regions[region].as_slice()),
+                |polygons| region_z_bounds(polygons),
+                |polygons, point| region_contains(polygons, point),
+            )
+        };
     }
     let parallel_work = accumulated_scan_work(region_count, threads, estimated_cells);
     dispatch_coverage(
@@ -446,7 +561,7 @@ pub(crate) fn cover_prepared_regions(
             };
             coverage.offsets.push(0);
             for region in range {
-                cover_prepared_region(&regions[region], resolution, &mut coverage.cells)?;
+                cover_prepared_region(&regions[region], resolution, &mut coverage.cells, overlap)?;
                 coverage.offsets.push(coverage.cells.len() as u64);
             }
             Ok(coverage)
@@ -458,6 +573,7 @@ pub(super) fn compute_cap_chunk(
     caps: &[Cap],
     range: Range<usize>,
     resolution: u8,
+    overlap: bool,
 ) -> NativeResult<Coverage> {
     let expected_cells = range.clone().fold(0_usize, |total, index| {
         total.saturating_add(expected_cells_for_cap(&caps[index], resolution))
@@ -477,6 +593,11 @@ pub(super) fn compute_cap_chunk(
     let mut coverage = Coverage { cells, offsets };
     coverage.offsets.push(0);
     for index in range {
+        if overlap {
+            caps[index].cover_overlap(resolution, &mut coverage.cells)?;
+            coverage.offsets.push(coverage.cells.len() as u64);
+            continue;
+        }
         let mut allocation_error = false;
         visit_cap_ranges(&caps[index], resolution, |cells| {
             if allocation_error {
@@ -507,6 +628,7 @@ pub(crate) fn cover_caps(
     raw_candidates: Option<&[u64]>,
     restrict_output: bool,
     threads: Option<usize>,
+    overlap: bool,
 ) -> NativeResult<Coverage> {
     debug_assert!(resolution <= MAX_RESOLUTION);
     let caps = prepare_caps(centers, radii)?;
@@ -525,6 +647,38 @@ pub(crate) fn cover_caps(
                 (cap.minimum_z, cap.maximum_z)
             })
         };
+        if overlap {
+            // Bind every cap to the resolution once, rather than relocating
+            // each axis cell for every candidate it is tested against.
+            let overlaps = caps
+                .iter()
+                .map(|cap| CapOverlap::new(cap, resolution))
+                .collect::<Vec<_>>();
+            let compute_planned = |plan: &CandidatePlan, parallel| {
+                compute_planned_candidate_cells(
+                    caps.len(),
+                    plan,
+                    candidates,
+                    parallel,
+                    |index, cell| overlaps[index].overlaps_cell(cell),
+                )
+            };
+            let preparation_work = candidate_preparation_work(caps.len(), candidates.len(), 0);
+            if threads != Some(1) && preparation_work >= CANDIDATE_PARALLEL_MIN_VISITS {
+                return run_with_parallelism(caps.len(), true, threads, |parallel| {
+                    let plan = plan_for(parallel);
+                    compute_planned(&plan, parallel)
+                })?;
+            }
+
+            let plan = plan_for(false);
+            return run_with_parallelism(
+                caps.len(),
+                plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS,
+                threads,
+                |parallel| compute_planned(&plan, parallel),
+            )?;
+        }
         let compute_planned = |plan: &CandidatePlan, parallel| {
             compute_planned_candidates(
                 caps.len(),
@@ -564,7 +718,7 @@ pub(crate) fn cover_caps(
         caps.len(),
         parallel_work >= SCAN_PARALLEL_MIN_WORK,
         threads,
-        |range| compute_cap_chunk(&caps, range, resolution),
+        |range| compute_cap_chunk(&caps, range, resolution, overlap),
     )
 }
 
@@ -726,6 +880,7 @@ pub(super) fn compute_sweep_chunk(
     right: &[Vec3],
     range: Range<usize>,
     resolution: u8,
+    overlap: bool,
 ) -> NativeResult<Coverage> {
     let count = range.len();
     let expected_cells = count
@@ -746,7 +901,11 @@ pub(super) fn compute_sweep_chunk(
     coverage.offsets.push(0);
     for index in range {
         let footprint = prepare_sweep_footprint(left, right, index)?;
-        footprint.cover(resolution, &mut coverage.cells)?;
+        if overlap {
+            footprint.cover_overlap(resolution, &mut coverage.cells)?;
+        } else {
+            footprint.cover(resolution, &mut coverage.cells)?;
+        }
         coverage.offsets.push(coverage.cells.len() as u64);
     }
     Ok(coverage)
@@ -759,6 +918,7 @@ pub(crate) fn cover_sweep(
     raw_candidates: Option<&[u64]>,
     restrict_output: bool,
     threads: Option<usize>,
+    overlap: bool,
 ) -> NativeResult<Coverage> {
     debug_assert!(resolution <= MAX_RESOLUTION);
     debug_assert!(left.len().is_multiple_of(3));
@@ -795,22 +955,43 @@ pub(crate) fn cover_sweep(
             candidates.len(),
         )
     }) {
-        return compute_candidate_coverage(
-            segment_count,
-            candidates,
-            resolution,
-            threads,
-            |index| prepare_sweep_footprint(&normalized_left, &normalized_right, index),
-            PreparedFootprint::z_bounds,
-            PreparedFootprint::contains,
-        );
+        let prepare = |index| prepare_sweep_footprint(&normalized_left, &normalized_right, index);
+        return if overlap {
+            compute_candidate_overlap_coverage(
+                segment_count,
+                candidates,
+                resolution,
+                threads,
+                prepare,
+                PreparedFootprint::z_bounds,
+                |footprint, cell| footprint.overlaps_cell(cell, resolution),
+            )
+        } else {
+            compute_candidate_coverage(
+                segment_count,
+                candidates,
+                resolution,
+                threads,
+                prepare,
+                PreparedFootprint::z_bounds,
+                PreparedFootprint::contains,
+            )
+        };
     }
     let parallel_work = accumulated_scan_work(segment_count, threads, estimated_cells);
     dispatch_coverage(
         segment_count,
         parallel_work >= SCAN_PARALLEL_MIN_WORK,
         threads,
-        |range| compute_sweep_chunk(&normalized_left, &normalized_right, range, resolution),
+        |range| {
+            compute_sweep_chunk(
+                &normalized_left,
+                &normalized_right,
+                range,
+                resolution,
+                overlap,
+            )
+        },
     )
 }
 
@@ -910,6 +1091,45 @@ pub(super) fn compute_planned_candidates(
             resolution,
             &contains,
         )
+    })
+}
+
+fn compute_candidate_cell_chunk_with(
+    plan: &CandidatePlan,
+    candidates: &[u64],
+    range: Range<usize>,
+    overlaps: impl Fn(usize, u64) -> bool,
+) -> NativeResult<Coverage> {
+    let mut coverage = Coverage {
+        cells: Vec::new(),
+        offsets: Vec::new(),
+    };
+    coverage
+        .offsets
+        .try_reserve_exact(range.len() + 1)
+        .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
+    coverage.offsets.push(0);
+    for index in range {
+        for candidate_index in plan.ranges[index].clone() {
+            let cell = candidates[candidate_index];
+            if overlaps(index, cell) {
+                push_coverage_cell(&mut coverage.cells, cell, 1)?;
+            }
+        }
+        coverage.offsets.push(coverage.cells.len() as u64);
+    }
+    Ok(coverage)
+}
+
+fn compute_planned_candidate_cells(
+    item_count: usize,
+    plan: &CandidatePlan,
+    candidates: &[u64],
+    parallel: bool,
+    overlaps: impl Fn(usize, u64) -> bool + Send + Sync,
+) -> NativeResult<Coverage> {
+    compute_coverage_chunks(item_count, parallel, |range| {
+        compute_candidate_cell_chunk_with(plan, candidates, range, &overlaps)
     })
 }
 

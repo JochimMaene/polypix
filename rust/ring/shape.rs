@@ -10,13 +10,16 @@ use std::sync::OnceLock;
 
 use crate::error::NativeResult;
 use crate::geometry::{
-    contains_center, dot, general_polygon_contains, nearly_equal, normalize, polygon_contains,
-    prepare_general_polygon, prepare_polygon, ring_contains, validate_polygon, GeneralPolygon,
-    Polygon, Vec3, CONTAINMENT_EPSILON,
+    contains_center, cross, dot, general_polygon_contains, nearly_equal, norm, normalize,
+    polygon_contains, prepare_general_polygon, prepare_polygon, ring_contains, validate_polygon,
+    GeneralPolygon, Polygon, Vec3, CONTAINMENT_EPSILON,
 };
 
 use super::cover::push_coverage_cell;
-use super::grid::{raw_cell_count, ring_info, ring_range, Ring};
+use super::grid::{
+    center, face_coordinate, normalized_cell_at, raw_cell_count, ring_info, ring_range,
+    ring_to_face_xy, Ring,
+};
 
 pub(super) const ROTATION_RESYNC_STEPS: u64 = 64;
 
@@ -41,7 +44,9 @@ pub(super) struct Quad {
 
 pub(super) struct Cap {
     pub(super) axis: Vec3,
+    pub(super) sine_radius: f64,
     pub(super) cosine_radius: f64,
+    pub(super) chord_radius: f64,
     pub(super) squared_chord_radius: f64,
     pub(super) full_sphere: bool,
     pub(super) minimum_z: f64,
@@ -255,13 +260,13 @@ fn cover_general_polygon(
         longitude_bounds_for(&polygon.outer.vertices, |point| {
             ring_contains(&polygon.outer, point)
         });
-    cover_centers_in_bounds(
+    cover_cells_in_bounds::<false>(
         minimum_z,
         maximum_z,
         longitude_intervals,
         interval_count,
         resolution,
-        |x, y, z| general_polygon_contains(polygon, [x, y, z]),
+        |_, x, y, z| general_polygon_contains(polygon, [x, y, z]),
         |cell| push_coverage_cell(cells, cell, 1024),
     )
 }
@@ -289,6 +294,88 @@ impl Cap {
         let dy = ring.radial * sine - self.axis[1];
         let dz = ring.z - self.axis[2];
         dx * dx + dy * dy + dz * dz <= self.squared_chord_radius
+    }
+
+    fn longitude_bounds(&self) -> ([(f64, f64); 2], usize) {
+        if self.minimum_z <= -1.0 || self.maximum_z >= 1.0 {
+            return ([(0.0, TAU), (0.0, 0.0)], 1);
+        }
+        let half_width = (self.sine_radius / self.radial).clamp(0.0, 1.0).asin();
+        let start = self.longitude - half_width;
+        let end = self.longitude + half_width;
+        if start < 0.0 {
+            ([(0.0, end), (start + TAU, TAU)], 2)
+        } else if end > TAU {
+            ([(0.0, end - TAU), (start, TAU)], 2)
+        } else {
+            ([(start, end), (0.0, 0.0)], 1)
+        }
+    }
+
+    pub(super) fn cover_overlap(&self, resolution: u8, cells: &mut Vec<u64>) -> NativeResult<()> {
+        if self.full_sphere {
+            let cell_count = usize::try_from(raw_cell_count(resolution)).map_err(|_| {
+                crate::error::NativeError::out_of_memory(
+                    "Coverage result is too large to fit in memory.",
+                )
+            })?;
+            cells.try_reserve(cell_count).map_err(|_| {
+                crate::error::NativeError::out_of_memory(
+                    "Coverage result is too large to fit in memory.",
+                )
+            })?;
+            cells.extend(0..raw_cell_count(resolution));
+            return Ok(());
+        }
+        let (longitude_intervals, interval_count) = self.longitude_bounds();
+        let overlap = CapOverlap::new(self, resolution);
+        cover_overlapping_cells(
+            self.minimum_z,
+            self.maximum_z,
+            longitude_intervals,
+            interval_count,
+            resolution,
+            |cell| overlap.overlaps_cell(cell),
+            |cell| push_coverage_cell(cells, cell, 1024),
+        )
+    }
+}
+
+/// One cap bound to one resolution. The axis cell only ever matches a single
+/// cell in a scan, and the chord radius is a cap constant, so both are located
+/// once here instead of once per visited cell. Center mode never locates an
+/// axis and so never builds this.
+pub(super) struct CapOverlap<'cap> {
+    cap: &'cap Cap,
+    resolution: u8,
+    axis_cell: u64,
+}
+
+impl<'cap> CapOverlap<'cap> {
+    pub(super) fn new(cap: &'cap Cap, resolution: u8) -> Self {
+        Self {
+            cap,
+            resolution,
+            axis_cell: normalized_cell_at(cap.axis, resolution),
+        }
+    }
+
+    pub(super) fn overlaps_cell(&self, cell: u64) -> bool {
+        let cap = self.cap;
+        if cap.full_sphere || cap.contains(center(cell, self.resolution)) {
+            return true;
+        }
+        // A cap smaller than one cell can sit entirely inside it, missing
+        // both the center test and every edge test.
+        if self.axis_cell == cell {
+            return true;
+        }
+        let boundary = CellBoundary::new(cell, self.resolution);
+        let disk = CapDisk {
+            axis: cap.axis,
+            chord_radius: cap.chord_radius,
+        };
+        (0..4).any(|edge| cell_edge_within_cap(&boundary, edge, disk))
     }
 }
 
@@ -325,7 +412,9 @@ pub(super) fn prepare_caps(centers: &[f64], radii: &[f64]) -> Result<Vec<Cap>, S
             };
             Ok(Cap {
                 axis,
+                sine_radius,
                 cosine_radius,
+                chord_radius: 2.0 * half_chord,
                 squared_chord_radius: 4.0 * half_chord * half_chord,
                 full_sphere: effective_radius == std::f64::consts::PI,
                 minimum_z: minimum_z.clamp(-1.0, 1.0),
@@ -472,24 +561,24 @@ pub(super) fn cover_centers(
 ) -> NativeResult<()> {
     let (minimum_z, maximum_z) = polygon_z_bounds(vertices, edge_normals);
     let (longitude_intervals, interval_count) = longitude_bounds(vertices, edge_normals);
-    cover_centers_in_bounds(
+    cover_cells_in_bounds::<false>(
         minimum_z,
         maximum_z,
         longitude_intervals,
         interval_count,
         resolution,
-        contains,
+        |_, x, y, z| contains(x, y, z),
         visit,
     )
 }
 
-fn cover_centers_in_bounds(
+fn cover_cells_in_bounds<const PAD_LONGITUDE: bool>(
     minimum_z: f64,
     maximum_z: f64,
     longitude_intervals: [(f64, f64); 2],
     interval_count: usize,
     resolution: u8,
-    contains: impl Fn(f64, f64, f64) -> bool,
+    contains: impl Fn(u64, f64, f64, f64) -> bool,
     mut visit: impl FnMut(u64) -> NativeResult<()>,
 ) -> NativeResult<()> {
     let nside = 1_u64 << resolution;
@@ -517,6 +606,64 @@ fn cover_centers_in_bounds(
         let step_sine = scan_ring.step_sine;
         let step_cosine = scan_ring.step_cosine;
         let mut next_unscanned = 0;
+
+        let mut scan_offsets = |first: u64, last: u64| -> NativeResult<()> {
+            let first_longitude = (first as f64 + ring.shift) * step;
+            let (sine, cosine) = first_longitude.sin_cos();
+            let mut x = ring.radial * cosine;
+            let mut y = ring.radial * sine;
+            for offset in first..=last {
+                let cell = ring.start + offset;
+                if contains(cell, x, y, ring.z) {
+                    visit(cell)?;
+                }
+
+                if offset < last && (offset - first + 1).is_multiple_of(ROTATION_RESYNC_STEPS) {
+                    let longitude = (offset as f64 + 1.0 + ring.shift) * step;
+                    let (sine, cosine) = longitude.sin_cos();
+                    x = ring.radial * cosine;
+                    y = ring.radial * sine;
+                } else {
+                    let next_y = y * step_cosine + x * step_sine;
+                    x = x * step_cosine - y * step_sine;
+                    y = next_y;
+                }
+            }
+            Ok(())
+        };
+
+        if PAD_LONGITUDE {
+            let mut ranges = Vec::with_capacity(4);
+            for &(start, end) in longitude_intervals.iter().take(interval_count) {
+                let first = (start / step - ring.shift).ceil() as i64 - 1;
+                let last = (end / step - ring.shift).floor() as i64 + 1;
+                let count = ring.cells as i64;
+                if first < 0 {
+                    ranges.push((0_u64, last.min(count - 1).max(0) as u64));
+                    ranges.push(((first + count).max(0) as u64, ring.cells - 1));
+                } else if last >= count {
+                    ranges.push((first.min(count - 1) as u64, ring.cells - 1));
+                    ranges.push((0, (last - count).min(count - 1) as u64));
+                } else if first <= last {
+                    ranges.push((first as u64, last as u64));
+                }
+            }
+            ranges.sort_unstable();
+            let mut merged: Vec<(u64, u64)> = Vec::with_capacity(ranges.len());
+            for (first, last) in ranges {
+                if let Some((_, merged_last)) = merged.last_mut() {
+                    if first <= merged_last.saturating_add(1) {
+                        *merged_last = (*merged_last).max(last);
+                        continue;
+                    }
+                }
+                merged.push((first, last));
+            }
+            for (first, last) in merged {
+                scan_offsets(first, last)?;
+            }
+            continue;
+        }
 
         for &(start, end) in longitude_intervals.iter().take(interval_count) {
             let first_value = start / step - ring.shift;
@@ -547,34 +694,397 @@ fn cover_centers_in_bounds(
             }
             next_unscanned = last.saturating_add(1);
 
-            let first_longitude = (first as f64 + ring.shift) * step;
-            let (sine, cosine) = first_longitude.sin_cos();
-            let mut x = ring.radial * cosine;
-            let mut y = ring.radial * sine;
-            for offset in first..=last as u64 {
-                if contains(x, y, ring.z) {
-                    visit(ring.start + offset)?;
-                }
-
-                // Resynchronize every 64 steps: accumulated rotation drift
-                // stays below the 1e-14 containment tolerance while avoiding
-                // one sin_cos evaluation per tested center.
-                if offset < last as u64
-                    && (offset - first + 1).is_multiple_of(ROTATION_RESYNC_STEPS)
-                {
-                    let longitude = (offset as f64 + 1.0 + ring.shift) * step;
-                    let (sine, cosine) = longitude.sin_cos();
-                    x = ring.radial * cosine;
-                    y = ring.radial * sine;
-                } else {
-                    let next_y = y * step_cosine + x * step_sine;
-                    x = x * step_cosine - y * step_sine;
-                    y = next_y;
-                }
-            }
+            scan_offsets(first, last as u64)?;
         }
     }
     Ok(())
+}
+
+// Along either face-coordinate axis, the equatorial HEALPix map has angular
+// speed below 1.2 / nside and the polar map below 1.6 / nside. Two is a
+// conservative analytic bound across their transition and the polar limit.
+const CELL_EDGE_DOT_LIPSCHITZ: f64 = 2.0;
+const CELL_EDGE_ROOT_DEPTH: u8 = 56;
+
+// Subdivision splits both halves whenever the interval survives the Lipschitz
+// bounds, so a footprint edge running almost coincident with a curved cell edge
+// could otherwise descend without ever separating. The arc-span rejection
+// in the plane test removes the reachable case - a polygon built from one cell's own corners cost
+// 21 s at resolution 10 and was unreachable above 13 without it - and this
+// budget is what keeps an unforeseen one bounded rather than unbounded.
+//
+// Exhausting it reports `Indeterminate`, which the caller counts as overlap, so
+// the failure mode is one extra cell rather than a missing one. The value is
+// measured: the worst legitimate descent over the exhaustive fixtures and the
+// corner-quad workload is 521 nodes, so this leaves the budget purely as a
+// safety net and never as the mechanism that produces an answer.
+const CELL_EDGE_NODE_BUDGET: u32 = 32_768;
+const CELL_EDGE_CHORD_GUARD: f64 = 64.0 * f64::EPSILON;
+
+struct CellBoundary {
+    cell: u64,
+    resolution: u8,
+    face: u8,
+    x: i64,
+    y: i64,
+    nside: u64,
+}
+
+impl CellBoundary {
+    fn new(cell: u64, resolution: u8) -> Self {
+        let nside = 1_u64 << resolution;
+        let (face, x, y) = ring_to_face_xy(cell, nside);
+        Self {
+            cell,
+            resolution,
+            face,
+            x,
+            y,
+            nside,
+        }
+    }
+
+    fn point(&self, edge: u8, parameter: f64) -> Vec3 {
+        let (dx, dy) = match edge {
+            0 => (1.0 - parameter, 1.0),
+            1 => (0.0, 1.0 - parameter),
+            2 => (parameter, 0.0),
+            3 => (1.0, parameter),
+            _ => unreachable!("a HEALPix cell has four edges"),
+        };
+        face_coordinate(self.face, self.x, self.y, self.nside, dx, dy)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct MinorArc {
+    start: Vec3,
+    end: Vec3,
+    normal: Vec3,
+    // How far a point lies past each endpoint, as the two linear functionals
+    // `dot(point, _)`. They are arc constants, so membership costs two dot
+    // products rather than two cross products, and the subdivision can reuse
+    // them to bound a whole interval's distance from the arc's span.
+    past_start: Vec3,
+    past_end: Vec3,
+}
+
+impl MinorArc {
+    fn new(start: Vec3, end: Vec3) -> Self {
+        let normal = normalize(cross(start, end))
+            .expect("minor arc endpoints must be distinct and non-antipodal");
+        Self {
+            start,
+            end,
+            normal,
+            past_start: cross(normal, start),
+            past_end: cross(end, normal),
+        }
+    }
+
+    /// Signed room left inside the arc's span; negative outside either end.
+    fn span_slack(&self, point: Vec3) -> f64 {
+        dot(point, self.past_start).min(dot(point, self.past_end))
+    }
+
+    fn contains(&self, point: Vec3) -> bool {
+        self.span_slack(point) >= -CONTAINMENT_EPSILON
+    }
+}
+
+impl CellBoundary {
+    fn great_circle_arc(&self, edge: u8) -> Option<MinorArc> {
+        // Polar base-face meridians are exact great circles. Handle them
+        // analytically: Lipschitz subdivision is O(1 / separation) for an
+        // almost-parallel footprint or cap boundary.
+        let nside = self.nside as i64;
+        let polar_meridian = match (self.face, edge) {
+            (0..=3, 0) => self.y == nside - 1,
+            (0..=3, 3) => self.x == nside - 1,
+            (8..=11, 1) => self.x == 0,
+            (8..=11, 2) => self.y == 0,
+            _ => false,
+        };
+        polar_meridian.then(|| MinorArc::new(self.point(edge, 0.0), self.point(edge, 1.0)))
+    }
+}
+
+fn minor_arcs_overlap(first: MinorArc, second: MinorArc) -> bool {
+    first.contains(second.start)
+        || first.contains(second.end)
+        || second.contains(first.start)
+        || second.contains(first.end)
+}
+
+fn minor_arcs_intersect(first: MinorArc, second: MinorArc) -> bool {
+    let crossing = cross(first.normal, second.normal);
+    let crossing_norm = norm(crossing);
+    if crossing_norm <= CONTAINMENT_EPSILON {
+        return minor_arcs_overlap(first, second);
+    }
+    let intersection = [
+        crossing[0] / crossing_norm,
+        crossing[1] / crossing_norm,
+        crossing[2] / crossing_norm,
+    ];
+    (first.contains(intersection) && second.contains(intersection)) || {
+        let opposite = [-intersection[0], -intersection[1], -intersection[2]];
+        first.contains(opposite) && second.contains(opposite)
+    }
+}
+
+/// The one cap an edge is being tested against, held by chord radius so the
+/// test stays a distance comparison. This mirrors `MinorArc`: both name the
+/// target an edge is measured against, and both are cheap to copy.
+#[derive(Clone, Copy)]
+struct CapDisk {
+    axis: Vec3,
+    chord_radius: f64,
+}
+
+impl CapDisk {
+    fn contains(&self, point: Vec3) -> bool {
+        norm([
+            point[0] - self.axis[0],
+            point[1] - self.axis[1],
+            point[2] - self.axis[2],
+        ]) <= self.chord_radius + CELL_EDGE_CHORD_GUARD
+    }
+}
+
+fn minor_arc_within_cap(arc: MinorArc, cap: CapDisk) -> bool {
+    if cap.contains(arc.start) || cap.contains(arc.end) {
+        return true;
+    }
+    let normal_component = dot(cap.axis, arc.normal);
+    let projected = [
+        cap.axis[0] - normal_component * arc.normal[0],
+        cap.axis[1] - normal_component * arc.normal[1],
+        cap.axis[2] - normal_component * arc.normal[2],
+    ];
+    let Ok(closest) = normalize(projected) else {
+        return false;
+    };
+    arc.contains(closest) && cap.contains(closest)
+}
+
+/// Outcome of testing one curved cell edge against one footprint edge or cap.
+///
+/// `Indeterminate` is not a third geometric answer. It records that the
+/// subdivision spent its node budget before proving either side, which happens
+/// when a footprint edge runs almost coincident with a curved cell edge and the
+/// residual stays inside the Lipschitz bound at every level. Callers treat it
+/// as overlap: one extra cell is the tie-breaking cost this mode already
+/// documents, while a missing cell silently breaks the conservative-index
+/// guarantee that is the whole point of overlap mode.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Intersection {
+    No,
+    Yes,
+    Indeterminate,
+}
+
+impl Intersection {
+    fn proven(intersects: bool) -> Self {
+        if intersects {
+            Self::Yes
+        } else {
+            Self::No
+        }
+    }
+
+    fn overlaps(self) -> bool {
+        !matches!(self, Self::No)
+    }
+
+    /// Continue only after a proven miss. A budget failure already forces the
+    /// cell in, so the sibling interval cannot change the caller's decision.
+    fn or_else(self, other: impl FnOnce() -> Self) -> Self {
+        match self {
+            Self::No => other(),
+            resolved => resolved,
+        }
+    }
+}
+
+fn cell_edge_plane_interval_intersects(
+    boundary: &CellBoundary,
+    edge: u8,
+    arc: MinorArc,
+    start: f64,
+    end: f64,
+    depth: u8,
+    budget: &mut u32,
+) -> Intersection {
+    let middle = 0.5 * (start + end);
+    let point = boundary.point(edge, middle);
+    let residual = dot(arc.normal, point);
+    let accepted = arc.contains(point);
+    if residual.abs() <= CONTAINMENT_EPSILON && accepted {
+        return Intersection::Yes;
+    }
+
+    // The HEALPix face map has bounded angular speed along one unit cell
+    // edge. A plane dot product is 1-Lipschitz in angular distance, so this
+    // rejects an interval only when every point on it stays on the same side.
+    let residual_bound = CELL_EDGE_DOT_LIPSCHITZ / boundary.nside as f64 * 0.5 * (end - start);
+    if residual.abs() > residual_bound + CONTAINMENT_EPSILON {
+        return Intersection::No;
+    }
+    // A crossing also has to land inside the footprint edge's own minor arc.
+    // Both span coordinates are linear functionals of the point with unit
+    // norm, so the same Lipschitz bound rejects an interval that stays clear
+    // of the arc's span. Without this the residual test alone keeps splitting
+    // along a cell edge that is nearly coplanar with the arc's great circle
+    // but lies far beyond its endpoints, which is most of the cost when a
+    // footprint edge follows a chain of cell edges.
+    if arc.span_slack(point) < -residual_bound - CONTAINMENT_EPSILON {
+        return Intersection::No;
+    }
+    // A converged interval is a single point to within the plane tolerance, so
+    // the sampled classification is the answer rather than a budget failure.
+    // Keeping `accepted` here matters: the edge meets the footprint's plane,
+    // but a crossing outside the footprint's own minor arc is still a miss.
+    if residual_bound <= CONTAINMENT_EPSILON {
+        return Intersection::proven(accepted);
+    }
+    if depth == 0 || *budget == 0 {
+        return Intersection::Indeterminate;
+    }
+    *budget -= 1;
+    cell_edge_plane_interval_intersects(boundary, edge, arc, start, middle, depth - 1, budget)
+        .or_else(|| {
+            cell_edge_plane_interval_intersects(boundary, edge, arc, middle, end, depth - 1, budget)
+        })
+}
+
+fn cell_edge_cap_interval_intersects(
+    boundary: &CellBoundary,
+    edge: u8,
+    cap: CapDisk,
+    start: f64,
+    end: f64,
+    depth: u8,
+    budget: &mut u32,
+) -> Intersection {
+    let middle = 0.5 * (start + end);
+    let point = boundary.point(edge, middle);
+    let chord = norm([
+        point[0] - cap.axis[0],
+        point[1] - cap.axis[1],
+        point[2] - cap.axis[2],
+    ]);
+    if chord <= cap.chord_radius + CELL_EDGE_CHORD_GUARD {
+        return Intersection::Yes;
+    }
+    let distance_bound = CELL_EDGE_DOT_LIPSCHITZ / boundary.nside as f64 * 0.5 * (end - start);
+    if chord - distance_bound > cap.chord_radius + CELL_EDGE_CHORD_GUARD {
+        return Intersection::No;
+    }
+    // Converged with the chord still inside its own bound of the radius: the
+    // interval has collapsed onto the cap boundary, which is tangency and so
+    // inclusion. There is no arc-membership caveat here, unlike the plane
+    // test, because a cap has no boundary beyond its own circle.
+    if distance_bound <= CELL_EDGE_CHORD_GUARD {
+        return Intersection::Yes;
+    }
+    if depth == 0 || *budget == 0 {
+        return Intersection::Indeterminate;
+    }
+    *budget -= 1;
+    cell_edge_cap_interval_intersects(boundary, edge, cap, start, middle, depth - 1, budget)
+        .or_else(|| {
+            cell_edge_cap_interval_intersects(boundary, edge, cap, middle, end, depth - 1, budget)
+        })
+}
+
+fn cell_edge_cap_intersection(
+    boundary: &CellBoundary,
+    edge: u8,
+    cap: CapDisk,
+    budget: &mut u32,
+) -> Intersection {
+    if let Some(arc) = boundary.great_circle_arc(edge) {
+        return Intersection::proven(minor_arc_within_cap(arc, cap));
+    }
+    cell_edge_cap_interval_intersects(boundary, edge, cap, 0.0, 1.0, CELL_EDGE_ROOT_DEPTH, budget)
+}
+
+fn cell_edge_within_cap(boundary: &CellBoundary, edge: u8, cap: CapDisk) -> bool {
+    let mut budget = CELL_EDGE_NODE_BUDGET;
+    cell_edge_cap_intersection(boundary, edge, cap, &mut budget).overlaps()
+}
+
+fn cell_edge_arc_intersection(
+    boundary: &CellBoundary,
+    edge: u8,
+    arc: MinorArc,
+    budget: &mut u32,
+) -> Intersection {
+    if let Some(cell_arc) = boundary.great_circle_arc(edge) {
+        return Intersection::proven(minor_arcs_intersect(cell_arc, arc));
+    }
+    let samples = [0.0, 0.25, 0.5, 0.75, 1.0].map(|parameter| {
+        let point = boundary.point(edge, parameter);
+        (point, dot(arc.normal, point))
+    });
+    if samples
+        .iter()
+        .all(|(_, residual)| residual.abs() <= CONTAINMENT_EPSILON)
+    {
+        let cell_arc = MinorArc::new(samples[0].0, samples[4].0);
+        return Intersection::proven(minor_arcs_overlap(cell_arc, arc));
+    }
+    if samples
+        .iter()
+        .any(|(point, residual)| residual.abs() <= CONTAINMENT_EPSILON && arc.contains(*point))
+    {
+        return Intersection::Yes;
+    }
+    cell_edge_plane_interval_intersects(boundary, edge, arc, 0.0, 1.0, CELL_EDGE_ROOT_DEPTH, budget)
+}
+
+fn cell_edge_intersects_arc(boundary: &CellBoundary, edge: u8, arc: MinorArc) -> bool {
+    let mut budget = CELL_EDGE_NODE_BUDGET;
+    cell_edge_arc_intersection(boundary, edge, arc, &mut budget).overlaps()
+}
+
+fn ring_boundary_overlaps_cell(vertices: &[Vec3], boundary: &CellBoundary) -> bool {
+    if vertices
+        .iter()
+        .any(|&vertex| normalized_cell_at(vertex, boundary.resolution) == boundary.cell)
+    {
+        return true;
+    }
+    vertices
+        .iter()
+        .copied()
+        .zip(vertices.iter().copied().cycle().skip(1))
+        .take(vertices.len())
+        .any(|(start, end)| {
+            let arc = MinorArc::new(start, end);
+            (0..4).any(|edge| cell_edge_intersects_arc(boundary, edge, arc))
+        })
+}
+
+fn cover_overlapping_cells(
+    minimum_z: f64,
+    maximum_z: f64,
+    longitude_intervals: [(f64, f64); 2],
+    interval_count: usize,
+    resolution: u8,
+    overlaps: impl Fn(u64) -> bool,
+    visit: impl FnMut(u64) -> NativeResult<()>,
+) -> NativeResult<()> {
+    cover_cells_in_bounds::<true>(
+        minimum_z,
+        maximum_z,
+        longitude_intervals,
+        interval_count,
+        resolution,
+        |cell, _, _, _| overlaps(cell),
+        visit,
+    )
 }
 
 // The fixed-size path mirrors prepare_polygon deliberately: stack storage and
@@ -681,6 +1191,24 @@ impl PreparedFootprint {
         }
     }
 
+    pub(super) fn overlaps_cell(&self, cell: u64, resolution: u8) -> bool {
+        if self.contains(center(cell, resolution)) {
+            return true;
+        }
+        let boundary = CellBoundary::new(cell, resolution);
+        match self {
+            Self::Quad(quad) => ring_boundary_overlaps_cell(&quad.vertices[..quad.len], &boundary),
+            Self::Polygon(polygon) => ring_boundary_overlaps_cell(&polygon.vertices, &boundary),
+            Self::General(polygon) => {
+                ring_boundary_overlaps_cell(&polygon.outer.vertices, &boundary)
+                    || polygon
+                        .holes
+                        .iter()
+                        .any(|hole| ring_boundary_overlaps_cell(&hole.vertices, &boundary))
+            }
+        }
+    }
+
     pub(super) fn cover(&self, resolution: u8, cells: &mut Vec<u64>) -> NativeResult<()> {
         let visit = |cell| push_coverage_cell(cells, cell, 1024);
         match self {
@@ -700,6 +1228,42 @@ impl PreparedFootprint {
             ),
             Self::General(polygon) => cover_general_polygon(polygon, resolution, cells),
         }
+    }
+
+    pub(super) fn cover_overlap(&self, resolution: u8, cells: &mut Vec<u64>) -> NativeResult<()> {
+        let (minimum_z, maximum_z, longitude_intervals, interval_count) = match self {
+            Self::Quad(quad) => {
+                let vertices = &quad.vertices[..quad.len];
+                let normals = &quad.edge_normals[..quad.len];
+                let (minimum_z, maximum_z) = polygon_z_bounds(vertices, normals);
+                let (longitude_intervals, interval_count) = longitude_bounds(vertices, normals);
+                (minimum_z, maximum_z, longitude_intervals, interval_count)
+            }
+            Self::Polygon(polygon) => {
+                let (minimum_z, maximum_z) =
+                    polygon_z_bounds(&polygon.vertices, &polygon.edge_normals);
+                let (longitude_intervals, interval_count) =
+                    longitude_bounds(&polygon.vertices, &polygon.edge_normals);
+                (minimum_z, maximum_z, longitude_intervals, interval_count)
+            }
+            Self::General(polygon) => {
+                let (minimum_z, maximum_z) = general_polygon_z_bounds(polygon);
+                let (longitude_intervals, interval_count) =
+                    longitude_bounds_for(&polygon.outer.vertices, |point| {
+                        ring_contains(&polygon.outer, point)
+                    });
+                (minimum_z, maximum_z, longitude_intervals, interval_count)
+            }
+        };
+        cover_overlapping_cells(
+            minimum_z,
+            maximum_z,
+            longitude_intervals,
+            interval_count,
+            resolution,
+            |cell| self.overlaps_cell(cell, resolution),
+            |cell| push_coverage_cell(cells, cell, 1024),
+        )
     }
 }
 
@@ -737,8 +1301,227 @@ pub(super) fn prepare_sweep_footprint(
 
 #[cfg(test)]
 mod tests {
-    use super::{ring_info, ROTATION_RESYNC_STEPS, TAU};
-    use crate::geometry::CONTAINMENT_EPSILON;
+    use super::{
+        cell_edge_arc_intersection, prepare_caps, ring_info, CapOverlap, CellBoundary,
+        Intersection, MinorArc, PreparedFootprint, CELL_EDGE_DOT_LIPSCHITZ, CELL_EDGE_NODE_BUDGET,
+        ROTATION_RESYNC_STEPS, TAU,
+    };
+    use crate::geometry::{cross, dot, norm, CONTAINMENT_EPSILON};
+    use crate::ring::grid::raw_cell_count;
+
+    fn lonlat(longitude_degrees: f64, latitude_degrees: f64) -> [f64; 3] {
+        let longitude = longitude_degrees.to_radians();
+        let latitude = latitude_degrees.to_radians();
+        let radial = latitude.cos();
+        [
+            radial * longitude.cos(),
+            radial * longitude.sin(),
+            latitude.sin(),
+        ]
+    }
+
+    fn exhaustive_fixture_footprints() -> Vec<Vec<[f64; 3]>> {
+        vec![
+            vec![
+                lonlat(-51.8, 42.6),
+                lonlat(-93.6, -1.7),
+                lonlat(-91.1, -16.1),
+                lonlat(-83.9, -28.9),
+                lonlat(-11.7, -18.2),
+            ],
+            vec![
+                lonlat(175.0, -5.0),
+                lonlat(-175.0, -5.0),
+                lonlat(-175.0, 5.0),
+                lonlat(175.0, 5.0),
+            ],
+            vec![
+                lonlat(0.0, 80.0),
+                lonlat(90.0, 80.0),
+                lonlat(180.0, 80.0),
+                lonlat(270.0, 80.0),
+            ],
+            vec![
+                lonlat(-0.4, -40.0),
+                lonlat(0.4, -40.0),
+                lonlat(0.4, 40.0),
+                lonlat(-0.4, 40.0),
+            ],
+        ]
+    }
+
+    fn cell_corner_quad(cell: u64, resolution: u8) -> Vec<[f64; 3]> {
+        let raw = crate::ring::grid::corners(&[cell], resolution).unwrap();
+        (0..4)
+            .map(|index| [raw[3 * index], raw[3 * index + 1], raw[3 * index + 2]])
+            .collect()
+    }
+
+    /// Nodes the most expensive footprint-edge and cell-edge pair consumed.
+    fn worst_edge_pair_nodes(cell: u64, resolution: u8, vertices: &[[f64; 3]]) -> u32 {
+        let boundary = CellBoundary::new(cell, resolution);
+        let mut worst = 0;
+        for index in 0..vertices.len() {
+            let arc = MinorArc::new(vertices[index], vertices[(index + 1) % vertices.len()]);
+            for edge in 0..4 {
+                let mut budget = u32::MAX;
+                cell_edge_arc_intersection(&boundary, edge, arc, &mut budget);
+                worst = worst.max(u32::MAX - budget);
+            }
+        }
+        worst
+    }
+
+    #[test]
+    fn overlap_bounds_match_exhaustive_cell_tests() {
+        let footprint_vertices = exhaustive_fixture_footprints();
+        let footprints = footprint_vertices
+            .iter()
+            .map(|vertices| {
+                PreparedFootprint::from_raw(&vertices.iter().flatten().copied().collect::<Vec<_>>())
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let cap = prepare_caps(&lonlat(17.0, 23.0), &[19.0_f64.to_radians()])
+            .unwrap()
+            .pop()
+            .unwrap();
+
+        for resolution in 0..=4 {
+            for footprint in &footprints {
+                let mut actual = Vec::new();
+                footprint.cover_overlap(resolution, &mut actual).unwrap();
+                let expected = (0..raw_cell_count(resolution))
+                    .filter(|&cell| footprint.overlaps_cell(cell, resolution))
+                    .collect::<Vec<_>>();
+                assert_eq!(actual, expected, "polygon resolution {resolution}");
+            }
+
+            let mut actual = Vec::new();
+            cap.cover_overlap(resolution, &mut actual).unwrap();
+            let overlap = CapOverlap::new(&cap, resolution);
+            let expected = (0..raw_cell_count(resolution))
+                .filter(|&cell| overlap.overlaps_cell(cell))
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected, "cap resolution {resolution}");
+        }
+    }
+
+    #[test]
+    fn cell_edge_speed_stays_below_the_overlap_bound() {
+        let steps = 64;
+        for resolution in 0..=3 {
+            let nside = 1_u64 << resolution;
+            for cell in 0..raw_cell_count(resolution) {
+                let boundary = CellBoundary::new(cell, resolution);
+                for edge in 0..4 {
+                    let mut previous = boundary.point(edge, 0.0);
+                    for step in 1..=steps {
+                        let point = boundary.point(edge, step as f64 / steps as f64);
+                        let distance = norm(cross(previous, point)).atan2(dot(previous, point));
+                        let speed = distance * steps as f64 * nside as f64;
+                        assert!(
+                            speed < CELL_EDGE_DOT_LIPSCHITZ,
+                            "resolution {resolution}, cell {cell}, edge {edge}: {speed}"
+                        );
+                        previous = point;
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn classified_polar_meridian_edges_are_exact_minor_arcs() {
+        let mut classified = 0;
+        for resolution in 0..=4 {
+            for cell in 0..raw_cell_count(resolution) {
+                let boundary = CellBoundary::new(cell, resolution);
+                for edge in 0..4 {
+                    let endpoint_arc =
+                        MinorArc::new(boundary.point(edge, 0.0), boundary.point(edge, 1.0));
+                    let sampled_geodesic = (0..=16).all(|step| {
+                        let point = boundary.point(edge, step as f64 / 16.0);
+                        dot(endpoint_arc.normal, point).abs() <= CONTAINMENT_EPSILON
+                            && endpoint_arc.contains(point)
+                    });
+                    let classified_arc = boundary.great_circle_arc(edge);
+                    assert_eq!(classified_arc.is_some(), sampled_geodesic);
+                    if classified_arc.is_some() {
+                        classified += 1;
+                    }
+                }
+            }
+        }
+        assert!(classified > 0);
+    }
+
+    #[test]
+    fn cell_edge_subdivision_stays_far_inside_its_node_budget() {
+        // A wall-clock limit would be flaky; the node counter is the thing the
+        // budget actually bounds. Ordinary geometry has to resolve with room to
+        // spare, or the budget would start deciding answers instead of
+        // catching a runaway.
+        let headroom = CELL_EDGE_NODE_BUDGET / 8;
+        let mut worst = 0_u32;
+        for resolution in 0..=3 {
+            for vertices in exhaustive_fixture_footprints() {
+                for cell in 0..raw_cell_count(resolution) {
+                    worst = worst.max(worst_edge_pair_nodes(cell, resolution, &vertices));
+                }
+            }
+        }
+        assert!(worst > 0, "the subdivision never ran");
+        assert!(worst < headroom, "fixture footprints used {worst} nodes");
+
+        // The pathological workload: a polygon whose own edges chord this
+        // cell's curved edges, tested against every cell around it.
+        for resolution in [4_u8, 6, 8] {
+            let nside = 1_u64 << resolution;
+            let cell = raw_cell_count(resolution) / 2 + 7;
+            let quad = cell_corner_quad(cell, resolution);
+            let window = 2 * nside;
+            for other in cell.saturating_sub(window)..=(cell + window) {
+                let used = worst_edge_pair_nodes(other, resolution, &quad);
+                assert!(
+                    used < headroom,
+                    "corner quad at resolution {resolution}, cell {other}: {used} nodes"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_exhausted_node_budget_only_ever_adds_cells() {
+        let resolution = 3;
+        let mut indeterminate = 0;
+        for vertices in exhaustive_fixture_footprints() {
+            for cell in 0..raw_cell_count(resolution) {
+                let boundary = CellBoundary::new(cell, resolution);
+                for index in 0..vertices.len() {
+                    let arc =
+                        MinorArc::new(vertices[index], vertices[(index + 1) % vertices.len()]);
+                    for edge in 0..4 {
+                        let mut ample = u32::MAX;
+                        let resolved = cell_edge_arc_intersection(&boundary, edge, arc, &mut ample);
+                        let mut starved = 1;
+                        let fallback =
+                            cell_edge_arc_intersection(&boundary, edge, arc, &mut starved);
+                        if fallback == Intersection::Indeterminate {
+                            indeterminate += 1;
+                        }
+                        assert!(
+                            !resolved.overlaps() || fallback.overlaps(),
+                            "starving the budget dropped an intersection at \
+                             resolution {resolution}, cell {cell}, edge {edge}"
+                        );
+                        assert_ne!(resolved, Intersection::Indeterminate);
+                    }
+                }
+            }
+        }
+        assert!(indeterminate > 0, "the fallback was never exercised");
+    }
 
     #[test]
     fn incremental_rotation_stays_inside_the_containment_tolerance() {

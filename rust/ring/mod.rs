@@ -1,7 +1,8 @@
-//! Owned, center-only HEALPix RING kernel.
+//! Owned HEALPix RING coverage kernel.
 //!
-//! Coverage exploits HEALPix iso-latitude rings directly. Supporting center
-//! and corner transforms are implemented locally so the production extension
+//! Center coverage exploits HEALPix iso-latitude rings directly; overlap mode
+//! adds exact curved-cell boundary tests inside conservative RING bounds.
+//! Supporting transforms are implemented locally so the production extension
 //! has no general HEALPix runtime dependency.
 //!
 //! The kernel is layered, innermost first:

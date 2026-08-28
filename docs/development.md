@@ -166,3 +166,7 @@ and they live in the `adr/` directory of the repository instead of on this site:
   on reducers and revisit statistics, with the benchmark evidence.
 - [`adr/0003-general-spherical-polygons.md`](https://github.com/JochimMaene/polypix/blob/main/adr/0003-general-spherical-polygons.md)
   on concave, multipart, and holed boundaries.
+- [`adr/0004-polygonal-geo-interface-input.md`](https://github.com/JochimMaene/polypix/blob/main/adr/0004-polygonal-geo-interface-input.md)
+  on the narrow geographic mapping adapter.
+- [`adr/0005-exact-overlap-coverage.md`](https://github.com/JochimMaene/polypix/blob/main/adr/0005-exact-overlap-coverage.md)
+  on exact curved-cell intersection coverage.

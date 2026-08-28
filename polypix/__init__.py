@@ -1,11 +1,11 @@
-"""Fast center-sampled coverage on the HEALPix RING grid."""
+"""Fast region coverage on the HEALPix RING grid."""
 
 from __future__ import annotations
 
 import operator
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Never, Protocol, SupportsIndex, cast, overload
+from typing import Any, Literal, Never, Protocol, SupportsIndex, cast, overload
 
 import numpy as np
 import numpy.typing as npt
@@ -49,6 +49,7 @@ PolygonsLike = (
 )
 EdgesLike = Sequence[Sequence[float]] | npt.ArrayLike
 ValuesLike = float | Sequence[float] | npt.ArrayLike
+CoverageMode = Literal["center", "overlap"]
 
 
 class _GeoInterface(Protocol):
@@ -1036,6 +1037,7 @@ def cover_polygon(
     geometry: RegionLike,
     resolution: int,
     *,
+    mode: CoverageMode = "center",
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
     reduce: None = None,
@@ -1047,6 +1049,7 @@ def cover_polygon(
     geometry: RegionLike,
     resolution: int,
     *,
+    mode: CoverageMode = "center",
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
     reduce: Count,
@@ -1058,6 +1061,7 @@ def cover_polygon(
     geometry: RegionLike,
     resolution: int,
     *,
+    mode: CoverageMode = "center",
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
     reduce: Sum,
@@ -1068,11 +1072,12 @@ def cover_polygon(
     geometry: RegionLike,
     resolution: int,
     *,
+    mode: CoverageMode = "center",
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
     reduce: CoverageReducer | None = None,
 ) -> Coverage | npt.NDArray[np.int64] | npt.NDArray[np.float64]:
-    """Find the cells whose centers fall inside each polygonal region.
+    """Find the cells selected by each polygonal region.
 
     This is the shape of an imaging scene, a detector frame projected on the
     ground, or an area of interest. Simple array inputs may be convex or
@@ -1096,9 +1101,13 @@ def cover_polygon(
     resolution : int
         HEALPix resolution, 0 through 29. Returned cells satisfy
         ``0 <= cell < cell_count(resolution)``.
+    mode : {"center", "overlap"}, optional
+        ``"center"`` selects a cell when its center is inside the region.
+        ``"overlap"`` selects it when any part of its area intersects the
+        region, including boundary tangency.
     candidate_cells : array_like of int, optional
-        RING indices at ``resolution`` limiting which cell centers are
-        tested at all. Duplicates and order are ignored. An empty selection
+        RING indices at ``resolution`` limiting which cells are tested.
+        Duplicates and order are ignored. An empty selection
         returns empty segments without dropping any input item.
     threads : int, optional
         ``None`` picks the automatic policy, ``1`` runs sequentially, and a
@@ -1129,9 +1138,10 @@ def cover_polygon(
 
     Notes
     -----
-    A cell is selected when its center lies inside the polygon or exactly
-    on its boundary. Cells that the boundary merely clips are not included,
-    so this is not a conservative spatial index.
+    The default ``mode="center"`` selects a cell when its center lies inside
+    the polygon or exactly on its boundary. ``mode="overlap"`` instead uses
+    the true curved HEALPix cell boundary and returns every cell the region
+    touches. Adjacent regions can therefore share boundary cells.
 
     Geo-interface coordinates must be longitude and latitude in decimal
     degrees, interpreted directly as angles on a unit sphere, with optional
@@ -1183,6 +1193,7 @@ def cover_polygon(
     1
     """
     resolved = _as_resolution(resolution)
+    overlap = _as_coverage_mode(mode)
     prepared_regions = _as_prepared_regions(geometry)
     reducer = _as_coverage_reducer(reduce)
     candidates, requested = _reduction_plan(candidate_cells, reducer, resolved)
@@ -1194,6 +1205,7 @@ def cover_polygon(
             candidates,
             reducer is None,
             thread_count,
+            overlap,
         )
     else:
         vertices, ring_offsets = _as_polygons(geometry)
@@ -1204,6 +1216,7 @@ def cover_polygon(
             candidates,
             reducer is None,
             thread_count,
+            overlap,
         )
     coverage = Coverage._from_native(*native, resolved)
     if reducer is None:
@@ -1217,6 +1230,7 @@ def cover_cap(
     radii_rad: ValuesLike,
     resolution: int,
     *,
+    mode: CoverageMode = "center",
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
     reduce: None = None,
@@ -1229,6 +1243,7 @@ def cover_cap(
     radii_rad: ValuesLike,
     resolution: int,
     *,
+    mode: CoverageMode = "center",
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
     reduce: Count,
@@ -1241,6 +1256,7 @@ def cover_cap(
     radii_rad: ValuesLike,
     resolution: int,
     *,
+    mode: CoverageMode = "center",
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
     reduce: Sum,
@@ -1252,11 +1268,12 @@ def cover_cap(
     radii_rad: ValuesLike,
     resolution: int,
     *,
+    mode: CoverageMode = "center",
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
     reduce: CoverageReducer | None = None,
 ) -> Coverage | npt.NDArray[np.int64] | npt.NDArray[np.float64]:
-    """Find the cells whose centers fall inside each spherical cap.
+    """Find the cells selected by each spherical cap.
 
     A cap is a center direction plus an angular radius. It is the shape of a
     ground station's view of anything above an elevation mask, of a
@@ -1277,9 +1294,13 @@ def cover_cap(
         a point cap and pi is the whole sphere.
     resolution : int
         HEALPix resolution, 0 through 29.
+    mode : {"center", "overlap"}, optional
+        ``"center"`` selects a cell when its center is inside the cap.
+        ``"overlap"`` selects it when any part of its area intersects the
+        cap, including boundary tangency.
     candidate_cells : array_like of int, optional
-        RING indices at ``resolution`` limiting which cell centers are
-        tested. Duplicates and order are ignored.
+        RING indices at ``resolution`` limiting which cells are tested.
+        Duplicates and order are ignored.
     threads : int, optional
         ``None`` picks the automatic policy, ``1`` runs sequentially, and a
         larger value sets the maximum size of the reusable worker pool.
@@ -1307,16 +1328,18 @@ def cover_cap(
 
     Notes
     -----
-    A cell is selected when its center lies inside the cap or on its
-    boundary. This does not test whether the area of a cell intersects the
-    cap, so a cap smaller than a cell can come back empty.
+    The default ``mode="center"`` selects a cell when its center lies inside
+    the cap or on its boundary. ``mode="overlap"`` instead returns every cell
+    whose true curved area touches the cap, so even a point cap returns the
+    cell containing that point.
 
-    Counting caps is the one place where fusing the reduction into the
-    geometry kernel currently wins by a wide margin, because the cap kernel
+    Counting center-selected caps is the one place where fusing the reduction
+    into the geometry kernel currently wins by a wide margin, because the cap kernel
     accumulates private RING spans and never allocates the cap-cell pairs
     at all. It does this for a dense grid and for a selection alike, and
     falls back to covering once and counting when it judges that cheaper.
-    Either way the answer is the same.
+    Either way the answer is the same. Overlap mode uses the ordinary
+    coverage-then-reduce path.
 
     An empty ``(0, 3)`` batch of centers accepts a scalar or empty radius
     array and returns a coverage with offsets ``[0]``, which keeps empty
@@ -1334,12 +1357,13 @@ def cover_cap(
     array([8, 4])
     """
     resolved = _as_resolution(resolution)
+    overlap = _as_coverage_mode(mode)
     reducer = _as_coverage_reducer(reduce)
     centers = _as_cap_centers(centers_xyz)
     radii = _as_cap_radii(radii_rad, centers.shape[0])
     requested_threads = _as_threads(threads)
     candidates, requested = _reduction_plan(candidate_cells, reducer, resolved)
-    if isinstance(reducer, Count):
+    if isinstance(reducer, Count) and not overlap:
         # Counting caps consumes analytic RING spans and never builds the cell
         # lists, so try it for the dense grid and for a selection alike. The
         # kernel declines by returning None when covering and counting wins.
@@ -1350,7 +1374,13 @@ def cover_cap(
             return counts
     coverage = Coverage._from_native(
         *_cover_cap(
-            centers, radii, resolved, candidates, reducer is None, requested_threads
+            centers,
+            radii,
+            resolved,
+            candidates,
+            reducer is None,
+            requested_threads,
+            overlap,
         ),
         resolved,
     )
@@ -1458,12 +1488,21 @@ def _as_coverage_reducer(reducer: object) -> CoverageReducer | None:
     raise TypeError("reduce must be a Count or Sum reducer, or None.")
 
 
+def _as_coverage_mode(mode: object) -> bool:
+    if mode == "center":
+        return False
+    if mode == "overlap":
+        return True
+    raise ValueError("mode must be 'center' or 'overlap'.")
+
+
 @overload
 def cover_sweep(
     left_edge_xyz: EdgesLike,
     right_edge_xyz: EdgesLike,
     resolution: int,
     *,
+    mode: CoverageMode = "center",
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
     reduce: None = None,
@@ -1476,6 +1515,7 @@ def cover_sweep(
     right_edge_xyz: EdgesLike,
     resolution: int,
     *,
+    mode: CoverageMode = "center",
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
     reduce: Count,
@@ -1488,6 +1528,7 @@ def cover_sweep(
     right_edge_xyz: EdgesLike,
     resolution: int,
     *,
+    mode: CoverageMode = "center",
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
     reduce: Sum,
@@ -1499,6 +1540,7 @@ def cover_sweep(
     right_edge_xyz: EdgesLike,
     resolution: int,
     *,
+    mode: CoverageMode = "center",
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
     reduce: CoverageReducer | None = None,
@@ -1519,9 +1561,13 @@ def cover_sweep(
         one frame of your choosing.
     resolution : int
         HEALPix resolution, 0 through 29.
+    mode : {"center", "overlap"}, optional
+        ``"center"`` selects a cell when its center is inside a segment.
+        ``"overlap"`` selects it when any part of its area intersects the
+        segment, including boundary tangency.
     candidate_cells : array_like of int, optional
-        RING indices at ``resolution`` limiting which cell centers are
-        tested. Duplicates and order are ignored.
+        RING indices at ``resolution`` limiting which cells are tested.
+        Duplicates and order are ignored.
     threads : int, optional
         ``None`` picks the automatic policy, ``1`` runs sequentially, and a
         larger value sets the maximum size of the reusable worker pool.
@@ -1558,6 +1604,11 @@ def cover_sweep(
     A global ``np.unique(coverage.cells)`` forms the sorted union, at the
     cost of the segmentation and some sorting time and memory.
 
+    The default ``mode="center"`` samples one point per HEALPix cell.
+    ``mode="overlap"`` uses the true curved cell boundary and includes every
+    cell a segment touches. A tiny boundary touch still contributes a whole
+    hit to :class:`Count` and a whole value to :class:`Sum`.
+
     Zero or one paired sample describes no intervals and returns empty
     coverage with offsets ``[0]``. Repeating both edge samples at the same
     step encloses no area and is rejected; represent a stationary interval
@@ -1585,6 +1636,7 @@ def cover_sweep(
     6
     """
     resolved = _as_resolution(resolution)
+    overlap = _as_coverage_mode(mode)
     reducer = _as_coverage_reducer(reduce)
     left = _as_float_matrix(left_edge_xyz, 3, "left_edge_xyz")
     right = _as_float_matrix(right_edge_xyz, 3, "right_edge_xyz")
@@ -1596,7 +1648,13 @@ def cover_sweep(
     candidates, requested = _reduction_plan(candidate_cells, reducer, resolved)
     coverage = Coverage._from_native(
         *_cover_sweep(
-            left, right, resolved, candidates, reducer is None, requested_threads
+            left,
+            right,
+            resolved,
+            candidates,
+            reducer is None,
+            requested_threads,
+            overlap,
         ),
         resolved,
     )

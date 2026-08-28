@@ -70,7 +70,7 @@ print(np.diff(coverage.offsets))  # [134  56]
 
 `coverage[i]` holds the cells covered by satellite `i`. A cell is covered when
 its center falls inside the circle, so partial overlap at the boundary does not
-count.
+count. Pass `mode="overlap"` when every touched cell should count instead.
 
 Ask for counts instead and the region-cell pairs are never built, which is how
 the map above is made:

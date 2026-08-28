@@ -29,6 +29,7 @@ def _cover(
     candidate_cells: npt.NDArray[np.uint64] | None = None,
     restrict_output: bool = True,
     threads: int | None = None,
+    overlap: bool = False,
 ) -> tuple[npt.NDArray[np.uint64], npt.NDArray[np.uint64]]: ...
 def _cover_prepared_regions(
     regions: list[list[object]],
@@ -36,6 +37,7 @@ def _cover_prepared_regions(
     candidate_cells: npt.NDArray[np.uint64] | None = None,
     restrict_output: bool = True,
     threads: int | None = None,
+    overlap: bool = False,
 ) -> tuple[npt.NDArray[np.uint64], npt.NDArray[np.uint64]]: ...
 def _cover_cap(
     centers_xyz: npt.NDArray[np.float64],
@@ -44,6 +46,7 @@ def _cover_cap(
     candidate_cells: npt.NDArray[np.uint64] | None = None,
     restrict_output: bool = True,
     threads: int | None = None,
+    overlap: bool = False,
 ) -> tuple[npt.NDArray[np.uint64], npt.NDArray[np.uint64]]: ...
 def _count_caps_per_cell(
     centers_xyz: npt.NDArray[np.float64],
@@ -71,6 +74,7 @@ def _cover_sweep(
     candidate_cells: npt.NDArray[np.uint64] | None = None,
     restrict_output: bool = True,
     threads: int | None = None,
+    overlap: bool = False,
 ) -> tuple[npt.NDArray[np.uint64], npt.NDArray[np.uint64]]: ...
 def _revisit_stats(
     cell_arrays: list[npt.NDArray[np.uint64]],

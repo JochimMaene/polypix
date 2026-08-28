@@ -292,6 +292,18 @@ def test_cover_polygon_single_latency(benchmark, footprints: np.ndarray) -> None
     assert coverage.offsets.shape == (2,)
 
 
+def test_cover_polygon_overlap_batch(benchmark, footprints: np.ndarray) -> None:
+    coverage = benchmark(
+        px.cover_polygon,
+        footprints,
+        7,
+        mode="overlap",
+        threads=1,
+    )
+
+    assert coverage.offsets.shape == (footprints.shape[0] + 1,)
+
+
 def test_cover_polygon_single_automatic_latency(
     benchmark, footprints: np.ndarray
 ) -> None:
@@ -310,6 +322,22 @@ def test_cover_detailed_polygon(
         px.cover_polygon,
         detailed_polygon_pair[polygon_index],
         9,
+        threads=1,
+    )
+
+    assert coverage.offsets.shape == (2,)
+
+
+def test_cover_detailed_polygon_overlap(
+    benchmark,
+    detailed_polygon_pair: tuple[px.Polygon, px.Polygon],
+) -> None:
+    """Overlap mode tests every edge per cell, so this pins that scaling."""
+    coverage = benchmark(
+        px.cover_polygon,
+        detailed_polygon_pair[0],
+        5,
+        mode="overlap",
         threads=1,
     )
 
@@ -589,6 +617,22 @@ def test_cover_sweep(benchmark, strip_edges: tuple[np.ndarray, np.ndarray]) -> N
     assert coverage.cells.dtype == np.int64
 
 
+def test_cover_sweep_overlap(
+    benchmark, strip_edges: tuple[np.ndarray, np.ndarray]
+) -> None:
+    left, right = strip_edges
+    coverage = benchmark(
+        px.cover_sweep,
+        left,
+        right,
+        7,
+        mode="overlap",
+        threads=1,
+    )
+
+    assert coverage.offsets.shape == (left.shape[0],)
+
+
 @pytest.mark.parallel
 def test_cover_sweep_automatic_parallel(
     benchmark,
@@ -662,6 +706,23 @@ def test_cover_cap_constellation_batch(
     assert coverage.offsets.shape == (centers.shape[0] + 1,)
     assert coverage.cells.dtype == np.int64
     assert coverage.cells.size == 1_629_277
+
+
+def test_cover_cap_overlap_batch(
+    benchmark,
+    constellation_caps: tuple[np.ndarray, np.ndarray],
+) -> None:
+    centers, radii = constellation_caps
+    coverage = benchmark(
+        px.cover_cap,
+        centers[:512],
+        radii[:512],
+        6,
+        mode="overlap",
+        threads=1,
+    )
+
+    assert coverage.offsets.shape == (513,)
 
 
 @pytest.mark.parametrize(

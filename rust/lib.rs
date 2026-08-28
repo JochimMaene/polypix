@@ -81,7 +81,8 @@ fn slices<'a, T: Element>(
     arrays.iter().map(|array| slice(array, name)).collect()
 }
 
-#[pyfunction(signature = (vertices_xyz, offsets, resolution, candidate_cells=None, restrict_output=true, threads=None))]
+#[pyfunction(signature = (vertices_xyz, offsets, resolution, candidate_cells=None, restrict_output=true, threads=None, overlap=false))]
+#[allow(clippy::too_many_arguments)]
 fn _cover<'py>(
     py: Python<'py>,
     vertices_xyz: PyReadonlyArray2<'py, f64>,
@@ -90,6 +91,7 @@ fn _cover<'py>(
     candidate_cells: Option<PyReadonlyArray1<'py, u64>>,
     restrict_output: bool,
     threads: Option<usize>,
+    overlap: bool,
 ) -> PyResult<PyCoverage<'py>> {
     validate_resolution(resolution)?;
     if vertices_xyz.shape().get(1) != Some(&3) {
@@ -115,6 +117,7 @@ fn _cover<'py>(
                 raw_candidates,
                 restrict_output,
                 threads,
+                overlap,
             )
         })
         .map_err(native_error)?;
@@ -155,7 +158,7 @@ fn _prepare_polygon(
         .map_err(PyValueError::new_err)
 }
 
-#[pyfunction(signature = (regions, resolution, candidate_cells=None, restrict_output=true, threads=None))]
+#[pyfunction(signature = (regions, resolution, candidate_cells=None, restrict_output=true, threads=None, overlap=false))]
 fn _cover_prepared_regions<'py>(
     py: Python<'py>,
     regions: Vec<Vec<Py<PyPreparedPolygon>>>,
@@ -163,6 +166,7 @@ fn _cover_prepared_regions<'py>(
     candidate_cells: Option<PyReadonlyArray1<'py, u64>>,
     restrict_output: bool,
     threads: Option<usize>,
+    overlap: bool,
 ) -> PyResult<PyCoverage<'py>> {
     validate_resolution(resolution)?;
     let candidates = optional_slice(candidate_cells.as_ref(), "candidate_cells")?;
@@ -183,6 +187,7 @@ fn _cover_prepared_regions<'py>(
                 candidates,
                 restrict_output,
                 threads,
+                overlap,
             )
         })
         .map_err(native_error)?;
@@ -192,7 +197,8 @@ fn _cover_prepared_regions<'py>(
     ))
 }
 
-#[pyfunction(signature = (centers_xyz, radii_rad, resolution, candidate_cells=None, restrict_output=true, threads=None))]
+#[pyfunction(signature = (centers_xyz, radii_rad, resolution, candidate_cells=None, restrict_output=true, threads=None, overlap=false))]
+#[allow(clippy::too_many_arguments)]
 fn _cover_cap<'py>(
     py: Python<'py>,
     centers_xyz: PyReadonlyArray2<'py, f64>,
@@ -201,6 +207,7 @@ fn _cover_cap<'py>(
     candidate_cells: Option<PyReadonlyArray1<'py, u64>>,
     restrict_output: bool,
     threads: Option<usize>,
+    overlap: bool,
 ) -> PyResult<PyCoverage<'py>> {
     validate_resolution(resolution)?;
     if centers_xyz.shape().get(1) != Some(&3) || centers_xyz.shape()[0] != radii_rad.shape()[0] {
@@ -219,6 +226,7 @@ fn _cover_cap<'py>(
                 raw_candidates,
                 restrict_output,
                 threads,
+                overlap,
             )
         })
         .map_err(native_error)?;
@@ -312,7 +320,8 @@ fn _revisit_stats<'py>(
     ))
 }
 
-#[pyfunction(signature = (left_edge_xyz, right_edge_xyz, resolution, candidate_cells=None, restrict_output=true, threads=None))]
+#[pyfunction(signature = (left_edge_xyz, right_edge_xyz, resolution, candidate_cells=None, restrict_output=true, threads=None, overlap=false))]
+#[allow(clippy::too_many_arguments)]
 fn _cover_sweep<'py>(
     py: Python<'py>,
     left_edge_xyz: PyReadonlyArray2<'py, f64>,
@@ -321,6 +330,7 @@ fn _cover_sweep<'py>(
     candidate_cells: Option<PyReadonlyArray1<'py, u64>>,
     restrict_output: bool,
     threads: Option<usize>,
+    overlap: bool,
 ) -> PyResult<PyCoverage<'py>> {
     validate_resolution(resolution)?;
     if left_edge_xyz.shape().get(1) != Some(&3)
@@ -341,6 +351,7 @@ fn _cover_sweep<'py>(
                 raw_candidates,
                 restrict_output,
                 threads,
+                overlap,
             )
         })
         .map_err(native_error)?;
