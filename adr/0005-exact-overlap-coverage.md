@@ -38,12 +38,24 @@ can be used as conservative spatial indexes. Adjacent regions may share cells,
 and the returned whole-cell area can overstate the region near its boundary.
 
 Exact curved-boundary tests cost more than center predicates, and the per-cell
-test carries no edge pruning: a cell is tested against every footprint edge, so
-one cell costs time linear in the vertex count where the center path bins edges
-by height. Overlap coverage is consequently for coarse footprints, which the
-performance guide states with measured figures. Conservative pruning around
-curved edges can only lose cells when it is wrong, so it is deferred to a change
-that can design and prove it rather than bundled with the predicate itself.
+test carries no cross-edge pruning: a cell is tested against every footprint
+edge, so one cell costs time linear in the vertex count where the center path
+bins edges by height. Overlap coverage is consequently for coarse footprints,
+which the performance guide states with measured figures.
+
+Within one edge pair the subdivision does prune, and only on proven bounds. It
+rejects an interval whose distance from the footprint edge's plane exceeds the
+Lipschitz bound, and equally an interval whose distance from that edge's own
+angular span exceeds it. The second test is what makes the cost logarithmic:
+without it, a footprint edge that chords a chain of cell edges - a polygon built
+from a cell's own corners is the plain case - keeps both halves alive at every
+level, costing 21 s at resolution 10 and growing about fourfold per level. Cell
+edges that are exact great circles, which is the polar base-face meridians, skip
+subdivision entirely and intersect analytically. A node budget bounds any case
+these do not catch; exhausting it returns the cell, so the residual failure mode
+is one extra cell rather than a missing one. Broader pruning across edges can
+only lose cells when it is wrong, so it stays deferred to a change that can
+design and prove it rather than bundled with the predicate itself.
 
 The first release reuses ordinary coverage reduction for overlap caps rather
 than adding a fused special case. Full-containment, bounding-box,

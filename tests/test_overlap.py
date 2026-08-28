@@ -157,6 +157,88 @@ def test_emitted_transition_corner_does_not_abort_overlap() -> None:
     )
 
 
+def test_nearly_coplanar_polar_meridian_edges_complete() -> None:
+    delta = 1.0e-7
+    polygon = xyz(
+        [180.0 + delta, 183.0 + delta, 183.0 + delta, 180.0 + delta],
+        [70.0, 70.0, 75.0, 75.0],
+    )
+    polygon_overlap = px.cover_polygon(polygon, 6, mode="overlap", threads=1)
+    assert polygon_overlap.cells.size == 9
+
+    axis = xyz(90.0, 0.0)
+    radius = np.radians(90.0 - delta)
+    cap_center = px.cover_cap(axis, radius, 6, threads=1)
+    cap_overlap = px.cover_cap(axis, radius, 6, mode="overlap", threads=1)
+    assert np.setdiff1d(cap_center.cells, cap_overlap.cells).size == 0
+    assert (
+        cap_overlap.cells.size
+        < px.cover_cap(axis, np.pi / 2.0, 6, mode="overlap", threads=1).cells.size
+    )
+
+
+def cell_block(cell: int, resolution: int) -> np.ndarray:
+    """The cell and every cell touching it, from the neighbor table."""
+    neighbors = px.cell_neighbors(cell, resolution)[0]
+    return np.sort(np.concatenate(([cell], neighbors)))
+
+
+@pytest.mark.parametrize("resolution", [4, 7, 10, 13])
+def test_cell_corner_quads_resolve_exactly(resolution: int) -> None:
+    # A polygon built from one cell's own corners is the worst case for the
+    # curved-edge test: every edge is a chord of a cell edge, so it is nearly
+    # coincident with a whole chain of them. It touches its own cell and the
+    # eight cells sharing its corners, and nothing else, at every resolution.
+    cell = px.cell_count(resolution) // 2 + 7
+    quad = px.cell_corners(np.asarray([cell]), resolution)[0]
+
+    overlap = px.cover_polygon(quad, resolution, mode="overlap", threads=1)
+    np.testing.assert_array_equal(np.sort(overlap.cells), cell_block(cell, resolution))
+
+
+@pytest.mark.parametrize("resolution", [10, 13])
+def test_cell_corner_quads_resolve_either_side_of_coincidence(resolution: int) -> None:
+    cell = px.cell_count(resolution) // 2 + 7
+    center = px.cell_centers(np.asarray([cell]), resolution)[0]
+    quad = px.cell_corners(np.asarray([cell]), resolution)[0]
+
+    def scaled(factor: float) -> np.ndarray:
+        moved = center + factor * (quad - center)
+        return moved / np.linalg.norm(moved, axis=1, keepdims=True)
+
+    # Pulled just inside the corners the quad clears its neighbors entirely,
+    # and pushed just outside it still reaches no further than they do.
+    inside = px.cover_polygon(scaled(0.99), resolution, mode="overlap", threads=1)
+    np.testing.assert_array_equal(inside.cells, [cell])
+    outside = px.cover_polygon(scaled(1.01), resolution, mode="overlap", threads=1)
+    np.testing.assert_array_equal(np.sort(outside.cells), cell_block(cell, resolution))
+
+
+def test_chained_cell_edges_stay_bounded_at_resolution_29() -> None:
+    # The same shape four resolutions coarser than the grid it is covered on,
+    # so each edge runs along sixteen cell edges rather than one.
+    source, resolution = 25, 29
+    cell = px.cell_count(source) // 2 + 7
+    quad = px.cell_corners(np.asarray([cell]), source)[0]
+
+    overlap = px.cover_polygon(quad, resolution, mode="overlap", threads=1)
+
+    steps = np.linspace(0.0, 1.0, 120)
+    near = quad[0] * (1 - steps)[:, None] + quad[1] * steps[:, None]
+    far = quad[3] * (1 - steps)[:, None] + quad[2] * steps[:, None]
+    lattice = (
+        near[:, None, :] * (1 - steps)[None, :, None]
+        + far[:, None, :] * steps[None, :, None]
+    )
+    lattice = lattice.reshape(-1, 3)
+    lattice /= np.linalg.norm(lattice, axis=1, keepdims=True)
+    assert np.isin(px.cell_at(lattice, resolution), overlap.cells).all()
+
+    parents = px.cell_at(px.cell_centers(overlap.cells, resolution), source)
+    assert np.isin(parents, cell_block(cell, source)).all()
+    assert overlap.cells.size < 2 * 16 * 16
+
+
 def test_overlap_respects_holes_candidates_and_binary_reducers() -> None:
     outer = xyz([-30.0, 30.0, 30.0, -30.0], [-30.0, -30.0, 30.0, 30.0])
     hole = xyz([-10.0, 10.0, 10.0, -10.0], [-10.0, -10.0, 10.0, 10.0])
