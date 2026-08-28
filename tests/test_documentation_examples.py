@@ -76,5 +76,6 @@ def test_diagram_examples_still_run(
         "cover-cap.svg",
         "cover-convex-polygon.svg",
         "cover-sweep.svg",
+        "overlap-coverage.svg",
         "resolution-steps.svg",
     ]

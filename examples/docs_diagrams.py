@@ -235,6 +235,38 @@ def center_sampling(path: Path) -> None:
     save(figure, path)
 
 
+def overlap_coverage(path: Path) -> None:
+    """The same cap under both coverage rules, side by side.
+
+    Deliberately the cap from `center_sampling()`, so the cell that figure
+    labels as overlapped but missed is one of the cells that turn up here.
+    """
+    cells = window_cells(RESOLUTION)
+    center, radius = from_lonlat(0.0, 0.0), 7.5
+    centered = {
+        int(c) for c in px.cover_cap(center, math.radians(radius), RESOLUTION).cells
+    }
+    touched = {
+        int(c)
+        for c in px.cover_cap(
+            center, math.radians(radius), RESOLUTION, mode="overlap"
+        ).cells
+    }
+    added = {cell: MISSED_FILL for cell in touched - centered}
+
+    figure, panels = new_axes(width=8.0, height=3.4, panels=2)
+    titles = (
+        f'mode="center"\n{len(centered)} cells',
+        f'mode="overlap"\n{len(touched)} cells',
+    )
+    for panel, title, extra in zip(panels, titles, ({}, added), strict=True):
+        draw_grid(panel, cells, RESOLUTION, covered=centered, highlight=extra)
+        outline(panel, cap_outline(0.0, 0.0, radius))
+        panel.set_title(title, color=LABEL, fontsize=8.5, pad=2)
+    figure.subplots_adjust(left=0.01, right=0.99, top=0.86, bottom=0.01, wspace=0.04)
+    save(figure, path)
+
+
 def cover_cap(path: Path) -> None:
     """Two caps of different radii and the cells each selects."""
     page = guide()
@@ -467,6 +499,7 @@ def sphere_levels(path: Path) -> None:
 
 def main() -> None:
     center_sampling(DOC_FIGURE_DIR / "center-sampling.svg")
+    overlap_coverage(DOC_FIGURE_DIR / "overlap-coverage.svg")
     cover_cap(DOC_FIGURE_DIR / "cover-cap.svg")
     cover_polygon(DOC_FIGURE_DIR / "cover-convex-polygon.svg")
     cover_sweep(DOC_FIGURE_DIR / "cover-sweep.svg")

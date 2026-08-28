@@ -88,6 +88,16 @@ HEALPix cell boundary, includes tangency, and prevents small regions from
 disappearing. The tradeoff is that a tiny touch counts as a whole hit and
 adjacent regions can share cells.
 
+```{figure} assets/generated/overlap-coverage.svg
+:alt: The same circular region twice. On the left, only cells whose centers fall inside are filled. On the right, the same cells are filled plus an orange ring of cells the region merely touches.
+:width: 100%
+:align: center
+
+The same cap under both rules. `mode="overlap"` keeps every blue cell and adds
+the orange ones, including the cell the figure above singles out. Overlap mode
+returns a superset of the default, never fewer cells.
+```
+
 Caps and footprints offer both rules. The accepted geometry and its numerical
 limits are in the [geometry contract](api.md#geometry-contract).
 
