@@ -34,6 +34,7 @@ _GEOMETRY_SHAPE_ERROR = (
     "(polygons, vertices, 3), or be a sequence of (vertices, 3) arrays."
 )
 _MISSING = object()
+_MAX_THREADS = int(np.iinfo(np.uintp).max)
 
 # Spellings for the argument shapes that repeat across this module. They are
 # not part of the public API - ``__all__`` is - and exist so that one signature
@@ -543,7 +544,7 @@ def _as_threads(value: int | None) -> int | None:
     threads = _as_integer(value, "threads", "a positive integer")
     if threads < 1:
         raise ValueError("threads must be a positive integer.")
-    return min(threads, int(np.iinfo(np.uintp).max))
+    return min(threads, _MAX_THREADS)
 
 
 def _as_uint64_scalar(value: object, name: str) -> int:
