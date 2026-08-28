@@ -72,8 +72,7 @@ spelling out:
 - a region too small or too thin to contain any center returns nothing at all;
 - a cell straddling an edge is included only when its center is inside.
 
-This is therefore not a conservative spatial index. If you need every cell a
-region touches, Polypix cannot give you that today.
+This default is therefore not a conservative spatial index.
 
 ```{figure} assets/generated/center-sampling.svg
 :alt: A circular region on a HEALPix grid. Cells whose centers fall inside are filled; one cell the region overlaps is left out because its center is outside.
@@ -83,10 +82,16 @@ region touches, Polypix cannot give you that today.
 Blue cells are what `cover_cap()` returned. Grey dots are cell centers. The orange cell is overlapped by the region but left out, because the rule asks only about the center.
 ```
 
-Caps and footprints use the same rule. The accepted geometry and its numerical
+Pass `mode="overlap"` to `cover_cap()`, `cover_polygon()`, or `cover_sweep()`
+when you instead need every cell the region touches. This tests the true curved
+HEALPix cell boundary, includes tangency, and prevents small regions from
+disappearing. The tradeoff is that a tiny touch counts as a whole hit and
+adjacent regions can share cells.
+
+Caps and footprints offer both rules. The accepted geometry and its numerical
 limits are in the [geometry contract](api.md#geometry-contract).
 
-When all you want to know is how many caps cover each cell, reach for
+When all you want to know is how many center-selected caps cover each cell, reach for
 `cover_cap(..., reduce=px.Count())` instead of the default `Coverage`. It
 accumulates the counts directly instead of emitting one cell ID per cap-cell
 pair.
@@ -187,9 +192,9 @@ Two things are worth watching when you hand data over:
 - `cell_corners()` returns four corner vectors, but HEALPix cell edges are
   curved. Those four points are not a sampled boundary, so do not round-trip
   them as an exact great-circle polygon.
-- A MOC represents whole cells by area, so turning center-selected cells into a
-  MOC quietly changes what the result means. It does not retroactively make your
-  query an intersection query.
+- A MOC represents whole cells by area. Center-selected cells therefore change
+  meaning when converted; use `mode="overlap"` when the intended MOC is an
+  upper cover of the supplied region.
 
 ## Restricting coverage to known cells
 
@@ -206,8 +211,8 @@ coverage = px.cover_sweep(
 
 Without a reducer, the candidates are a set: order and duplicates are discarded,
 and the restriction always applies, because it is what defines the result.
-Filtering is still center sampled, so it does not become a conservative index,
-and a dense candidate set can end up slower than simply scanning the rings.
+Filtering retains the requested coverage mode, and a dense candidate set can
+end up slower than simply scanning the rings.
 
 With a reducer, the same argument fixes the shape of the output instead: one value
 per requested cell, in your order, duplicates preserved, and zero where nothing

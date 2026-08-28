@@ -167,7 +167,10 @@ pub(super) fn normalized_cell_at(direction: Vec3, resolution: u8) -> u64 {
         let latitude_coordinate = nside_float * (0.75 * z);
         let ascending = (longitude_coordinate - latitude_coordinate).floor() as i64;
         let descending = (longitude_coordinate + latitude_coordinate).floor() as i64;
-        let local_ring = nside as i64 + 1 + ascending - descending;
+        // Normalizing a direction emitted by `boundary()` can move an exact
+        // |z| = 2/3 corner by one ULP. Keep last-bit diagonal rounding inside
+        // the equatorial rings it analytically belongs to.
+        let local_ring = (nside as i64 + 1 + ascending - descending).clamp(1, 2 * nside as i64 + 1);
         let shift = 1 - (local_ring & 1);
         let ring_cells = 4 * nside as i64;
         let longitude_index =
@@ -880,6 +883,17 @@ mod tests {
                 ]
             );
         }
+    }
+
+    #[test]
+    fn direction_index_keeps_emitted_transition_corners_in_a_sharing_cell() {
+        let north = [-0.4140976024357428, 0.6197408581112958, 0.6666666666666667];
+        let south = [north[0], north[1], -north[2]];
+        let vectors = [north, south].into_iter().flatten().collect::<Vec<_>>();
+        let cells = cells_at(&vectors, 3).unwrap();
+
+        assert!([93, 122, 123, 155].contains(&cells[0]));
+        assert!([603, 634, 635, 665].contains(&cells[1]));
     }
 
     #[test]

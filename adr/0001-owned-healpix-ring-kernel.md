@@ -1,6 +1,6 @@
 # ADR-0001: Own the HEALPix RING kernel
 
-- Status: Accepted
+- Status: Accepted; coverage modes extended by ADR-0005
 - Date: 2026-07-27
 
 ## Context

@@ -14,6 +14,8 @@ documentation. Internal refactors, tests, and CI changes are omitted.
 
 ### Features
 
+- Added exact whole-cell intersection coverage through `mode="overlap"` on
+  `cover_cap()`, `cover_polygon()`, and `cover_sweep()`.
 - Accepted polygonal `__geo_interface__` objects and GeoJSON-like mappings in
   `cover_polygon()`, including holes, multipart unions, and single Features.
 - Added `cell_neighbors()` for batched immediate HEALPix neighbor lookup.

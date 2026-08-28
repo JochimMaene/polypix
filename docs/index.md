@@ -118,13 +118,12 @@ the timings on those pages come from the same run that produced their figures.
   </a>
 </div>
 
-## What Polypix does not do
+## Pick the coverage rule
 
-One thing is worth knowing before you get any further. A cell counts as covered
-when its center falls inside your region, which means Polypix does not return
-every cell the boundary touches.
+By default, a cell counts as covered when its center falls inside your region.
+Pass `mode="overlap"` when you instead need every cell the boundary touches.
 [Center-sampled coverage](concepts.md#center-sampled-coverage) shows exactly what
-that rule includes and leaves out.
+the default includes and how overlap mode differs.
 
 Everything upstream of the geometry stays in your own code. Orbit propagation,
 attitude, sensor models, and ellipsoid intersection all happen before Polypix

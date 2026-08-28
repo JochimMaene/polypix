@@ -121,9 +121,11 @@ grid would be enormous and your query set is genuinely small. The selected path
 costs more as either the cap count or the number of cells you ask for grows, so it
 is not a general escape hatch.
 
-Either way, the predicate is evaluated at cell centers. If those IDs came out of
-`cell_at()`, remember that you are testing the cell rather than the direction you
-started with.
+With the default `mode="center"`, the predicate is evaluated at cell centers. If
+those IDs came out of `cell_at()`, remember that you are testing the cell rather
+than the direction you started with. `mode="overlap"` evaluates curved cell
+boundaries and is correspondingly more expensive; reducers retain the same
+binary per-region meaning.
 
 ## Two readings of one argument
 
@@ -152,9 +154,14 @@ crossing check; detailed boundaries are grouped by height so a center usually
 checks only nearby edges. A large diagonal footprint, one containing a pole, or
 a deeply notched boundary can still cost more per cell returned.
 
-Long thin regions are what `cover_sweep()` is for, since it keeps each interval's
-bounds tight. Caps use analytic per-ring longitude spans, and their dense counts
-skip cap-cell membership altogether.
+Overlap mode reuses the center scan's one-ring latitude guard, pads each
+per-ring longitude interval by one cell on either side, and tests candidate
+cells against the analytical HEALPix edge curves. This costs more than one
+center predicate but remains proportional to the same local RING bounds.
+
+Long thin regions are what `cover_sweep()` is for, since it keeps each
+interval's bounds tight. Center-selected caps use analytic per-ring longitude
+spans, and their dense counts skip cap-cell membership altogether.
 
 ## Input layout
 

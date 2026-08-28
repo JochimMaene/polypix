@@ -90,7 +90,10 @@ Accepted:
 - a repeated closing vertex;
 - redundant vertices on an existing edge, within floating-point precision;
 - explicit holes and multipart unions through `Polygon` and `MultiPolygon`;
-- a cell center lying exactly on an edge, which counts as covered.
+- a cell center lying exactly on an edge in center mode, which counts as
+  covered;
+- a region tangent to a true curved cell edge in overlap mode, which also
+  counts as covered.
 
 Rejected:
 
@@ -133,6 +136,8 @@ A whole-world longitude/latitude bounding box is not a spherical polygon:
 ### Numerical limits
 
 Footprints below roughly 1e-8 radians across may be rejected. Where that starts depends on how the vertices are laid out, and at the same scale concavity becomes indistinguishable from a collinear edge.
+
+Coverage resolves floating-point boundary ties toward inclusion in both modes.
 
 Validation compares vertex pairs and tests every edge against every vertex, so
 its cost grows with the square of the vertex count. Hand a densely sampled
