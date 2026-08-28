@@ -142,4 +142,7 @@ Coverage resolves floating-point boundary ties toward inclusion in both modes.
 Validation compares vertex pairs and tests every edge against every vertex, so
 its cost grows with the square of the vertex count. Hand a densely sampled
 boundary to `cover_sweep()` in short segments instead of passing one polygon with
-hundreds of vertices.
+hundreds of vertices. That advice is firmer under `mode="overlap"`, where each
+visited cell is also tested against every edge, making coverage itself linear in
+the vertex count; see [Performance and memory](performance.md) for measured
+figures.

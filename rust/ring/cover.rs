@@ -648,13 +648,19 @@ pub(crate) fn cover_caps(
             })
         };
         if overlap {
+            // Bind every cap to the resolution once, rather than relocating
+            // each axis cell for every candidate it is tested against.
+            let overlaps = caps
+                .iter()
+                .map(|cap| CapOverlap::new(cap, resolution))
+                .collect::<Vec<_>>();
             let compute_planned = |plan: &CandidatePlan, parallel| {
                 compute_planned_candidate_cells(
                     caps.len(),
                     plan,
                     candidates,
                     parallel,
-                    |index, cell| caps[index].overlaps_cell(cell, resolution),
+                    |index, cell| overlaps[index].overlaps_cell(cell),
                 )
             };
             let preparation_work = candidate_preparation_work(caps.len(), candidates.len(), 0);

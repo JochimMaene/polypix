@@ -46,6 +46,7 @@ pub(super) struct Cap {
     pub(super) axis: Vec3,
     pub(super) sine_radius: f64,
     pub(super) cosine_radius: f64,
+    pub(super) chord_radius: f64,
     pub(super) squared_chord_radius: f64,
     pub(super) full_sphere: bool,
     pub(super) minimum_z: f64,
@@ -295,18 +296,6 @@ impl Cap {
         dx * dx + dy * dy + dz * dz <= self.squared_chord_radius
     }
 
-    pub(super) fn overlaps_cell(&self, cell: u64, resolution: u8) -> bool {
-        if self.full_sphere || self.contains(center(cell, resolution)) {
-            return true;
-        }
-        if normalized_cell_at(self.axis, resolution) == cell {
-            return true;
-        }
-        let boundary = CellBoundary::new(cell, resolution);
-        let chord_radius = self.squared_chord_radius.sqrt();
-        (0..4).any(|edge| cell_edge_within_cap(&boundary, edge, self.axis, chord_radius))
-    }
-
     fn longitude_bounds(&self) -> ([(f64, f64); 2], usize) {
         if self.minimum_z <= -1.0 || self.maximum_z >= 1.0 {
             return ([(0.0, TAU), (0.0, 0.0)], 1);
@@ -339,15 +328,50 @@ impl Cap {
             return Ok(());
         }
         let (longitude_intervals, interval_count) = self.longitude_bounds();
+        let overlap = CapOverlap::new(self, resolution);
         cover_overlapping_cells(
             self.minimum_z,
             self.maximum_z,
             longitude_intervals,
             interval_count,
             resolution,
-            |cell| self.overlaps_cell(cell, resolution),
+            |cell| overlap.overlaps_cell(cell),
             |cell| push_coverage_cell(cells, cell, 1024),
         )
+    }
+}
+
+/// One cap bound to one resolution. The axis cell only ever matches a single
+/// cell in a scan, and the chord radius is a cap constant, so both are located
+/// once here instead of once per visited cell. Center mode never locates an
+/// axis and so never builds this.
+pub(super) struct CapOverlap<'cap> {
+    cap: &'cap Cap,
+    resolution: u8,
+    axis_cell: u64,
+}
+
+impl<'cap> CapOverlap<'cap> {
+    pub(super) fn new(cap: &'cap Cap, resolution: u8) -> Self {
+        Self {
+            cap,
+            resolution,
+            axis_cell: normalized_cell_at(cap.axis, resolution),
+        }
+    }
+
+    pub(super) fn overlaps_cell(&self, cell: u64) -> bool {
+        let cap = self.cap;
+        if cap.full_sphere || cap.contains(center(cell, self.resolution)) {
+            return true;
+        }
+        // A cap smaller than one cell can sit entirely inside it, missing
+        // both the center test and every edge test.
+        if self.axis_cell == cell {
+            return true;
+        }
+        let boundary = CellBoundary::new(cell, self.resolution);
+        (0..4).any(|edge| cell_edge_within_cap(&boundary, edge, cap.axis, cap.chord_radius))
     }
 }
 
@@ -386,6 +410,7 @@ pub(super) fn prepare_caps(centers: &[f64], radii: &[f64]) -> Result<Vec<Cap>, S
                 axis,
                 sine_radius,
                 cosine_radius,
+                chord_radius: 2.0 * half_chord,
                 squared_chord_radius: 4.0 * half_chord * half_chord,
                 full_sphere: effective_radius == std::f64::consts::PI,
                 minimum_z: minimum_z.clamp(-1.0, 1.0),
@@ -722,7 +747,7 @@ struct MinorArc {
 impl MinorArc {
     fn new(start: Vec3, end: Vec3) -> Self {
         let normal = normalize(cross(start, end))
-            .expect("validated polygon edges are neither degenerate nor antipodal");
+            .expect("minor arc endpoints must be distinct and non-antipodal");
         Self { start, end, normal }
     }
 
@@ -1090,8 +1115,8 @@ pub(super) fn prepare_sweep_footprint(
 #[cfg(test)]
 mod tests {
     use super::{
-        prepare_caps, ring_info, CellBoundary, PreparedFootprint, CELL_EDGE_DOT_LIPSCHITZ,
-        ROTATION_RESYNC_STEPS, TAU,
+        prepare_caps, ring_info, CapOverlap, CellBoundary, PreparedFootprint,
+        CELL_EDGE_DOT_LIPSCHITZ, ROTATION_RESYNC_STEPS, TAU,
     };
     use crate::geometry::{cross, dot, norm, CONTAINMENT_EPSILON};
     use crate::ring::grid::raw_cell_count;
@@ -1160,8 +1185,9 @@ mod tests {
 
             let mut actual = Vec::new();
             cap.cover_overlap(resolution, &mut actual).unwrap();
+            let overlap = CapOverlap::new(&cap, resolution);
             let expected = (0..raw_cell_count(resolution))
-                .filter(|&cell| cap.overlaps_cell(cell, resolution))
+                .filter(|&cell| overlap.overlaps_cell(cell))
                 .collect::<Vec<_>>();
             assert_eq!(actual, expected, "cap resolution {resolution}");
         }

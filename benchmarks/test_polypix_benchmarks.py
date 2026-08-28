@@ -328,6 +328,22 @@ def test_cover_detailed_polygon(
     assert coverage.offsets.shape == (2,)
 
 
+def test_cover_detailed_polygon_overlap(
+    benchmark,
+    detailed_polygon_pair: tuple[px.Polygon, px.Polygon],
+) -> None:
+    """Overlap mode tests every edge per cell, so this pins that scaling."""
+    coverage = benchmark(
+        px.cover_polygon,
+        detailed_polygon_pair[0],
+        5,
+        mode="overlap",
+        threads=1,
+    )
+
+    assert coverage.offsets.shape == (2,)
+
+
 def test_cover_detailed_concave_polygon_candidates(
     benchmark,
     detailed_polygon_pair: tuple[px.Polygon, px.Polygon],

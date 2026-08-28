@@ -37,10 +37,17 @@ Sub-cell regions no longer disappear in overlap mode, and touched-cell results
 can be used as conservative spatial indexes. Adjacent regions may share cells,
 and the returned whole-cell area can overstate the region near its boundary.
 
-Exact curved-boundary tests cost more than center predicates. The first release
-reuses ordinary coverage reduction for overlap caps rather than adding a fused
-special case. Full-containment, bounding-box, fractional-area, NESTED, and MOC
-APIs remain out of scope.
+Exact curved-boundary tests cost more than center predicates, and the per-cell
+test carries no edge pruning: a cell is tested against every footprint edge, so
+one cell costs time linear in the vertex count where the center path bins edges
+by height. Overlap coverage is consequently for coarse footprints, which the
+performance guide states with measured figures. Conservative pruning around
+curved edges can only lose cells when it is wrong, so it is deferred to a change
+that can design and prove it rather than bundled with the predicate itself.
+
+The first release reuses ordinary coverage reduction for overlap caps rather
+than adding a fused special case. Full-containment, bounding-box,
+fractional-area, NESTED, and MOC APIs remain out of scope.
 
 ## Alternatives considered
 
