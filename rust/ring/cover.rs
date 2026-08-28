@@ -555,9 +555,17 @@ pub(crate) fn cover_prepared_regions(
         parallel_work >= SCAN_PARALLEL_MIN_WORK,
         threads,
         |range| {
+            let offset_count = range
+                .len()
+                .checked_add(1)
+                .ok_or_else(|| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
+            let mut offsets = Vec::new();
+            offsets
+                .try_reserve_exact(offset_count)
+                .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
             let mut coverage = Coverage {
                 cells: Vec::new(),
-                offsets: Vec::with_capacity(range.len() + 1),
+                offsets,
             };
             coverage.offsets.push(0);
             for region in range {

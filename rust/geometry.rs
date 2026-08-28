@@ -41,6 +41,14 @@ pub(crate) fn cross(left: Vec3, right: Vec3) -> Vec3 {
     ]
 }
 
+/// Cross two nearly parallel directions without subtracting near-equal products.
+pub(crate) fn stable_cross(left: Vec3, right: Vec3) -> Vec3 {
+    let difference = [left[0] - right[0], left[1] - right[1], left[2] - right[2]];
+    let sum = [left[0] + right[0], left[1] + right[1], left[2] + right[2]];
+    let doubled = cross(difference, sum);
+    [0.5 * doubled[0], 0.5 * doubled[1], 0.5 * doubled[2]]
+}
+
 pub(crate) fn norm(vector: Vec3) -> f64 {
     vector[0].hypot(vector[1]).hypot(vector[2])
 }
@@ -74,7 +82,7 @@ pub(crate) fn nearly_equal(left: Vec3, right: Vec3) -> bool {
 }
 
 fn normalized_edge(left: Vec3, right: Vec3) -> Result<Vec3, String> {
-    let edge_normal = cross(left, right);
+    let edge_normal = stable_cross(left, right);
     let edge_length = norm(edge_normal);
     if edge_length <= ZERO_NORM_EPSILON {
         return Err("Polygon contains degenerate or antipodal edges.".to_owned());
@@ -144,7 +152,7 @@ pub(crate) fn validate_polygon(
     }
 
     for index in 0..edge_normals.len() {
-        let raw_edge_normal = cross(vertices[index], vertices[(index + 1) % vertices.len()]);
+        let raw_edge_normal = stable_cross(vertices[index], vertices[(index + 1) % vertices.len()]);
         let mut found_strict_interior = false;
         for (vertex_index, &vertex) in vertices.iter().enumerate() {
             if vertex_index == index || vertex_index == (index + 1) % vertices.len() {

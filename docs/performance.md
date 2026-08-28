@@ -27,8 +27,9 @@ chunks:
 | `RevisitStats` | `48 * represented_cell_count` bytes |
 
 Parallel coverage builds ordered worker chunks and merges them, so peak native
-memory can reach roughly twice the size of the final `cells` array. A failed
-allocation raises `MemoryError` instead of crashing.
+memory can reach roughly twice the size of the final `cells` array. Coverage
+result buffers use fallible allocations and raise `MemoryError` when the
+allocator refuses them.
 
 When the whole result will not fit, batch the input and consume the chunks as
 they come:

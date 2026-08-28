@@ -247,6 +247,9 @@ class Coverage:
         ValueError
             If a cell falls outside the grid, the offsets are not a closed
             nondecreasing sequence, or a cell repeats inside one segment.
+        OverflowError
+            If a value cannot be represented by the signed ``int64`` result
+            arrays.
 
         Notes
         -----
@@ -540,7 +543,7 @@ def _as_threads(value: int | None) -> int | None:
     threads = _as_integer(value, "threads", "a positive integer")
     if threads < 1:
         raise ValueError("threads must be a positive integer.")
-    return threads
+    return min(threads, int(np.iinfo(np.uintp).max))
 
 
 def _as_uint64_scalar(value: object, name: str) -> int:
