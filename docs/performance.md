@@ -13,6 +13,7 @@ Use the lowest resolution that still answers your question. High resolutions
 are fine for small regions or selected-cell queries, but a complete dense map
 gets big quickly.
 
+(choosing-a-reducer)=
 ## Ask for the result you need
 
 The default result contains one cell ID for every hit. That's useful when you
