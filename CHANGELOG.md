@@ -20,6 +20,13 @@ documentation. Internal refactors, tests, and CI changes are omitted.
   `cover_polygon()`, including holes, multipart unions, and single Features.
 - Added `cell_neighbors()` for batched immediate HEALPix neighbor lookup.
 
+### Fixes
+
+- Stabilized short spherical-polygon edges so overlap coverage remains
+  conservative at resolutions 28 and 29.
+- Capped oversized positive `threads` values at the native integer limit
+  before applying the existing host thread limit.
+
 ## [0.4.0] — 2026-08-26
 
 ### Breaking changes

@@ -833,9 +833,11 @@ class PolypixTests(unittest.TestCase):
                     px.cover_polygon(polygon, resolution=2, threads=threads)
 
         sequential = px.cover_polygon(polygon, resolution=2, threads=1)
-        bounded = px.cover_polygon(polygon, resolution=2, threads=100_000)
-        np.testing.assert_array_equal(bounded.cells, sequential.cells)
-        np.testing.assert_array_equal(bounded.offsets, sequential.offsets)
+        for threads in (100_000, 10**20):
+            with self.subTest(threads=threads):
+                bounded = px.cover_polygon(polygon, resolution=2, threads=threads)
+                np.testing.assert_array_equal(bounded.cells, sequential.cells)
+                np.testing.assert_array_equal(bounded.offsets, sequential.offsets)
 
     def test_concurrent_calls_are_deterministic(self) -> None:
         polygon = vectors([(-5.0, -5.0), (12.0, -4.0), (10.0, 9.0), (-6.0, 7.0)])

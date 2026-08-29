@@ -239,6 +239,29 @@ def test_chained_cell_edges_stay_bounded_at_resolution_29() -> None:
     assert overlap.cells.size < 2 * 16 * 16
 
 
+def test_short_edges_do_not_lose_overlapping_cells_at_resolution_28() -> None:
+    axis = np.asarray([-0.6881196355007282, 0.543059929078255, 0.48122477146118087])
+    east = np.cross([0.0, 0.0, 1.0], axis)
+    east /= np.linalg.norm(east)
+    north = np.cross(axis, east)
+    half_width = 1.0283161671972842e-8
+    polygon = np.asarray(
+        [
+            axis + half_width * (u * east + v * north)
+            for u, v in [(-1, -1), (1, -1), (1, 1), (-1, 1)]
+        ]
+    )
+    polygon /= np.linalg.norm(polygon, axis=1, keepdims=True)
+    interior = np.asarray(
+        [axis + half_width * (u * east - 0.8 * north) for u in (-0.8, -0.4, 0.0, 0.4)]
+    )
+    interior /= np.linalg.norm(interior, axis=1, keepdims=True)
+
+    overlap = px.cover_polygon(polygon, 28, mode="overlap", threads=1)
+
+    assert np.isin(px.cell_at(interior, 28), overlap.cells).all()
+
+
 def test_overlap_respects_holes_candidates_and_binary_reducers() -> None:
     outer = xyz([-30.0, 30.0, 30.0, -30.0], [-30.0, -30.0, 30.0, 30.0])
     hole = xyz([-10.0, 10.0, 10.0, -10.0], [-10.0, -10.0, 10.0, 10.0])

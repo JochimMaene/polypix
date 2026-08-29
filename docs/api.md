@@ -1,5 +1,8 @@
 # API reference
 
+## Quick reference
+
+### Geometry
 
 ```{eval-rst}
 .. currentmodule:: polypix
@@ -7,32 +10,68 @@
 .. autosummary::
    :nosignatures:
 
-   cover_polygon
    Polygon
    MultiPolygon
+```
+
+### Covering regions
+
+```{eval-rst}
+.. autosummary::
+   :nosignatures:
+
+   cover_polygon
    cover_cap
    cover_sweep
+```
+
+### Cells
+
+```{eval-rst}
+.. autosummary::
+   :nosignatures:
+
    cell_at
    cell_centers
    cell_corners
    cell_count
    cell_neighbors
-   revisit
-   Coverage
-   RevisitStats
+```
+
+### Reductions
+
+```{eval-rst}
+.. autosummary::
+   :nosignatures:
+
    Count
    Sum
+   revisit
+```
+
+### Results
+
+```{eval-rst}
+.. autosummary::
+   :nosignatures:
+
+   Coverage
+   RevisitStats
+```
+
+## Geometry
+
+```{eval-rst}
+.. autoclass:: Polygon
+
+.. autoclass:: MultiPolygon
+   :members: __len__, __iter__
 ```
 
 ## Covering regions
 
 ```{eval-rst}
 .. autofunction:: cover_polygon
-
-.. autoclass:: Polygon
-
-.. autoclass:: MultiPolygon
-   :members: __len__, __iter__
 
 .. autofunction:: cover_cap
 

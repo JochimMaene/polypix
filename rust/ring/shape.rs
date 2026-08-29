@@ -11,8 +11,8 @@ use std::sync::OnceLock;
 use crate::error::NativeResult;
 use crate::geometry::{
     contains_center, cross, dot, general_polygon_contains, nearly_equal, norm, normalize,
-    polygon_contains, prepare_general_polygon, prepare_polygon, ring_contains, validate_polygon,
-    GeneralPolygon, Polygon, Vec3, CONTAINMENT_EPSILON,
+    polygon_contains, prepare_general_polygon, prepare_polygon, ring_contains, stable_cross,
+    validate_polygon, GeneralPolygon, Polygon, Vec3, CONTAINMENT_EPSILON,
 };
 
 use super::cover::push_coverage_cell;
@@ -771,7 +771,7 @@ struct MinorArc {
 
 impl MinorArc {
     fn new(start: Vec3, end: Vec3) -> Self {
-        let normal = normalize(cross(start, end))
+        let normal = normalize(stable_cross(start, end))
             .expect("minor arc endpoints must be distinct and non-antipodal");
         Self {
             start,
