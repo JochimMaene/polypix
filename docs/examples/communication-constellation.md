@@ -29,6 +29,19 @@ about **32 ms** in simulation mode. The case study repeats that public call for
 promised for a particular machine; propagation and plotting are outside the
 [benchmark definition][reference-benchmark].
 
+For context, one [GitHub-hosted documentation build][docs-build-run] of the
+complete example at the same commit produced this pipeline profile:
+
+| Stage | Time |
+| --- | ---: |
+| Parse pinned TLE snapshot | 23 ms |
+| SGP4 propagation | 9 ms |
+| 61 cap builds and `cover_cap(reduce=Count())` calls | **261 ms** |
+| Complete analysis | 296 ms |
+
+Those wall-clock figures show where the end-to-end work goes; they are pinned
+to that build for reproducibility and are not the regression benchmark.
+
 ## Method
 
 | Parameter | Value |
@@ -133,6 +146,7 @@ python examples/communication_constellation.py --output PATH
 
 [reference-benchmark]: https://github.com/JochimMaene/polypix/blob/bf26c009e6529367e1165cecbe7dbda486b5479c/benchmarks/test_polypix_benchmarks.py#L733
 [codspeed-run]: https://app.codspeed.io/JochimMaene/polypix/runs/compare/6a91b972915aa37294773c71..6a92bc48fd5591856db14fc8
+[docs-build-run]: https://github.com/JochimMaene/polypix/actions/runs/33249059091
 
 ## Adapting it
 
