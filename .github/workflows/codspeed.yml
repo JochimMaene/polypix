@@ -47,7 +47,7 @@ jobs:
           PY
 
       - name: Run benchmarks
-        uses: CodSpeedHQ/action@f22792bfac16f3e14eb9fbea76f4a48e9cc22b93 # v4
+        uses: CodSpeedHQ/action@373d6868929f444bc08d901fd0eb0ad52a8875ea # v5.2.1
         env:
           PIXI_CACHE_DIR: ${{ runner.temp }}/pixi-cache
         with:
