@@ -188,6 +188,23 @@ copied like any other non-conforming input.
 The native kernels release the GIL, so do not mutate a borrowed array from
 another thread while a call is running.
 
+## Reference benchmark
+
+The communications example's Polypix stage is tracked by the seeded
+[`test_cover_cap_dense_count_constellation_batch` benchmark][reference-benchmark].
+It measures one timestamp for 10,771 caps at resolution 6 with dense
+`Count()` reduction; the example repeats that call for its 61 timestamps.
+Astroz propagation and file parsing are outside the benchmark.
+
+CodSpeed's simulation mode is the canonical source for regression results. It
+reports a stable, hardware-independent performance metric rather than a
+promise about wall-clock time on every machine. Cite the benchmark definition
+and the [Polypix CodSpeed history][codspeed-history] together, and round any
+number published here to an order-of-magnitude figure such as `~10 ms`.
+
+[reference-benchmark]: https://github.com/JochimMaene/polypix/blob/main/benchmarks/test_polypix_benchmarks.py
+[codspeed-history]: https://codspeed.io/JochimMaene/polypix
+
 ## Threading
 
 ```python
