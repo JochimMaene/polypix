@@ -15,20 +15,3 @@ The longest single wait in the same 14 days. Waits running past
 the start or the end of the window are excluded, and 1,520 cells
 above 83° latitude are never overflown at all.
 ```
-
-```{list-table} One measured run
-:header-rows: 1
-:class: example-timings
-:widths: 70 30
-
-* - Stage
-  - Time
-* - SGP4 propagation and swath edges
-  - 16 ms
-* - 3 `cover_sweep()` calls
-  - **54 ms**
-* - `revisit()` and gap conversion
-  - 71 ms
-* - Complete analysis
-  - 141 ms
-```

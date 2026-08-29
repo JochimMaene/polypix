@@ -198,12 +198,13 @@ Astroz propagation and file parsing are outside the benchmark.
 
 CodSpeed's simulation mode is the canonical source for regression results. It
 reports a stable, hardware-independent performance metric rather than a
-promise about wall-clock time on every machine. Cite the benchmark definition
-and the [Polypix CodSpeed history][codspeed-history] together, and round any
-number published here to an order-of-magnitude figure such as `~10 ms`.
+promise about wall-clock time on every machine. The pinned reference run
+measures one single-threaded timestamp at about **32 ms**. Cite the benchmark
+definition and that [CodSpeed result][codspeed-result] together, and round the
+published number.
 
-[reference-benchmark]: https://github.com/JochimMaene/polypix/blob/main/benchmarks/test_polypix_benchmarks.py
-[codspeed-history]: https://codspeed.io/JochimMaene/polypix
+[reference-benchmark]: https://github.com/JochimMaene/polypix/blob/bf26c009e6529367e1165cecbe7dbda486b5479c/benchmarks/test_polypix_benchmarks.py#L733
+[codspeed-result]: https://app.codspeed.io/JochimMaene/polypix/runs/compare/6a91b972915aa37294773c71..6a92bc48fd5591856db14fc8
 
 ## Threading
 

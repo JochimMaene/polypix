@@ -293,23 +293,6 @@ The longest single wait in the same {DURATION_DAYS} days. Waits running past
 the start or the end of the window are excluded, and {never_observed:,} cells
 above 83° latitude are never overflown at all.
 ```
-
-```{{list-table}} One measured run
-:header-rows: 1
-:class: example-timings
-:widths: 70 30
-
-* - Stage
-  - Time
-* - SGP4 propagation and swath edges
-  - {result.swath_elapsed_s * 1_000:.0f} ms
-* - {result.satellite_count} `cover_sweep()` calls
-  - **{result.coverage_elapsed_s * 1_000:.0f} ms**
-* - `revisit()` and gap conversion
-  - {result.reduction_elapsed_s * 1_000:.0f} ms
-* - Complete analysis
-  - {result.analysis_elapsed_s * 1_000:.0f} ms
-```
 """.strip()
 
 

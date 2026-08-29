@@ -297,23 +297,6 @@ def build_documentation_assets() -> str:
 Mean simultaneous catalogued Starlink objects geometrically visible above a 25°
 elevation mask, sampled once per minute for one hour.
 ```
-
-```{{list-table}} One measured run
-:header-rows: 1
-:class: example-timings
-:widths: 70 30
-
-* - Stage
-  - Time
-* - Parse pinned TLE snapshot
-  - {result.tle_parsing_elapsed_s * 1_000:.0f} ms
-* - SGP4 propagation
-  - {result.propagation_elapsed_s * 1_000:.0f} ms
-* - {result.snapshot_count} cap builds and `cover_cap(reduce=Count())` calls
-  - **{result.coverage_elapsed_s * 1_000:.0f} ms**
-* - Complete analysis
-  - {result.analysis_elapsed_s * 1_000:.0f} ms
-```
 """.strip()
 
 
