@@ -94,6 +94,14 @@ are excluded, because Valgrind simulation serializes worker threads; the same
 workflow runs `tools/check_parallel_speedup.py` natively as a coarse wall-time
 guard on multicore scaling.
 
+When documentation publishes a performance figure, cite both the benchmark
+source and the [CodSpeed history](https://codspeed.io/JochimMaene/polypix).
+Link the source to the release tag or commit used for the figure, not to a
+moving local copy. Round simulation results and describe them as reference
+workloads; they are regression evidence, not a universal wall-clock promise.
+Case-study pipeline profiles may retain their stage table when it is pinned to
+the exact GitHub documentation run that produced it and labeled illustrative.
+
 Cross-library benchmarks live in a separate comparison repository that is not
 public yet. Until it is linked here, this repository makes no cross-library
 performance claim.

@@ -20,10 +20,27 @@ gateways, terrain, and the atmosphere are all outside the scope of the example.
 :parser: myst
 ```
 
-The timings come from a single wall-clock run on the machine that built this
-page, so read them for the shape of the work and not as a controlled benchmark.
-Nearly all of it is the covering calls; the propagation and the accumulation on
-either side are small.
+## Performance
+
+The [pinned CodSpeed run][codspeed-run] measures one single-threaded timestamp
+of this workload—10,771 caps at resolution 6 with dense `Count()` reduction—at
+about **32 ms** in simulation mode. The case study repeats that public call for
+61 timestamps. This is a stable regression reference, not wall-clock time
+promised for a particular machine; propagation and plotting are outside the
+[benchmark definition][reference-benchmark].
+
+For context, one [GitHub-hosted documentation build][docs-build-run] of the
+complete example at the same commit produced this pipeline profile:
+
+| Stage | Time |
+| --- | ---: |
+| Parse pinned TLE snapshot | 23 ms |
+| SGP4 propagation | 9 ms |
+| 61 cap builds and `cover_cap(reduce=Count())` calls | **261 ms** |
+| Complete analysis | 296 ms |
+
+Those wall-clock figures show where the end-to-end work goes; they are pinned
+to that build for reproducibility and are not the regression benchmark.
 
 ## Method
 
@@ -114,17 +131,9 @@ This uses resolution 9, with roughly 13 km between neighboring cell centers.
 The boundary is a bundled Natural Earth extract, so the example remains
 reproducible and does not download map data while building the docs.
 
-On the same machine used for the global timing above, one measured run took:
-
-| Stage | Time |
-| --- | ---: |
-| Cover the concave Germany boundary once (2,180 cells) | 3 ms |
-| 61 restricted `cover_cap(reduce=Count())` calls | **907 ms** |
-| Complete restricted analysis | 966 ms |
-
-That is about 15 ms per timestamp for all 10,771 catalogued objects. These are
-wall-clock measurements from one machine, so use them to judge the scale of the
-work rather than as a controlled benchmark.
+The selected-cell path is covered by the same public CodSpeed suite. Its exact
+cost depends on how many cells are requested, so this example makes no separate
+wall-clock claim for Germany.
 
 ## Run the example
 
@@ -134,6 +143,10 @@ python examples/communication_constellation.py --output PATH
 ```
 
 [Full example source](https://github.com/JochimMaene/polypix/blob/main/examples/communication_constellation.py)
+
+[reference-benchmark]: https://github.com/JochimMaene/polypix/blob/bf26c009e6529367e1165cecbe7dbda486b5479c/benchmarks/test_polypix_benchmarks.py#L733
+[codspeed-run]: https://app.codspeed.io/JochimMaene/polypix/runs/compare/6a91b972915aa37294773c71..6a92bc48fd5591856db14fc8
+[docs-build-run]: https://github.com/JochimMaene/polypix/actions/runs/33249059091
 
 ## Adapting it
 

@@ -735,6 +735,13 @@ def test_cover_cap_dense_count_constellation_batch(
     constellation_caps: tuple[np.ndarray, np.ndarray],
     threads: int | None,
 ) -> None:
+    """Reference workload for the communications documentation example.
+
+    One invocation represents one timestamp: 10,771 catalogued objects,
+    resolution 6, and dense Count reduction. The example repeats this same
+    public call once per minute; propagation is intentionally outside this
+    benchmark because this suite measures Polypix.
+    """
     centers, radii = constellation_caps
     counts = benchmark(
         px.cover_cap, centers, radii, 6, reduce=px.Count(), threads=threads
