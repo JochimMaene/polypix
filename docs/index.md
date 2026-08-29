@@ -6,7 +6,7 @@ html_theme.sidebar_secondary.remove: true
 # Polypix
 
 :::{container} polypix-hero
-<p class="tagline">Batch coverage of satellite footprints, swaths, and survey fields on an equal-area grid.</p>
+<p class="tagline">Batch coverage of satellite footprints and swaths on an equal-area grid.</p>
 
 {.polypix-badges}
 [![PyPI](https://img.shields.io/pypi/v/polypix.svg)](https://pypi.org/project/polypix/)
@@ -16,18 +16,13 @@ html_theme.sidebar_secondary.remove: true
 [![Benchmarks](https://github.com/JochimMaene/polypix/actions/workflows/codspeed.yml/badge.svg)](https://github.com/JochimMaene/polypix/actions/workflows/codspeed.yml)
 :::
 
-How much of the ground did this constellation actually see, and how often did it
-come back? Which cells did a ten-day survey never reach?
+What is the coverage performance of my satellite constellation, or what is the revisit?
 
-Polypix helps answer those questions You hand it batches of spherical regions and it hands back standard HEALPix cell IDs, which you then use for coverage maps, visibility counts, and revisit analysis.
-
-Polygon coverage accepts Cartesian directions as well as GeoJSON-like mappings
-and individual Shapely or other `__geo_interface__` geometries.
+Polypix helps answer those questions. Provide batches of spherical regions and it hands back standard HEALPix cell IDs, which you then use for coverage maps, visibility counts, and revisit analysis.
 
 ## Why Polypix
 
-The library was written for mission analysis, and a few decisions follow from
-that:
+The library was designed for mission analysis:
 
 - Everything takes batches. Whole arrays of regions go in, and what comes back
   is a NumPy array, not a Python object per region.
@@ -36,8 +31,6 @@ that:
 - It is fast. The geometry runs in Rust, and large calls release the GIL and use
   several cores. Both case studies below cover millions of cells in well under a
   second.
-- NumPy is the only runtime dependency. The wheels carry the compiled kernel, so
-  there is no system HEALPix library to find and no compiler to arrange.
 
 ## The grid
 
@@ -86,20 +79,8 @@ array([68085, 68086, 68087, 68088])
 
 Those are standard HEALPix RING indices in a NumPy `int64` array.
 
-To run the example yourself:
+## Showcases
 
-```bash
-pip install polypix
-```
-
-[Installation](install.md) covers the wheels and source builds, and
-[Getting started](guide.md) walks through the other region shapes.
-
-## What that looks like at scale
-
-Both of the case studies below run the same handful of operations at
-constellation scale. Each one is measured while the documentation is built, so
-the timings on those pages come from the same run that produced their figures.
 
 <div class="example-gallery">
   <a class="example-card" href="examples/communication-constellation.html">
@@ -118,12 +99,7 @@ the timings on those pages come from the same run that produced their figures.
   </a>
 </div>
 
-## Pick the coverage rule
-
-By default, a cell counts as covered when its center falls inside your region.
-Pass `mode="overlap"` when you instead need every cell the boundary touches.
-[Center-sampled coverage](concepts.md#center-sampled-coverage) shows exactly what
-the default includes and how overlap mode differs.
+## What Polypix doesn't do
 
 Everything upstream of the geometry stays in your own code. Orbit propagation,
 attitude, sensor models, and ellipsoid intersection all happen before Polypix
