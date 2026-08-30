@@ -27,6 +27,11 @@ documentation. Internal refactors, tests, and CI changes are omitted.
 - Capped oversized positive `threads` values at the native integer limit
   before applying the existing host thread limit.
 
+### Performance
+
+- Accelerated selected-cell cap counts for large cap batches and dense
+  `revisit(minimum_sources=1)` workloads whose state fits in cache.
+
 ## [0.4.0] — 2026-08-26
 
 ### Breaking changes

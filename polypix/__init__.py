@@ -376,8 +376,7 @@ class Coverage:
         internally, and large ones through a hash table, so memory follows
         what you asked for instead of the resolution.
 
-        Without ``cells``, the array-level equivalent is a one-liner and
-        usually faster than coming back through Polypix, so prefer it::
+        Without ``cells``, the array-level equivalent is a one-liner::
 
             np.bincount(coverage.cells, minlength=px.cell_count(resolution))
 

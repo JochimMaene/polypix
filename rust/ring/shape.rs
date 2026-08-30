@@ -46,7 +46,6 @@ pub(super) struct Cap {
     pub(super) axis: Vec3,
     pub(super) sine_radius: f64,
     pub(super) cosine_radius: f64,
-    pub(super) chord_radius: f64,
     pub(super) squared_chord_radius: f64,
     pub(super) full_sphere: bool,
     pub(super) minimum_z: f64,
@@ -271,16 +270,21 @@ fn cover_general_polygon(
     )
 }
 
+#[inline(always)]
+pub(super) fn squared_chord_contains(axis: Vec3, squared_chord_radius: f64, point: Vec3) -> bool {
+    let dx = point[0] - axis[0];
+    let dy = point[1] - axis[1];
+    let dz = point[2] - axis[2];
+    dx * dx + dy * dy + dz * dz <= squared_chord_radius
+}
+
 impl Cap {
     #[inline(always)]
     pub(super) fn contains(&self, point: Vec3) -> bool {
         if self.full_sphere {
             return true;
         }
-        let dx = point[0] - self.axis[0];
-        let dy = point[1] - self.axis[1];
-        let dz = point[2] - self.axis[2];
-        dx * dx + dy * dy + dz * dz <= self.squared_chord_radius
+        squared_chord_contains(self.axis, self.squared_chord_radius, point)
     }
 
     #[inline(always)]
@@ -349,6 +353,7 @@ pub(super) struct CapOverlap<'cap> {
     cap: &'cap Cap,
     resolution: u8,
     axis_cell: u64,
+    chord_radius: f64,
 }
 
 impl<'cap> CapOverlap<'cap> {
@@ -357,6 +362,7 @@ impl<'cap> CapOverlap<'cap> {
             cap,
             resolution,
             axis_cell: normalized_cell_at(cap.axis, resolution),
+            chord_radius: cap.squared_chord_radius.sqrt(),
         }
     }
 
@@ -373,7 +379,7 @@ impl<'cap> CapOverlap<'cap> {
         let boundary = CellBoundary::new(cell, self.resolution);
         let disk = CapDisk {
             axis: cap.axis,
-            chord_radius: cap.chord_radius,
+            chord_radius: self.chord_radius,
         };
         (0..4).any(|edge| cell_edge_within_cap(&boundary, edge, disk))
     }
@@ -414,7 +420,6 @@ pub(super) fn prepare_caps(centers: &[f64], radii: &[f64]) -> Result<Vec<Cap>, S
                 axis,
                 sine_radius,
                 cosine_radius,
-                chord_radius: 2.0 * half_chord,
                 squared_chord_radius: 4.0 * half_chord * half_chord,
                 full_sphere: effective_radius == std::f64::consts::PI,
                 minimum_z: minimum_z.clamp(-1.0, 1.0),

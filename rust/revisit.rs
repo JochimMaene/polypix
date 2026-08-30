@@ -349,26 +349,43 @@ pub(crate) fn revisit_stats(
     // hold one accumulator per cell, never one per run.
     if let Some(cell_count) = dense_state_length(resolution, total_hits, size_of::<StatsState>()) {
         if let Some(mut states) = try_dense_states(cell_count, StatsState::EMPTY) {
-            let mut touched: Vec<usize> = Vec::new();
-            for segment in 0..segment_count {
-                accumulate_dense_segment(
-                    sources,
-                    segment,
-                    minimum_sources,
-                    &mut states,
-                    &mut touched,
-                    resolution,
-                    stats_out_of_memory_error,
-                )?;
-                let segment = segment as u32;
-                for &cell in &touched {
-                    let state = &mut states[cell];
-                    if state.interval_count >= minimum_sources {
-                        state.observe(segment);
+            if minimum_sources == 1 {
+                // One hit is enough, so observe cells without counting touched sources.
+                for segment_index in 0..segment_count {
+                    let segment = segment_index as u32;
+                    for cells in sources.segment_slices(segment_index) {
+                        for &cell in cells {
+                            let Some(state) = states.get_mut(cell as usize) else {
+                                return Err(invalid_source_cell(cell, resolution));
+                            };
+                            if state.last_segment != segment {
+                                state.observe(segment);
+                            }
+                        }
                     }
-                    state.interval_count = 0;
                 }
-                touched.clear();
+            } else {
+                let mut touched: Vec<usize> = Vec::new();
+                for segment in 0..segment_count {
+                    accumulate_dense_segment(
+                        sources,
+                        segment,
+                        minimum_sources,
+                        &mut states,
+                        &mut touched,
+                        resolution,
+                        stats_out_of_memory_error,
+                    )?;
+                    let segment = segment as u32;
+                    for &cell in &touched {
+                        let state = &mut states[cell];
+                        if state.interval_count >= minimum_sources {
+                            state.observe(segment);
+                        }
+                        state.interval_count = 0;
+                    }
+                    touched.clear();
+                }
             }
             let observed = states.iter().filter(|state| state.run_count != 0).count();
             let mut out = stats_with_capacity(observed)?;
