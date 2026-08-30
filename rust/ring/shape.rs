@@ -402,9 +402,7 @@ pub(super) fn prepare_caps(centers: &[f64], radii: &[f64]) -> Result<Vec<Cap>, S
             }
             let effective_radius = (radius + CONTAINMENT_EPSILON).min(std::f64::consts::PI);
             let (sine_radius, cosine_radius) = effective_radius.sin_cos();
-            let cosine_difference = 1.0 - cosine_radius;
-            let squared_chord_radius =
-                sine_radius * sine_radius + cosine_difference * cosine_difference;
+            let half_chord = (0.5 * effective_radius).sin();
             let radial = axis[0].hypot(axis[1]);
             // A cap reaches a pole exactly when the axis-to-pole dot product
             // satisfies the same cosine predicate as any other point.
@@ -422,7 +420,7 @@ pub(super) fn prepare_caps(centers: &[f64], radii: &[f64]) -> Result<Vec<Cap>, S
                 axis,
                 sine_radius,
                 cosine_radius,
-                squared_chord_radius,
+                squared_chord_radius: 4.0 * half_chord * half_chord,
                 full_sphere: effective_radius == std::f64::consts::PI,
                 minimum_z: minimum_z.clamp(-1.0, 1.0),
                 maximum_z: maximum_z.clamp(-1.0, 1.0),
