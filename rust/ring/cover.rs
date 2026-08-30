@@ -794,6 +794,7 @@ pub(crate) fn count_caps_per_cell(
     if let Some(cells) = raw_cells {
         validate_cell_range(cells, resolution, "cells")?;
         let work = cells.len().saturating_mul(caps.len());
+        // Pack only the 32 bytes used by the inner loop so larger batches fit in cache.
         let mut tested_caps = Vec::new();
         tested_caps.try_reserve_exact(caps.len()).map_err(|_| {
             NativeError::out_of_memory(
@@ -828,10 +829,7 @@ pub(crate) fn count_caps_per_cell(
                     tested_caps
                         .iter()
                         .filter(|cap| {
-                            let dx = point[0] - cap[0];
-                            let dy = point[1] - cap[1];
-                            let dz = point[2] - cap[2];
-                            dx * dx + dy * dy + dz * dz <= cap[3]
+                            squared_chord_contains([cap[0], cap[1], cap[2]], cap[3], point)
                         })
                         .count() as i64
                 };

@@ -350,6 +350,7 @@ pub(crate) fn revisit_stats(
     if let Some(cell_count) = dense_state_length(resolution, total_hits, size_of::<StatsState>()) {
         if let Some(mut states) = try_dense_states(cell_count, StatsState::EMPTY) {
             if minimum_sources == 1 {
+                // One hit is enough, so observe cells without counting touched sources.
                 for segment_index in 0..segment_count {
                     let segment = segment_index as u32;
                     for cells in sources.segment_slices(segment_index) {

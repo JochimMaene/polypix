@@ -270,16 +270,21 @@ fn cover_general_polygon(
     )
 }
 
+#[inline(always)]
+pub(super) fn squared_chord_contains(axis: Vec3, squared_chord_radius: f64, point: Vec3) -> bool {
+    let dx = point[0] - axis[0];
+    let dy = point[1] - axis[1];
+    let dz = point[2] - axis[2];
+    dx * dx + dy * dy + dz * dz <= squared_chord_radius
+}
+
 impl Cap {
     #[inline(always)]
     pub(super) fn contains(&self, point: Vec3) -> bool {
         if self.full_sphere {
             return true;
         }
-        let dx = point[0] - self.axis[0];
-        let dy = point[1] - self.axis[1];
-        let dz = point[2] - self.axis[2];
-        dx * dx + dy * dy + dz * dz <= self.squared_chord_radius
+        squared_chord_contains(self.axis, self.squared_chord_radius, point)
     }
 
     #[inline(always)]
