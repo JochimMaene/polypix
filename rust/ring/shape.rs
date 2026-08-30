@@ -46,7 +46,6 @@ pub(super) struct Cap {
     pub(super) axis: Vec3,
     pub(super) sine_radius: f64,
     pub(super) cosine_radius: f64,
-    pub(super) chord_radius: f64,
     pub(super) squared_chord_radius: f64,
     pub(super) full_sphere: bool,
     pub(super) minimum_z: f64,
@@ -349,6 +348,7 @@ pub(super) struct CapOverlap<'cap> {
     cap: &'cap Cap,
     resolution: u8,
     axis_cell: u64,
+    chord_radius: f64,
 }
 
 impl<'cap> CapOverlap<'cap> {
@@ -357,6 +357,7 @@ impl<'cap> CapOverlap<'cap> {
             cap,
             resolution,
             axis_cell: normalized_cell_at(cap.axis, resolution),
+            chord_radius: cap.squared_chord_radius.sqrt(),
         }
     }
 
@@ -373,7 +374,7 @@ impl<'cap> CapOverlap<'cap> {
         let boundary = CellBoundary::new(cell, self.resolution);
         let disk = CapDisk {
             axis: cap.axis,
-            chord_radius: cap.chord_radius,
+            chord_radius: self.chord_radius,
         };
         (0..4).any(|edge| cell_edge_within_cap(&boundary, edge, disk))
     }
@@ -396,7 +397,9 @@ pub(super) fn prepare_caps(centers: &[f64], radii: &[f64]) -> Result<Vec<Cap>, S
             }
             let effective_radius = (radius + CONTAINMENT_EPSILON).min(std::f64::consts::PI);
             let (sine_radius, cosine_radius) = effective_radius.sin_cos();
-            let half_chord = (0.5 * effective_radius).sin();
+            let cosine_difference = 1.0 - cosine_radius;
+            let squared_chord_radius =
+                sine_radius * sine_radius + cosine_difference * cosine_difference;
             let radial = axis[0].hypot(axis[1]);
             // A cap reaches a pole exactly when the axis-to-pole dot product
             // satisfies the same cosine predicate as any other point.
@@ -414,8 +417,7 @@ pub(super) fn prepare_caps(centers: &[f64], radii: &[f64]) -> Result<Vec<Cap>, S
                 axis,
                 sine_radius,
                 cosine_radius,
-                chord_radius: 2.0 * half_chord,
-                squared_chord_radius: 4.0 * half_chord * half_chord,
+                squared_chord_radius,
                 full_sphere: effective_radius == std::f64::consts::PI,
                 minimum_z: minimum_z.clamp(-1.0, 1.0),
                 maximum_z: maximum_z.clamp(-1.0, 1.0),
