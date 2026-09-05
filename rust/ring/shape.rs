@@ -630,6 +630,27 @@ fn ring_offset_contains(
     contains(ring.radial * cosine, ring.radial * sine, ring.z)
 }
 
+/// Scan one ring's envelope for the interval fallback below. `ring_range`
+/// pads by a neighboring ring, so the cell guard restricts emission to this
+/// ring; rings partition cells, so neighbors' output is unaffected.
+fn scan_single_ring(
+    ring: &Ring,
+    bounds: &ConvexBounds,
+    resolution: u8,
+    contains: impl Fn(f64, f64, f64) -> bool,
+    visit: impl FnMut(u64) -> NativeResult<()>,
+) -> NativeResult<()> {
+    cover_cells_in_bounds::<false>(
+        ring.z,
+        ring.z,
+        bounds.longitude_intervals,
+        bounds.interval_count,
+        resolution,
+        |cell, x, y, z| cell >= ring.start && cell < ring.start + ring.cells && contains(x, y, z),
+        visit,
+    )
+}
+
 /// Emit one convex polygon's coverage from per-ring longitude intervals.
 ///
 /// On a fixed ring each edge's containment condition becomes a bound on the
@@ -677,31 +698,24 @@ fn cover_convex_intervals(
         return None;
     }
     let (first_ring, last_ring) = ring_range(nside, bounds.minimum_z, bounds.maximum_z);
-    // Solve every ring into one buffer before emitting anything, so a fallback
-    // never leaves a partial prefix behind.
-    let mut solved: Vec<RingPieces> = Vec::new();
-    if solved
-        .try_reserve((last_ring - first_ring + 1) as usize)
-        .is_err()
-    {
-        return None;
-    }
+    // Solve and emit one ring at a time: scratch state stays on the stack no
+    // matter how many rings the band holds.
+    let mut pieces = [(0.0, 0.0); MAX_RING_PIECES];
     for ring_index in first_ring..=last_ring {
         let ring = ring_info(nside, ring_index);
-        let mut entry = RingPieces {
-            pieces: [(0.0, 0.0); MAX_RING_PIECES],
-            count: 0,
-        };
-        entry.count =
-            convex_ring_intervals(edge_normals, ring.z, ring.radial, &mut entry.pieces)? as u8;
-        solved.push(entry);
-    }
-    for (offset, ring_index) in (first_ring..=last_ring).enumerate() {
-        let ring = ring_info(nside, ring_index);
         let step = TAU / ring.cells as f64;
-        let entry = &solved[offset];
+        let Some(piece_count) =
+            convex_ring_intervals(edge_normals, ring.z, ring.radial, &mut pieces)
+        else {
+            // Degenerate geometry or a tangency needing more pieces than fit
+            // the buffer: scan this ring's envelope instead.
+            if let Err(error) = scan_single_ring(&ring, bounds, resolution, &contains, &mut visit) {
+                return Some(Err(error));
+            }
+            continue;
+        };
         let mut next_unscanned: i64 = 0;
-        for &(start, end) in entry.pieces.iter().take(entry.count as usize) {
+        for &(start, end) in pieces.iter().take(piece_count) {
             let first_value = start / step - ring.shift;
             let last_value = end / step - ring.shift;
             let index_uncertainty = INDEX_UNCERTAINTY_ULPS * f64::EPSILON * ring.cells as f64;
@@ -740,13 +754,6 @@ fn cover_convex_intervals(
 /// small circles, so near a grazing tangency one ring can enter and leave the
 /// footprint several times; anything beyond this falls back to the scan.
 const MAX_RING_PIECES: usize = 8;
-
-/// Solved longitude pieces for one ring, stored so the solver runs once while
-/// a later fallback still cannot leave a partial prefix behind.
-struct RingPieces {
-    pieces: [(f64, f64); MAX_RING_PIECES],
-    count: u8,
-}
 
 // Solving one ring costs a few libm calls per edge; the bounding scan answers
 // narrower envelopes more cheaply. Gate on the widest ring's envelope in
@@ -1944,6 +1951,61 @@ mod tests {
             &[6],
             "128-gon",
         );
+    }
+
+    #[test]
+    fn convex_ring_intervals_give_up_past_eight_pieces() {
+        // Eight near-latitude edges excluding spread slivers: the surviving
+        // set is eight arcs, nine linear pieces once the branch cut splits
+        // one. The solver must decline instead of dropping a piece.
+        let normals = (0..8)
+            .map(|index| {
+                let angle =
+                    std::f64::consts::FRAC_PI_8 + index as f64 * std::f64::consts::FRAC_PI_4;
+                let (sine, cosine) = angle.sin_cos();
+                normalize([1.000_000_1e-14 * cosine, 1.000_000_1e-14 * sine, -1.0]).unwrap()
+            })
+            .collect::<Vec<_>>();
+        let mut pieces = [(0.0, 0.0); super::MAX_RING_PIECES];
+        assert!(super::convex_ring_intervals(&normals, 0.0, 1.0, &mut pieces).is_none());
+    }
+
+    #[test]
+    fn single_ring_fallback_matches_brute_force() {
+        // One benchmark-style square: the fallback helper must agree with
+        // per-center classification on the first, middle, and last ring,
+        // emitting nothing outside its own ring.
+        let vertices = [
+            lonlat(-0.35, -0.25),
+            lonlat(0.35, -0.25),
+            lonlat(0.35, 0.25),
+            lonlat(-0.35, 0.25),
+        ];
+        let quad = prepare_normalized_quad(vertices, false).unwrap();
+        let edge_normals = &quad.edge_normals[..quad.len];
+        let contains = |x: f64, y: f64, z: f64| contains_center(edge_normals, [x, y, z]);
+        let resolution = 7_u8;
+        let nside = 1_u64 << resolution;
+        let bounds = super::ConvexBounds::new(&quad.vertices[..quad.len], edge_normals);
+        let (minimum_z, maximum_z) = polygon_z_bounds(&quad.vertices[..quad.len], edge_normals);
+        let (first_ring, last_ring) = ring_range(nside, minimum_z, maximum_z);
+        for ring_index in [first_ring, (first_ring + last_ring) / 2, last_ring] {
+            let ring = ring_info(nside, ring_index);
+            let mut actual = Vec::new();
+            super::scan_single_ring(&ring, &bounds, resolution, contains, |cell| {
+                actual.push(cell);
+                Ok(())
+            })
+            .unwrap();
+            let mut expected = Vec::new();
+            for offset in 0..ring.cells {
+                let cell = ring.start + offset;
+                if contains_center(edge_normals, center(cell, resolution)) {
+                    expected.push(cell);
+                }
+            }
+            assert_eq!(actual, expected, "ring {ring_index}");
+        }
     }
 
     #[test]

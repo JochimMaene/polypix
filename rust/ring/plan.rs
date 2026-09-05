@@ -51,14 +51,6 @@ pub(super) const DENSE_ACCUMULATOR_PARALLEL_MAX_BYTES: usize = 256 * 1024 * 1024
 pub(super) const DENSE_ACCUMULATOR_PARALLEL_MIN_RING_VISITS: usize = 1 << 17;
 pub(super) const DENSE_ACCUMULATOR_PARALLEL_RING_VISIT_RATIO: usize = 1;
 
-// Selected cap counting over ring ranges prices two binary searches per
-// covered range against one emitted cell per hit. One hit costs a push plus a
-// reduction visit against a few integer compares per probe step; this divisor
-// keeps the range path to workloads where the probes stay well below the hits
-// they replace. It is estimated, so re-measure it against cover-and-count on
-// new hardware.
-pub(super) const SELECTED_RANGE_SEARCH_ADVANTAGE: f64 = 8.0;
-
 // The two ways to answer any selected query, priced in units of one
 // containment test. Testing every item against every selected cell also decodes
 // each cell centre from its RING index, which costs about 90 tests. Scanning the
