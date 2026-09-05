@@ -399,31 +399,53 @@ pub(crate) fn revisit_stats(
     }
 
     let grid_cell_count = ring::raw_cell_count(resolution);
-    let mut interval_counts: HashMap<u64, u32> = HashMap::new();
     let mut states: HashMap<u64, StatsState> = HashMap::new();
-    for segment in 0..segment_count {
-        count_sparse_segment(
-            sources,
-            segment,
-            &mut interval_counts,
-            grid_cell_count,
-            resolution,
-            stats_out_of_memory_error,
-        )?;
-        let segment = segment as u32;
-        for (cell, count) in interval_counts.drain() {
-            if count < minimum_sources {
-                continue;
+    if minimum_sources == 1 {
+        for segment_index in 0..segment_count {
+            let segment = segment_index as u32;
+            for cells in sources.segment_slices(segment_index) {
+                for &cell in cells {
+                    if cell >= grid_cell_count {
+                        return Err(invalid_source_cell(cell, resolution));
+                    }
+                    if states.len() == states.capacity() && !states.contains_key(&cell) {
+                        states
+                            .try_reserve(1)
+                            .map_err(|_| stats_out_of_memory_error())?;
+                    }
+                    let state = states.entry(cell).or_insert(StatsState::EMPTY);
+                    if state.last_segment != segment {
+                        state.observe(segment);
+                    }
+                }
             }
-            if states.len() == states.capacity() && !states.contains_key(&cell) {
+        }
+    } else {
+        let mut interval_counts: HashMap<u64, u32> = HashMap::new();
+        for segment in 0..segment_count {
+            count_sparse_segment(
+                sources,
+                segment,
+                &mut interval_counts,
+                grid_cell_count,
+                resolution,
+                stats_out_of_memory_error,
+            )?;
+            let segment = segment as u32;
+            for (cell, count) in interval_counts.drain() {
+                if count < minimum_sources {
+                    continue;
+                }
+                if states.len() == states.capacity() && !states.contains_key(&cell) {
+                    states
+                        .try_reserve(1)
+                        .map_err(|_| stats_out_of_memory_error())?;
+                }
                 states
-                    .try_reserve(1)
-                    .map_err(|_| stats_out_of_memory_error())?;
+                    .entry(cell)
+                    .or_insert(StatsState::EMPTY)
+                    .observe(segment);
             }
-            states
-                .entry(cell)
-                .or_insert(StatsState::EMPTY)
-                .observe(segment);
         }
     }
     let mut observed: Vec<(u64, StatsState)> = states.into_iter().collect();

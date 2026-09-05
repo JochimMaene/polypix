@@ -44,17 +44,12 @@ pub(super) const CANDIDATE_CENTER_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
 // per-worker share, and fall back to a single sequential buffer above it.
 pub(super) const DENSE_ACCUMULATOR_PARALLEL_MAX_BYTES: usize = 256 * 1024 * 1024;
 
-// The buffer budget above only rules out the largest grids; it says nothing
-// about whether merging is worth it at all. Every worker's buffer still has to
-// be walked once during the merge however little work its chunk did, so
-// parallelizing a scan that is not itself substantially larger than that walk
-// is a net loss - measured up to 2x slower than sequential for a few thousand
-// modest caps at resolution 9. `parallel_work` is a per-item proxy rather than
-// a cell count, so this ratio is calibrated against the measured crossover
-// (roughly 5x) rather than derived, with margin kept on the side that costs a
-// missed speedup rather than a regression. Being measured on one machine, it is
-// a prime candidate for re-measurement on new hardware.
-pub(super) const DENSE_ACCUMULATOR_PARALLEL_WORK_RATIO: usize = 8;
+// Dense cap counting touches two delta endpoints per emitted ring range; the
+// number of cells inside those ranges does not affect its work. Parallel scans
+// crossed over around one worker-buffer length and 128K visited rings on the
+// reference eight-core workload.
+pub(super) const DENSE_ACCUMULATOR_PARALLEL_MIN_RING_VISITS: usize = 1 << 17;
+pub(super) const DENSE_ACCUMULATOR_PARALLEL_RING_VISIT_RATIO: usize = 1;
 
 // The two ways to answer any selected query, priced in units of one
 // containment test. Testing every item against every selected cell also decodes
