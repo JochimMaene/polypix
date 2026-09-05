@@ -575,19 +575,329 @@ pub(super) fn cover_centers(
     edge_normals: &[Vec3],
     resolution: u8,
     contains: impl Fn(f64, f64, f64) -> bool,
-    visit: impl FnMut(u64) -> NativeResult<()>,
+    mut visit: impl FnMut(u64) -> NativeResult<()>,
 ) -> NativeResult<()> {
-    let (minimum_z, maximum_z) = polygon_z_bounds(vertices, edge_normals);
-    let (longitude_intervals, interval_count) = longitude_bounds(vertices, edge_normals);
+    // Bounds are computed once and shared: the interval solver gates on them,
+    // and the bounding scan needs them when the solver declines.
+    let bounds = ConvexBounds::new(vertices, edge_normals);
+    if let Some(result) =
+        cover_convex_intervals(edge_normals, resolution, &contains, &bounds, &mut visit)
+    {
+        return result;
+    }
     cover_cells_in_bounds::<false>(
-        minimum_z,
-        maximum_z,
-        longitude_intervals,
-        interval_count,
+        bounds.minimum_z,
+        bounds.maximum_z,
+        bounds.longitude_intervals,
+        bounds.interval_count,
         resolution,
         |_, x, y, z| contains(x, y, z),
         visit,
     )
+}
+
+/// Latitude/longitude envelope shared by the interval solver and the bounding
+/// scan, computed once per footprint.
+struct ConvexBounds {
+    minimum_z: f64,
+    maximum_z: f64,
+    longitude_intervals: [(f64, f64); 2],
+    interval_count: usize,
+}
+
+impl ConvexBounds {
+    fn new(vertices: &[Vec3], edge_normals: &[Vec3]) -> Self {
+        let (minimum_z, maximum_z) = polygon_z_bounds(vertices, edge_normals);
+        let (longitude_intervals, interval_count) = longitude_bounds(vertices, edge_normals);
+        Self {
+            minimum_z,
+            maximum_z,
+            longitude_intervals,
+            interval_count,
+        }
+    }
+}
+
+/// Test one ring offset against the convex predicate via its center.
+fn ring_offset_contains(
+    ring: &Ring,
+    offset: u64,
+    contains: impl Fn(f64, f64, f64) -> bool,
+) -> bool {
+    let step = TAU / ring.cells as f64;
+    let longitude = (offset as f64 + ring.shift) * step;
+    let (sine, cosine) = longitude.sin_cos();
+    contains(ring.radial * cosine, ring.radial * sine, ring.z)
+}
+
+/// Emit one convex polygon's coverage from per-ring longitude intervals.
+///
+/// On a fixed ring (`z`, `radial`), each edge's containment condition
+/// `dot(normal, point) >= -CONTAINMENT_EPSILON` becomes
+/// `P*cos(phi) + Q*sin(phi) >= threshold` with `P = nx*radial`,
+/// `Q = ny*radial`. Solving that for the allowed longitudes and intersecting
+/// across edges yields the covered spans directly, so thin diagonal footprints
+/// no longer test every center in a loose longitude envelope.
+///
+/// Returns `None` when the solver does not apply - a pole inside the polygon,
+/// a degenerate ring, a narrow envelope the bounding scan answers more
+/// cheaply, or any numerical surprise - and the caller keeps the bounding
+/// scan. Otherwise returns the coverage result. Interior cells of a solved
+/// span are emitted without re-testing; only the span endpoints are verified
+/// against the authoritative `contains` predicate, mirroring how
+/// `cap_interval_range` treats its own continuous solve.
+fn cover_convex_intervals(
+    edge_normals: &[Vec3],
+    resolution: u8,
+    contains: impl Fn(f64, f64, f64) -> bool,
+    bounds: &ConvexBounds,
+    mut visit: impl FnMut(u64) -> NativeResult<()>,
+) -> Option<NativeResult<()>> {
+    // A pole inside the polygon turns a ring's intersection into a full circle
+    // or its complement; the bounding scan already handles that exactly. The
+    // z-bounds only reach +-1 when the pole is a vertex or inside, so most
+    // footprints skip the explicit checks entirely.
+    if (bounds.maximum_z >= 1.0 && contains(0.0, 0.0, 1.0))
+        || (bounds.minimum_z <= -1.0 && contains(0.0, 0.0, -1.0))
+    {
+        return None;
+    }
+    // Solving costs libm calls per edge per ring, while many-sided footprints
+    // answer most centers with their interior-cap shortcut. The solver only
+    // pays for footprints whose per-center predicate tests every edge.
+    if edge_normals.len() > MAX_SOLVER_EDGES {
+        return None;
+    }
+    let nside = 1_u64 << resolution;
+    let (first_ring, last_ring) = ring_range(nside, bounds.minimum_z, bounds.maximum_z);
+    // Crude upper bound on any ring's envelope width from the longitude span
+    // alone: no ring holds more cells than the equatorial ring. Narrow spans
+    // decline here in pure arithmetic; only borderline spans pay the per-ring
+    // measurement below.
+    let longitude_span: f64 = bounds
+        .longitude_intervals
+        .iter()
+        .take(bounds.interval_count)
+        .map(|&(start, end)| (end - start).max(0.0))
+        .sum();
+    let crude_width = longitude_span / TAU * ((4_u64 * nside) as f64);
+    if crude_width < (INTERVAL_MIN_MEAN_WIDTH as f64) {
+        return None;
+    }
+    // The solver costs a few libm calls per edge per ring. Envelopes narrower
+    // than that - tall meridian strips, tiny footprints - test fewer centers
+    // than the solve costs, so keep the bounding scan there. Gate on the mean
+    // envelope width: totals alone cannot tell a wide span from a tall one.
+    let mut envelope_cells = 0_usize;
+    let mut ring_total = 0_usize;
+    for ring_index in first_ring..=last_ring {
+        let ring = ring_info(nside, ring_index);
+        let step = TAU / ring.cells as f64;
+        for &(start, end) in bounds
+            .longitude_intervals
+            .iter()
+            .take(bounds.interval_count)
+        {
+            let first = (start / step - ring.shift).ceil() as i64;
+            let last = (end / step - ring.shift).floor() as i64;
+            let first = first.max(0);
+            let last = last.min((ring.cells - 1) as i64);
+            if last >= first {
+                envelope_cells = envelope_cells.saturating_add((last - first + 1) as usize);
+            }
+        }
+        ring_total += 1;
+        // A huge envelope is worth solving without measuring the remainder.
+        if envelope_cells > INTERVAL_MAX_MEASURED_ENVELOPE {
+            break;
+        }
+    }
+    if envelope_cells <= INTERVAL_MAX_MEASURED_ENVELOPE
+        && envelope_cells / ring_total < INTERVAL_MIN_MEAN_WIDTH
+    {
+        return None;
+    }
+    // Solve every ring into one buffer before emitting anything, so a fallback
+    // never leaves a partial prefix behind.
+    let mut solved: Vec<RingPieces> = Vec::new();
+    if solved
+        .try_reserve((last_ring - first_ring + 1) as usize)
+        .is_err()
+    {
+        return None;
+    }
+    for ring_index in first_ring..=last_ring {
+        let ring = ring_info(nside, ring_index);
+        let mut entry = RingPieces {
+            pieces: [(0.0, 0.0); MAX_RING_PIECES],
+            count: 0,
+        };
+        entry.count =
+            convex_ring_intervals(edge_normals, ring.z, ring.radial, &mut entry.pieces)? as u8;
+        solved.push(entry);
+    }
+    for (offset, ring_index) in (first_ring..=last_ring).enumerate() {
+        let ring = ring_info(nside, ring_index);
+        let step = TAU / ring.cells as f64;
+        let entry = &solved[offset];
+        let mut next_unscanned: i64 = 0;
+        for &(start, end) in entry.pieces.iter().take(entry.count as usize) {
+            let first_value = start / step - ring.shift;
+            let last_value = end / step - ring.shift;
+            let index_uncertainty = INDEX_UNCERTAINTY_ULPS * f64::EPSILON * ring.cells as f64;
+            let ambiguous_first = (first_value - first_value.round()).abs() <= index_uncertainty;
+            let ambiguous_last = (last_value - last_value.round()).abs() <= index_uncertainty;
+            let nominal_first = first_value.ceil() as i64;
+            let nominal_last = last_value.floor() as i64;
+            let mut first = nominal_first - i64::from(ambiguous_first);
+            let mut last = nominal_last + i64::from(ambiguous_last);
+            first = first.max(0).max(next_unscanned);
+            last = last.min((ring.cells - 1) as i64);
+            // Endpoints are the only place the continuous solve can disagree
+            // with the discrete centers; correct them with the predicate.
+            while first <= last && !ring_offset_contains(&ring, first as u64, &contains) {
+                first += 1;
+            }
+            while last >= first && !ring_offset_contains(&ring, last as u64, &contains) {
+                last -= 1;
+            }
+            if first > last {
+                continue;
+            }
+            next_unscanned = last + 1;
+            for ring_offset in first..=last {
+                let cell = ring.start + ring_offset as u64;
+                if let Err(error) = visit(cell) {
+                    return Some(Err(error));
+                }
+            }
+        }
+    }
+    Some(Ok(()))
+}
+
+/// Maximum disjoint longitude pieces kept for one ring.
+///
+/// A latitude circle is a small circle, not a great circle, so near a grazing
+/// tangency with the polygon boundary one ring can enter and leave the
+/// footprint several times: each edge excludes one longitude gap, and the
+/// surviving set is the circle minus the union of those gaps. Eight pieces
+/// leaves wide margin over the one or two arcs convex footprints produce in
+/// practice; anything beyond falls back to the bounding scan.
+const MAX_RING_PIECES: usize = 8;
+
+/// Solved longitude pieces for one ring, stored so the solver runs once while
+/// a later fallback still cannot leave a partial prefix behind.
+struct RingPieces {
+    pieces: [(f64, f64); MAX_RING_PIECES],
+    count: u8,
+}
+
+// Solving one ring costs a few libm calls per edge; the bounding scan answers
+// narrower envelopes more cheaply. Gate on the mean envelope width in cells:
+// totals alone cannot tell a wide span (worth solving) from a tall narrow one
+// (worth scanning). Both constants are measured, so re-measure them on new
+// hardware alongside the other planning thresholds.
+const INTERVAL_MIN_MEAN_WIDTH: usize = 64;
+
+/// Stop measuring the envelope past this many cells: a span this large is
+/// worth solving without knowing its exact remainder.
+const INTERVAL_MAX_MEASURED_ENVELOPE: usize = 4096;
+
+/// Widest per-center predicate the solver takes on. Solving costs libm calls
+/// per edge per ring; footprints past this test most centers against every
+/// edge anyway, while many-sided ones short-circuit through their
+/// interior cap and scan faster than any solve.
+const MAX_SOLVER_EDGES: usize = 8;
+
+/// Solve one convex polygon's allowed longitudes on a fixed ring.
+///
+/// Each edge contributes `P*cos(phi) + Q*sin(phi) >= threshold`; intersect
+/// those single-edge sets across all edges into ascending linear pieces.
+/// Returns `None` for a degenerate ring the solver cannot describe, or when
+/// more than `MAX_RING_PIECES` disjoint pieces survive and the bounding scan
+/// stays the cheaper exact answer.
+fn convex_ring_intervals(
+    edge_normals: &[Vec3],
+    z: f64,
+    radial: f64,
+    pieces: &mut [(f64, f64); MAX_RING_PIECES],
+) -> Option<usize> {
+    if !radial.is_finite() || radial <= 0.0 {
+        return None;
+    }
+    let mut allowed: [(f64, f64); MAX_RING_PIECES] = [(0.0, 0.0); MAX_RING_PIECES];
+    allowed[0] = (0.0, TAU);
+    let mut allowed_count = 1_usize;
+    let mut edge_pieces = [(0.0, 0.0); 2];
+    for &normal in edge_normals {
+        let threshold = -normal[2] * z - CONTAINMENT_EPSILON;
+        let amplitude = (normal[0] * radial).hypot(normal[1] * radial);
+        if amplitude <= 0.0 {
+            // The edge condition is longitude-independent on this ring.
+            if threshold > 0.0 {
+                return Some(0);
+            }
+            continue;
+        }
+        let cosine = threshold / amplitude;
+        if cosine <= -1.0 {
+            continue;
+        }
+        if cosine >= 1.0 {
+            return Some(0);
+        }
+        let center = (normal[1] * radial).atan2(normal[0] * radial);
+        let half_width = cosine.clamp(-1.0, 1.0).acos();
+        let edge_count =
+            split_wrapped_interval(center - half_width, center + half_width, &mut edge_pieces);
+        let mut next = [(0.0, 0.0); MAX_RING_PIECES];
+        let mut next_count = 0_usize;
+        for allowed_piece in allowed.iter().take(allowed_count) {
+            for edge_piece in edge_pieces.iter().take(edge_count) {
+                let start = allowed_piece.0.max(edge_piece.0);
+                let end = allowed_piece.1.min(edge_piece.1);
+                if start <= end {
+                    if next_count == MAX_RING_PIECES {
+                        return None;
+                    }
+                    next[next_count] = (start, end);
+                    next_count += 1;
+                }
+            }
+        }
+        allowed = next;
+        allowed_count = next_count;
+        if allowed_count == 0 {
+            return Some(0);
+        }
+    }
+    // Ascending order keeps the per-piece `next_unscanned` deduplication exact
+    // when two surviving pieces share an endpoint cell.
+    allowed[..allowed_count].sort_unstable_by(|first, second| first.0.total_cmp(&second.0));
+    pieces[..allowed_count].copy_from_slice(&allowed[..allowed_count]);
+    Some(allowed_count)
+}
+
+/// Normalize a possibly wrapped `[start, end]` (radians, arbitrary offset)
+/// into up to two linear `[0, TAU)` pieces.
+fn split_wrapped_interval(start: f64, end: f64, pieces: &mut [(f64, f64); 2]) -> usize {
+    debug_assert!(end >= start);
+    if end - start >= TAU {
+        pieces[0] = (0.0, TAU);
+        return 1;
+    }
+    let normalized_start = start.rem_euclid(TAU);
+    let normalized_end = normalized_start + (end - start);
+    if normalized_end > TAU {
+        // Straddles the branch cut: emit the wrapped pair with the same
+        // rounding convention as the longitude-bound computation.
+        pieces[0] = (0.0, normalized_end - TAU);
+        pieces[1] = (normalized_start, TAU);
+        return 2;
+    }
+    pieces[0] = (normalized_start, normalized_end);
+    1
 }
 
 fn cover_cells_in_bounds<const PAD_LONGITUDE: bool>(
@@ -1351,12 +1661,26 @@ pub(super) fn prepare_sweep_footprint(
 #[cfg(test)]
 mod tests {
     use super::{
-        cell_edge_arc_intersection, prepare_caps, ring_info, CapOverlap, CellBoundary,
-        Intersection, MinorArc, PreparedFootprint, PreparedFootprintOverlap,
-        CELL_EDGE_DOT_LIPSCHITZ, CELL_EDGE_NODE_BUDGET, ROTATION_RESYNC_STEPS, TAU,
+        cell_edge_arc_intersection, cover_centers, cover_convex_intervals, polygon_z_bounds,
+        prepare_caps, prepare_normalized_quad, ring_info, CapOverlap, CellBoundary, Intersection,
+        MinorArc, PreparedFootprint, PreparedFootprintOverlap, CELL_EDGE_DOT_LIPSCHITZ,
+        CELL_EDGE_NODE_BUDGET, ROTATION_RESYNC_STEPS, TAU,
     };
-    use crate::geometry::{cross, dot, norm, CONTAINMENT_EPSILON};
-    use crate::ring::grid::raw_cell_count;
+    use crate::geometry::{
+        contains_center, cross, dot, norm, normalize, Vec3, CONTAINMENT_EPSILON,
+    };
+    use crate::ring::grid::{center, raw_cell_count, ring_range};
+
+    /// Whether the interval solver (rather than the bounding scan) answers a
+    /// convex footprint at one resolution.
+    fn solver_engages(
+        edge_normals: &[Vec3],
+        resolution: u8,
+        contains: impl Fn(f64, f64, f64) -> bool,
+        bounds: &super::ConvexBounds,
+    ) -> bool {
+        cover_convex_intervals(edge_normals, resolution, &contains, bounds, |_| Ok(())).is_some()
+    }
 
     fn lonlat(longitude_degrees: f64, latitude_degrees: f64) -> [f64; 3] {
         let longitude = longitude_degrees.to_radians();
@@ -1455,6 +1779,256 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(actual, expected, "cap resolution {resolution}");
         }
+    }
+
+    #[test]
+    fn convex_interval_cover_matches_brute_force_centers() {
+        // Deterministic xorshift: no rand dependency for one test.
+        fn next_u64(state: &mut u64) -> u64 {
+            let mut x = *state;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            *state = x;
+            x
+        }
+        fn uniform(state: &mut u64) -> f64 {
+            ((next_u64(state) >> 11) as f64) / 9_007_199_254_740_992.0
+        }
+
+        let mut state = 0x1234_5678_9ABC_DEF1_u64;
+        // 120 randomized spherical rectangles: even indices are axis-aligned
+        // squares, odd indices thin diagonal swaths whose longitude envelope
+        // dwarfs their area. The last quad sits on the pole to pin the
+        // fallback alongside the fast path.
+        for quad_index in 0..120 {
+            let diagonal = quad_index % 2 == 1;
+            let (axis, along, across) = if quad_index == 119 {
+                (normalize([0.02, -0.01, 1.0]).unwrap(), 0.3, 0.3)
+            } else {
+                let longitude = TAU * uniform(&mut state);
+                let z = 1.6 * uniform(&mut state) - 0.8;
+                let axis = normalize([
+                    (1.0 - z * z).sqrt() * longitude.cos(),
+                    (1.0 - z * z).sqrt() * longitude.sin(),
+                    z,
+                ])
+                .unwrap();
+                let (along, across) = if diagonal {
+                    (
+                        0.2 + 0.4 * uniform(&mut state),
+                        0.01 + 0.04 * uniform(&mut state),
+                    )
+                } else {
+                    let radius = 0.05 + 0.25 * uniform(&mut state);
+                    (radius, radius)
+                };
+                (axis, along, across)
+            };
+            let seed = if axis[2].abs() > 0.9 {
+                [1.0, 0.0, 0.0]
+            } else {
+                [0.0, 0.0, 1.0]
+            };
+            let unit = normalize(cross(seed, axis)).unwrap();
+            let other = cross(axis, unit);
+            // Diagonal swaths rotate the tangent frame 45 degrees so edges
+            // cross meridians instead of following them.
+            let rotation = if diagonal {
+                std::f64::consts::FRAC_PI_4
+            } else {
+                0.0
+            };
+            let (sine, cosine) = rotation.sin_cos();
+            let tangent_x = [
+                cosine * unit[0] + sine * other[0],
+                cosine * unit[1] + sine * other[1],
+                cosine * unit[2] + sine * other[2],
+            ];
+            let tangent_y = [
+                -sine * unit[0] + cosine * other[0],
+                -sine * unit[1] + cosine * other[1],
+                -sine * unit[2] + cosine * other[2],
+            ];
+            let corner = |sx: f64, sy: f64| {
+                normalize([
+                    axis[0] + tangent_x[0] * sx * along.tan() + tangent_y[0] * sy * across.tan(),
+                    axis[1] + tangent_x[1] * sx * along.tan() + tangent_y[1] * sy * across.tan(),
+                    axis[2] + tangent_x[2] * sx * along.tan() + tangent_y[2] * sy * across.tan(),
+                ])
+                .unwrap()
+            };
+            let quad = prepare_normalized_quad(
+                [
+                    corner(1.0, 1.0),
+                    corner(-1.0, 1.0),
+                    corner(-1.0, -1.0),
+                    corner(1.0, -1.0),
+                ],
+                false,
+            )
+            .unwrap();
+            let vertices = &quad.vertices[..quad.len];
+            let edge_normals = &quad.edge_normals[..quad.len];
+            let contains = |x: f64, y: f64, z: f64| contains_center(edge_normals, [x, y, z]);
+
+            // The pole quad must take the fallback; thin diagonal swaths at
+            // high resolution have wide envelopes and must take the interval
+            // solver, or the test stops exercising it. Small envelopes
+            // intentionally keep the bounding scan, so only pin those two.
+            let bounds = super::ConvexBounds::new(vertices, edge_normals);
+            let solved = solver_engages(edge_normals, 9, contains, &bounds);
+            if quad_index == 119 {
+                assert!(!solved, "pole quad must fall back");
+            } else if diagonal {
+                assert!(solved, "thin diagonal quad {quad_index} must solve");
+            }
+
+            for &resolution in &[6_u8, 9] {
+                let mut actual = Vec::new();
+                cover_centers(vertices, edge_normals, resolution, contains, |cell| {
+                    actual.push(cell);
+                    Ok(())
+                })
+                .unwrap();
+                let nside = 1_u64 << resolution;
+                let (minimum_z, maximum_z) = polygon_z_bounds(vertices, edge_normals);
+                let (first_ring, last_ring) = ring_range(nside, minimum_z, maximum_z);
+                let mut expected = Vec::new();
+                for ring_index in first_ring..=last_ring {
+                    let ring = ring_info(nside, ring_index);
+                    for offset in 0..ring.cells {
+                        let cell = ring.start + offset;
+                        if contains_center(edge_normals, center(cell, resolution)) {
+                            expected.push(cell);
+                        }
+                    }
+                }
+                assert_eq!(
+                    actual, expected,
+                    "quad {quad_index} resolution {resolution}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn convex_interval_cover_matches_many_sided_discs() {
+        use super::cover_centers;
+        use super::polygon_z_bounds;
+        use crate::geometry::{normalize, polygon_contains, prepare_polygon};
+        use crate::ring::grid::{center, ring_info, ring_range};
+
+        // Regular spherical polygons: the detailed-benchmark shape, where the
+        // production predicate carries the interior-cap shortcut.
+        let axis = normalize(lonlat(17.0, 23.0)).unwrap();
+        let seed = [0.0, 0.0, 1.0];
+        let tangent_x = normalize(cross(seed, axis)).unwrap();
+        let tangent_y = cross(axis, tangent_x);
+        for sides in [6_usize, 8] {
+            let radius = 20.0_f64.to_radians();
+            let raw = (0..sides)
+                .map(|index| {
+                    let angle = 2.0 * std::f64::consts::PI * index as f64 / sides as f64;
+                    let (sine, cosine) = angle.sin_cos();
+                    [
+                        radius.cos() * axis[0]
+                            + radius.sin() * (cosine * tangent_x[0] + sine * tangent_y[0]),
+                        radius.cos() * axis[1]
+                            + radius.sin() * (cosine * tangent_x[1] + sine * tangent_y[1]),
+                        radius.cos() * axis[2]
+                            + radius.sin() * (cosine * tangent_x[2] + sine * tangent_y[2]),
+                    ]
+                })
+                .collect::<Vec<_>>();
+            let polygon = prepare_polygon(&raw).unwrap();
+            let contains = |x: f64, y: f64, z: f64| polygon_contains(&polygon, [x, y, z]);
+            // A 40-degree disc has a wide envelope and must solve.
+            let bounds = super::ConvexBounds::new(&polygon.vertices, &polygon.edge_normals);
+            let solved = solver_engages(&polygon.edge_normals, 9, contains, &bounds);
+            assert!(solved, "{sides}-gon must solve");
+            for &resolution in &[6_u8, 9] {
+                let mut actual = Vec::new();
+                cover_centers(
+                    &polygon.vertices,
+                    &polygon.edge_normals,
+                    resolution,
+                    contains,
+                    |cell| {
+                        actual.push(cell);
+                        Ok(())
+                    },
+                )
+                .unwrap();
+                let nside = 1_u64 << resolution;
+                let (minimum_z, maximum_z) =
+                    polygon_z_bounds(&polygon.vertices, &polygon.edge_normals);
+                let (first_ring, last_ring) = ring_range(nside, minimum_z, maximum_z);
+                let mut expected = Vec::new();
+                for ring_index in first_ring..=last_ring {
+                    let ring = ring_info(nside, ring_index);
+                    for offset in 0..ring.cells {
+                        let cell = ring.start + offset;
+                        if polygon_contains(&polygon, center(cell, resolution)) {
+                            expected.push(cell);
+                        }
+                    }
+                }
+                assert_eq!(actual, expected, "{sides}-gon resolution {resolution}");
+            }
+        }
+
+        // Many-sided footprints answer most centers through their interior-cap
+        // shortcut, so the solver must decline them and the scan must still
+        // agree with the predicate cell by cell.
+        let sides = 128_usize;
+        let radius = 20.0_f64.to_radians();
+        let raw = (0..sides)
+            .map(|index| {
+                let angle = 2.0 * std::f64::consts::PI * index as f64 / sides as f64;
+                let (sine, cosine) = angle.sin_cos();
+                [
+                    radius.cos() * axis[0]
+                        + radius.sin() * (cosine * tangent_x[0] + sine * tangent_y[0]),
+                    radius.cos() * axis[1]
+                        + radius.sin() * (cosine * tangent_x[1] + sine * tangent_y[1]),
+                    radius.cos() * axis[2]
+                        + radius.sin() * (cosine * tangent_x[2] + sine * tangent_y[2]),
+                ]
+            })
+            .collect::<Vec<_>>();
+        let polygon = prepare_polygon(&raw).unwrap();
+        let contains = |x: f64, y: f64, z: f64| polygon_contains(&polygon, [x, y, z]);
+        let bounds = super::ConvexBounds::new(&polygon.vertices, &polygon.edge_normals);
+        let solved = solver_engages(&polygon.edge_normals, 9, contains, &bounds);
+        assert!(!solved, "128-gon must keep the bounding scan");
+        let resolution = 6_u8;
+        let mut actual = Vec::new();
+        cover_centers(
+            &polygon.vertices,
+            &polygon.edge_normals,
+            resolution,
+            contains,
+            |cell| {
+                actual.push(cell);
+                Ok(())
+            },
+        )
+        .unwrap();
+        let nside = 1_u64 << resolution;
+        let (minimum_z, maximum_z) = polygon_z_bounds(&polygon.vertices, &polygon.edge_normals);
+        let (first_ring, last_ring) = ring_range(nside, minimum_z, maximum_z);
+        let mut expected = Vec::new();
+        for ring_index in first_ring..=last_ring {
+            let ring = ring_info(nside, ring_index);
+            for offset in 0..ring.cells {
+                let cell = ring.start + offset;
+                if polygon_contains(&polygon, center(cell, resolution)) {
+                    expected.push(cell);
+                }
+            }
+        }
+        assert_eq!(actual, expected, "128-gon resolution {resolution}");
     }
 
     #[test]

@@ -763,6 +763,155 @@ pub(super) fn count_cap_chunk(
     Ok(deltas)
 }
 
+/// Count caps over a selection without materializing coverage.
+///
+/// Sorts and deduplicates the requested cells - retaining each request's
+/// position so the original order and duplicates restore with one gather -
+/// then reuses `visit_cap_ranges` directly: every covered range
+/// binary-searches its endpoints in the sorted selection and updates a
+/// difference array over selection positions, prefix-summed at the end.
+///
+/// Memory stays proportional to the selection: no full-grid accumulator and
+/// no intermediate coverage array. It wins where covering would emit far more
+/// cells than the selection holds - few huge caps against a moderate request -
+/// and the caller keeps covering everywhere else.
+pub(super) fn count_caps_selected_via_ranges(
+    caps: &[Cap],
+    resolution: u8,
+    cells: &[u64],
+    threads: Option<usize>,
+) -> NativeResult<Vec<i64>> {
+    let oom = || {
+        NativeError::out_of_memory("Selected cap-count working data is too large to fit in memory.")
+    };
+    // Order the requests so duplicates share one difference entry; `position`
+    // maps every request - duplicates included - back to its unique slot.
+    let mut order = Vec::new();
+    order.try_reserve_exact(cells.len()).map_err(|_| oom())?;
+    order.extend(0..cells.len());
+    order.sort_unstable_by_key(|&index| cells[index]);
+    let mut unique = Vec::new();
+    unique.try_reserve_exact(cells.len()).map_err(|_| oom())?;
+    let mut position = Vec::new();
+    position.try_reserve_exact(cells.len()).map_err(|_| oom())?;
+    position.resize(cells.len(), 0_usize);
+    for &index in &order {
+        if unique.last() != Some(&cells[index]) {
+            unique.push(cells[index]);
+        }
+        position[index] = unique.len() - 1;
+    }
+    drop(order);
+    if unique.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ring_visits = caps.iter().fold(0_usize, |total, cap| {
+        total.saturating_add(cap_count_ring_visits(cap, resolution))
+    });
+    // Per-worker difference buffers scale with the selection, not the grid,
+    // but the same total budget still bounds their fan-out.
+    let probable_workers = threads.unwrap_or_else(rayon::current_num_threads).max(1);
+    let buffer_per_worker = (unique.len() + 1).saturating_mul(size_of::<i64>());
+    let memory_bounded_workers = if buffer_per_worker == 0 {
+        probable_workers
+    } else {
+        (DENSE_ACCUMULATOR_PARALLEL_MAX_BYTES / buffer_per_worker).max(1)
+    };
+    let parallel_worthwhile = threads != Some(1)
+        && ring_visits >= DENSE_ACCUMULATOR_PARALLEL_MIN_RING_VISITS
+        && probable_workers.min(caps.len().max(1)) >= 2
+        && memory_bounded_workers >= 2;
+    let partial = run_with_parallelism(caps.len(), parallel_worthwhile, threads, |parallel| {
+        let worker_count = if parallel {
+            rayon::current_num_threads()
+                .min(caps.len())
+                .min(memory_bounded_workers)
+                .max(1)
+        } else {
+            1
+        };
+        let chunk_size = caps.len().div_ceil(worker_count);
+        let ranges = (0..caps.len())
+            .step_by(chunk_size)
+            .map(|start| start..(start + chunk_size).min(caps.len()))
+            .collect::<Vec<_>>();
+        let count_chunk = |range: Range<usize>| -> NativeResult<Vec<i64>> {
+            let mut deltas = Vec::new();
+            deltas
+                .try_reserve_exact(unique.len() + 1)
+                .map_err(|_| oom())?;
+            deltas.resize(unique.len() + 1, 0_i64);
+            for index in range {
+                visit_cap_ranges(&caps[index], resolution, |covered| {
+                    let start = unique.partition_point(|&cell| cell < covered.start);
+                    let end = unique.partition_point(|&cell| cell < covered.end);
+                    if start < end {
+                        deltas[start] += 1;
+                        deltas[end] -= 1;
+                    }
+                });
+            }
+            Ok(deltas)
+        };
+        if parallel {
+            ranges.into_par_iter().map(count_chunk).collect::<Vec<_>>()
+        } else {
+            ranges.into_iter().map(count_chunk).collect::<Vec<_>>()
+        }
+    })?;
+    let mut partial = partial.into_iter().collect::<Result<Vec<_>, _>>()?;
+    let mut deltas = partial
+        .pop()
+        .expect("at least one cap produces one partial result");
+    for other in partial {
+        for (total, value) in deltas.iter_mut().zip(other) {
+            *total += value;
+        }
+    }
+    let mut running = 0_i64;
+    for value in deltas.iter_mut().take(unique.len()) {
+        running += *value;
+        debug_assert!(running >= 0);
+        *value = running;
+    }
+    let mut counts = Vec::new();
+    counts.try_reserve_exact(cells.len()).map_err(|_| oom())?;
+    counts.resize(cells.len(), 0_i64);
+    for (output, &slot) in counts.iter_mut().zip(position.iter()) {
+        *output = deltas[slot];
+    }
+    Ok(counts)
+}
+
+/// Answer a selected cap count from ring ranges when that beats covering.
+///
+/// `None` keeps the existing decline: the caller covers once and counts.
+/// The estimate prices two binary searches per covered range against one
+/// emitted cell per hit; ranges are bounded by two per visited ring without
+/// preparing a single cap.
+fn selected_range_count_worthwhile(radii: &[f64], resolution: u8, selected: usize) -> bool {
+    if selected == 0 {
+        return false;
+    }
+    let nside = 1_u64 << resolution;
+    let total_rings = (4 * nside).saturating_sub(1).max(1) as f64;
+    let rings_per_radian = total_rings / std::f64::consts::PI;
+    let ring_visits = radii.iter().fold(0_usize, |total, &radius| {
+        if radius >= std::f64::consts::PI {
+            return total.saturating_add(1);
+        }
+        let span = (2.0 * radius * rings_per_radian).ceil().max(1.0);
+        total.saturating_add((span.min(total_rings)) as usize)
+    });
+    let probe_depth = (selected + 1).ilog2() as usize + 1;
+    let searches = ring_visits.saturating_mul(probe_depth.saturating_mul(2));
+    let hits = expected_total_hits(radii, resolution);
+    // One emitted hit costs a push plus a reduction visit; one probe step is
+    // a few integer compares. Fire only while the probes stay well below the
+    // hits they replace, keeping the existing decline everywhere near parity.
+    (searches as f64) < hits / SELECTED_RANGE_SEARCH_ADVANTAGE
+}
+
 /// Count how many caps contain each cell.
 ///
 /// Returns `None` for a selected query when building coverage once and counting
@@ -776,13 +925,25 @@ pub(crate) fn count_caps_per_cell(
 ) -> NativeResult<Option<Vec<i64>>> {
     debug_assert!(resolution <= MAX_RESOLUTION);
     // Decide before preparing or validating anything, so that declining costs
-    // almost nothing: the caller then covers once and counts instead.
+    // almost nothing: the caller then covers once and counts instead. The
+    // range-diff answer below prepares caps, so it only runs when its own
+    // estimate already beats covering.
     if let Some(cells) = raw_cells {
         if scanning_beats_testing(
             expected_total_hits(radii, resolution),
             radii.len(),
             cells.len(),
         ) {
+            if selected_range_count_worthwhile(radii, resolution, cells.len()) {
+                let caps = prepare_caps(centers, radii)?;
+                validate_cell_range(cells, resolution, "cells")?;
+                if caps.len() > i64::MAX as usize {
+                    return Err("Too many caps to represent overlap counts as int64."
+                        .to_owned()
+                        .into());
+                }
+                return count_caps_selected_via_ranges(&caps, resolution, cells, threads).map(Some);
+            }
             return Ok(None);
         }
     }
@@ -1212,8 +1373,12 @@ fn dense_accumulator_parallel_worthwhile(
 
 #[cfg(test)]
 mod tests {
-    use super::{count_caps_per_cell, dense_accumulator_parallel_worthwhile, raw_cell_count};
+    use super::{
+        count_caps_per_cell, count_caps_selected_via_ranges, dense_accumulator_parallel_worthwhile,
+        raw_cell_count,
+    };
     use crate::ring::fixtures::caps_along_equator;
+    use crate::ring::grid::center;
     use crate::ring::shape::{cap_count_ring_visits, prepare_caps};
 
     #[test]
@@ -1229,6 +1394,79 @@ mod tests {
         let few = (0..1000_u64).collect::<Vec<_>>();
         let direct = count_caps_per_cell(&centers, &radii, 8, Some(&few), Some(1)).unwrap();
         assert_eq!(direct.map(|counts| counts.len()), Some(few.len()));
+    }
+
+    #[test]
+    fn selected_range_counts_match_direct_reference() {
+        // Deterministic xorshift: no rand dependency for one test.
+        fn next_u64(state: &mut u64) -> u64 {
+            let mut x = *state;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            *state = x;
+            x
+        }
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        let resolution = 5_u8;
+        let grid = raw_cell_count(resolution);
+        // Mixed batch: small caps, one huge cap, one full-sphere cap.
+        let (mut centers, mut radii) = caps_along_equator(30, 0.05);
+        centers.extend_from_slice(&[0.0, 0.0, 1.0, 0.0, 1.0, 0.0]);
+        radii.extend_from_slice(&[1.4, std::f64::consts::PI]);
+        let caps = prepare_caps(&centers, &radii).unwrap();
+        let reference = |cells: &[u64]| {
+            cells
+                .iter()
+                .map(|&cell| {
+                    let point = center(cell, resolution);
+                    caps.iter().filter(|cap| cap.contains(point)).count() as i64
+                })
+                .collect::<Vec<_>>()
+        };
+        // Empty, duplicate, unsorted, contiguous, and strided selections.
+        let mut selections = vec![
+            Vec::new(),
+            vec![7_u64, 3, 7, 3, 7],
+            (0..500_u64).map(|index| (index * 37) % grid).collect(),
+            (0..2000_u64).collect(),
+            (0..grid).step_by(7).collect(),
+        ];
+        selections.push((0..1000_u64).map(|_| next_u64(&mut state) % grid).collect());
+        for cells in &selections {
+            let expected = reference(cells);
+            let actual = count_caps_selected_via_ranges(&caps, resolution, cells, Some(1)).unwrap();
+            assert_eq!(actual, expected, "selection of {}", cells.len());
+        }
+        // Thread counts must agree, duplicates included.
+        let cells = selections[2].clone();
+        let expected = reference(&cells);
+        for threads in [None, Some(2), Some(8)] {
+            let actual =
+                count_caps_selected_via_ranges(&caps, resolution, &cells, threads).unwrap();
+            assert_eq!(actual, expected, "threads={threads:?}");
+        }
+    }
+
+    #[test]
+    fn selected_range_counts_fire_for_few_huge_caps() {
+        // Few huge caps against a moderate request: covering would emit far
+        // more cells than the selection holds, so the kernel answers from
+        // ring ranges instead of declining.
+        let (centers, radii) = caps_along_equator(4, 2.0);
+        let cells = (0..20_000_u64).collect::<Vec<_>>();
+        let counts = count_caps_per_cell(&centers, &radii, 8, Some(&cells), Some(1))
+            .unwrap()
+            .expect("range counting must fire here");
+        let caps = prepare_caps(&centers, &radii).unwrap();
+        let expected = cells
+            .iter()
+            .map(|&cell| {
+                let point = center(cell, 8);
+                caps.iter().filter(|cap| cap.contains(point)).count() as i64
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(counts, expected);
     }
 
     #[test]
