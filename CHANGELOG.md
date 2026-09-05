@@ -7,6 +7,8 @@ documentation. Internal refactors, tests, and CI changes are omitted.
 
 ## Unreleased
 
+## [0.5.0] — 2026-09-05
+
 ### Breaking changes
 
 - Renamed the first `cover_polygon()` parameter from `polygons_xyz` to
@@ -139,7 +141,8 @@ available under their original license terms.
 - Returned packed HEALPix NESTED cell IDs with center and boundary helpers.
 - Published Python 3.12 wheels for Linux and macOS.
 
-[Unreleased]: https://github.com/JochimMaene/polypix/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/JochimMaene/polypix/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/JochimMaene/polypix/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/JochimMaene/polypix/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/JochimMaene/polypix/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/JochimMaene/polypix/compare/v0.2.0...v0.2.1
