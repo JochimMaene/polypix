@@ -14,6 +14,10 @@ documentation. Internal refactors, tests, and CI changes are omitted.
   envelopes keep the existing scan.
 - Stopped full-sphere caps from triggering parallel dense accumulation when
   counting caps per cell.
+- Precompute overlap arcs and vertex cells once per footprint instead of once
+  per tested cell in overlap coverage.
+- Answer sparse revisit statistics for a single minimum source without the
+  intermediate counting map.
 
 ## [0.5.0] — 2026-09-05
 

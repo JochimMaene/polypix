@@ -214,7 +214,7 @@ pub(super) fn compute_candidate_overlap_coverage<T: Send + Sync>(
     threads: Option<usize>,
     prepare: impl Fn(usize) -> Result<T, String> + Send + Sync,
     z_bounds: impl Fn(&T) -> (f64, f64) + Send + Sync,
-    overlaps: impl Fn(&T, u64) -> bool + Send + Sync,
+    overlaps: impl Fn(&T, u64, Vec3) -> bool + Send + Sync,
 ) -> NativeResult<Coverage> {
     let prepare_all = |parallel| {
         let prepared = if parallel {
@@ -229,9 +229,14 @@ pub(super) fn compute_candidate_overlap_coverage<T: Send + Sync>(
     };
     let compute = |items: &[T], parallel| {
         let plan = plan_item_candidates(items, candidates, resolution, parallel, &z_bounds);
-        compute_planned_candidate_cells(item_count, &plan, candidates, parallel, |index, cell| {
-            overlaps(&items[index], cell)
-        })
+        compute_planned_candidate_cells(
+            item_count,
+            &plan,
+            candidates,
+            resolution,
+            parallel,
+            |index, cell, point| overlaps(&items[index], cell, point),
+        )
     };
     let preparation_work =
         candidate_preparation_work(item_count, candidates.len(), CANDIDATE_PREPARATION_WORK);
@@ -252,8 +257,9 @@ pub(super) fn compute_candidate_overlap_coverage<T: Send + Sync>(
                 item_count,
                 &plan,
                 candidates,
+                resolution,
                 parallel,
-                |index, cell| overlaps(&items[index], cell),
+                |index, cell, point| overlaps(&items[index], cell, point),
             )
         },
     )?
@@ -350,7 +356,7 @@ pub(super) fn compute_mixed_coverage(
                         .map(|footprint| PreparedFootprintOverlap::new(footprint, resolution))
                 },
                 PreparedFootprintOverlap::z_bounds,
-                |footprint, cell| footprint.overlaps_cell(cell),
+                |footprint, cell, point| footprint.overlaps_cell_at(cell, point),
             )
         } else {
             compute_candidate_coverage(
@@ -540,7 +546,11 @@ pub(crate) fn cover_prepared_regions(
                             (bounds.0.min(minimum), bounds.1.max(maximum))
                         })
                 },
-                |polygons, cell| polygons.iter().any(|polygon| polygon.overlaps_cell(cell)),
+                |polygons, cell, point| {
+                    polygons
+                        .iter()
+                        .any(|polygon| polygon.overlaps_cell_at(cell, point))
+                },
             )
         } else {
             compute_candidate_coverage(
@@ -672,8 +682,9 @@ pub(crate) fn cover_caps(
                     caps.len(),
                     plan,
                     candidates,
+                    resolution,
                     parallel,
-                    |index, cell| overlaps[index].overlaps_cell(cell),
+                    |index, cell, point| overlaps[index].overlaps_cell_at(cell, point),
                 )
             };
             let preparation_work = candidate_preparation_work(caps.len(), candidates.len(), 0);
@@ -860,8 +871,11 @@ pub(crate) fn count_caps_per_cell(
         return Ok(Some(counts));
     }
 
-    let ring_visits = caps.iter().fold(0_usize, |total, cap| {
-        total.saturating_add(cap_count_ring_visits(cap, resolution))
+    // Pricing every cap costs two binary searches each, which on a batch of
+    // ten thousand is itself a measurable share of the count. Sample instead,
+    // as every other planning estimate here does.
+    let ring_visits = sampled_total(caps.len(), |index| {
+        cap_count_ring_visits(&caps[index], resolution)
     });
     let parallel_worthwhile = dense_accumulator_parallel_worthwhile(
         cell_count.saturating_add(1),
@@ -1018,7 +1032,7 @@ pub(crate) fn cover_sweep(
                         .map(|footprint| PreparedFootprintOverlap::new(footprint, resolution))
                 },
                 PreparedFootprintOverlap::z_bounds,
-                |footprint, cell| footprint.overlaps_cell(cell),
+                |footprint, cell, point| footprint.overlaps_cell_at(cell, point),
             )
         } else {
             compute_candidate_coverage(
@@ -1150,9 +1164,11 @@ pub(super) fn compute_planned_candidates(
 
 fn compute_candidate_cell_chunk_with(
     plan: &CandidatePlan,
+    centers: Option<&[Vec3]>,
     candidates: &[u64],
     range: Range<usize>,
-    overlaps: impl Fn(usize, u64) -> bool,
+    resolution: u8,
+    overlaps: impl Fn(usize, u64, Vec3) -> bool,
 ) -> NativeResult<Coverage> {
     let mut coverage = Coverage {
         cells: Vec::new(),
@@ -1164,10 +1180,20 @@ fn compute_candidate_cell_chunk_with(
         .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
     coverage.offsets.push(0);
     for index in range {
-        for candidate_index in plan.ranges[index].clone() {
-            let cell = candidates[candidate_index];
-            if overlaps(index, cell) {
-                push_coverage_cell(&mut coverage.cells, cell, 1)?;
+        if let Some(centers) = centers {
+            for candidate_index in plan.ranges[index].clone() {
+                let cell = candidates[candidate_index];
+                let point = centers[candidate_index - plan.center_start];
+                if overlaps(index, cell, point) {
+                    push_coverage_cell(&mut coverage.cells, cell, 1)?;
+                }
+            }
+        } else {
+            for candidate_index in plan.ranges[index].clone() {
+                let cell = candidates[candidate_index];
+                if overlaps(index, cell, center(cell, resolution)) {
+                    push_coverage_cell(&mut coverage.cells, cell, 1)?;
+                }
             }
         }
         coverage.offsets.push(coverage.cells.len() as u64);
@@ -1179,11 +1205,20 @@ fn compute_planned_candidate_cells(
     item_count: usize,
     plan: &CandidatePlan,
     candidates: &[u64],
+    resolution: u8,
     parallel: bool,
-    overlaps: impl Fn(usize, u64) -> bool + Send + Sync,
+    overlaps: impl Fn(usize, u64, Vec3) -> bool + Send + Sync,
 ) -> NativeResult<Coverage> {
+    let centers = candidate_centers(plan, candidates, resolution, parallel)?;
     compute_coverage_chunks(item_count, parallel, |range| {
-        compute_candidate_cell_chunk_with(plan, candidates, range, &overlaps)
+        compute_candidate_cell_chunk_with(
+            plan,
+            centers.as_deref(),
+            candidates,
+            range,
+            resolution,
+            &overlaps,
+        )
     })
 }
 

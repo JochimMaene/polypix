@@ -17,8 +17,8 @@ use crate::geometry::{
 
 use super::cover::push_coverage_cell;
 use super::grid::{
-    center, face_coordinate, normalized_cell_at, raw_cell_count, ring_info, ring_range,
-    ring_to_face_xy, Ring,
+    face_coordinate, normalized_cell_at, raw_cell_count, ring_info, ring_range, ring_to_face_xy,
+    Ring,
 };
 
 pub(super) const ROTATION_RESYNC_STEPS: u64 = 64;
@@ -366,11 +366,7 @@ impl<'cap> CapOverlap<'cap> {
         }
     }
 
-    pub(super) fn overlaps_cell(&self, cell: u64) -> bool {
-        self.overlaps_cell_at(cell, center(cell, self.resolution))
-    }
-
-    fn overlaps_cell_at(&self, cell: u64, point: Vec3) -> bool {
+    pub(super) fn overlaps_cell_at(&self, cell: u64, point: Vec3) -> bool {
         let cap = self.cap;
         if cap.full_sphere || cap.contains(point) {
             return true;
@@ -700,16 +696,32 @@ fn cover_convex_intervals(
     let (first_ring, last_ring) = ring_range(nside, bounds.minimum_z, bounds.maximum_z);
     // Solve and emit one ring at a time: scratch state stays on the stack no
     // matter how many rings the band holds.
+    let ring_table = cached_scan_rings(resolution);
     let mut pieces = [(0.0, 0.0); MAX_RING_PIECES];
     for ring_index in first_ring..=last_ring {
-        let ring = ring_info(nside, ring_index);
-        let step = TAU / ring.cells as f64;
+        let uncached;
+        let scan_ring = if let Some(table) = ring_table {
+            &table[(ring_index - 1) as usize]
+        } else {
+            let ring = ring_info(nside, ring_index);
+            let step = TAU / ring.cells as f64;
+            let (step_sine, step_cosine) = step.sin_cos();
+            uncached = ScanRing {
+                ring,
+                step,
+                step_sine,
+                step_cosine,
+            };
+            &uncached
+        };
+        let ring = &scan_ring.ring;
+        let step = scan_ring.step;
         let Some(piece_count) =
             convex_ring_intervals(edge_normals, ring.z, ring.radial, &mut pieces)
         else {
             // Degenerate geometry or a tangency needing more pieces than fit
             // the buffer: scan this ring's envelope instead.
-            if let Err(error) = scan_single_ring(&ring, bounds, resolution, &contains, &mut visit) {
+            if let Err(error) = scan_single_ring(ring, bounds, resolution, &contains, &mut visit) {
                 return Some(Err(error));
             }
             continue;
@@ -729,10 +741,10 @@ fn cover_convex_intervals(
             last = last.min((ring.cells - 1) as i64);
             // Endpoints are the only place the continuous solve can disagree
             // with the discrete centers; correct them with the predicate.
-            while first <= last && !ring_offset_contains(&ring, first as u64, &contains) {
+            while first <= last && !ring_offset_contains(ring, first as u64, &contains) {
                 first += 1;
             }
-            while last >= first && !ring_offset_contains(&ring, last as u64, &contains) {
+            while last >= first && !ring_offset_contains(ring, last as u64, &contains) {
                 last -= 1;
             }
             if first > last {
@@ -1440,11 +1452,7 @@ impl<T: std::borrow::Borrow<PreparedFootprint>> PreparedFootprintOverlap<T> {
         self.footprint.borrow().z_bounds()
     }
 
-    pub(super) fn overlaps_cell(&self, cell: u64) -> bool {
-        self.overlaps_cell_at(cell, center(cell, self.resolution))
-    }
-
-    fn overlaps_cell_at(&self, cell: u64, point: Vec3) -> bool {
+    pub(super) fn overlaps_cell_at(&self, cell: u64, point: Vec3) -> bool {
         if self.footprint.borrow().contains(point) || self.vertex_cells.contains(&cell) {
             return true;
         }
@@ -1779,7 +1787,7 @@ mod tests {
                 footprint.cover_overlap(resolution, &mut actual).unwrap();
                 let overlap = PreparedFootprintOverlap::new(footprint, resolution);
                 let expected = (0..raw_cell_count(resolution))
-                    .filter(|&cell| overlap.overlaps_cell(cell))
+                    .filter(|&cell| overlap.overlaps_cell_at(cell, center(cell, resolution)))
                     .collect::<Vec<_>>();
                 assert_eq!(actual, expected, "polygon resolution {resolution}");
             }
@@ -1788,7 +1796,7 @@ mod tests {
             cap.cover_overlap(resolution, &mut actual).unwrap();
             let overlap = CapOverlap::new(&cap, resolution);
             let expected = (0..raw_cell_count(resolution))
-                .filter(|&cell| overlap.overlaps_cell(cell))
+                .filter(|&cell| overlap.overlaps_cell_at(cell, center(cell, resolution)))
                 .collect::<Vec<_>>();
             assert_eq!(actual, expected, "cap resolution {resolution}");
         }
