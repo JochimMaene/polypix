@@ -12,6 +12,8 @@ documentation. Internal refactors, tests, and CI changes are omitted.
 - Cover convex polygons and sweep segments from per-ring longitude intervals
   instead of testing every center in the longitude envelope, while narrow
   envelopes keep the existing scan.
+- Stopped full-sphere caps from triggering parallel dense accumulation when
+  counting caps per cell.
 
 ## [0.5.0] — 2026-09-05
 

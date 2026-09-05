@@ -1612,10 +1612,10 @@ pub(super) fn prepare_sweep_footprint(
 #[cfg(test)]
 mod tests {
     use super::{
-        cell_edge_arc_intersection, cover_centers, cover_convex_intervals, polygon_z_bounds,
-        prepare_caps, prepare_normalized_quad, ring_info, CapOverlap, CellBoundary, Intersection,
-        MinorArc, PreparedFootprint, PreparedFootprintOverlap, CELL_EDGE_DOT_LIPSCHITZ,
-        CELL_EDGE_NODE_BUDGET, ROTATION_RESYNC_STEPS, TAU,
+        cell_edge_arc_intersection, cover_cells_in_bounds, cover_centers, cover_convex_intervals,
+        polygon_z_bounds, prepare_caps, prepare_normalized_quad, ring_info, CapOverlap,
+        CellBoundary, Intersection, MinorArc, PreparedFootprint, PreparedFootprintOverlap,
+        CELL_EDGE_DOT_LIPSCHITZ, CELL_EDGE_NODE_BUDGET, ROTATION_RESYNC_STEPS, TAU,
     };
     use crate::geometry::{
         contains_center, cross, dot, norm, normalize, polygon_contains, prepare_polygon, Vec3,
@@ -2006,6 +2006,84 @@ mod tests {
             }
             assert_eq!(actual, expected, "ring {ring_index}");
         }
+    }
+
+    #[test]
+    fn convex_interval_cover_matches_bounded_scan_at_high_resolution() {
+        // One thin diagonal quad at resolution 29: ring offsets reach 2^31,
+        // where endpoint index rounding is tightest. The solver must agree
+        // cell by cell with the bounded scanner it replaces. The footprint
+        // stays tiny (hundreds of rings, ~10^2 cells per ring) so both paths
+        // stay cheap while the index magnitudes stay extreme.
+        let axis = normalize(lonlat(30.0, 20.0)).unwrap();
+        let seed = [0.0, 0.0, 1.0];
+        let unit = normalize(cross(seed, axis)).unwrap();
+        let other = cross(axis, unit);
+        let (sine, cosine) = std::f64::consts::FRAC_PI_4.sin_cos();
+        let tangent_x = [
+            cosine * unit[0] + sine * other[0],
+            cosine * unit[1] + sine * other[1],
+            cosine * unit[2] + sine * other[2],
+        ];
+        let tangent_y = [
+            -sine * unit[0] + cosine * other[0],
+            -sine * unit[1] + cosine * other[1],
+            -sine * unit[2] + cosine * other[2],
+        ];
+        let (along, across) = (5e-7, 1e-8);
+        let corner = |sx: f64, sy: f64| {
+            normalize([
+                axis[0] + tangent_x[0] * sx * along + tangent_y[0] * sy * across,
+                axis[1] + tangent_x[1] * sx * along + tangent_y[1] * sy * across,
+                axis[2] + tangent_x[2] * sx * along + tangent_y[2] * sy * across,
+            ])
+            .unwrap()
+        };
+        let quad = prepare_normalized_quad(
+            [
+                corner(1.0, 1.0),
+                corner(-1.0, 1.0),
+                corner(-1.0, -1.0),
+                corner(1.0, -1.0),
+            ],
+            false,
+        )
+        .unwrap();
+        let vertices = &quad.vertices[..quad.len];
+        let edge_normals = &quad.edge_normals[..quad.len];
+        let contains = |x: f64, y: f64, z: f64| contains_center(edge_normals, [x, y, z]);
+        let resolution = 29_u8;
+        let bounds = super::ConvexBounds::new(vertices, edge_normals);
+        assert!(
+            solver_engages(edge_normals, resolution, contains, &bounds),
+            "thin diagonal must solve at resolution 29"
+        );
+        let mut actual = Vec::new();
+        cover_centers(vertices, edge_normals, resolution, contains, |cell| {
+            actual.push(cell);
+            Ok(())
+        })
+        .unwrap();
+        let mut expected = Vec::new();
+        cover_cells_in_bounds::<false>(
+            bounds.minimum_z,
+            bounds.maximum_z,
+            bounds.longitude_intervals,
+            bounds.interval_count,
+            resolution,
+            |_, x, y, z| contains(x, y, z),
+            |cell| {
+                expected.push(cell);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(actual, expected);
+        assert!(
+            actual.len() > 100,
+            "the fixture must cover enough cells to test endpoints, got {}",
+            actual.len()
+        );
     }
 
     #[test]
