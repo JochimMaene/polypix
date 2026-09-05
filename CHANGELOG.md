@@ -7,6 +7,12 @@ documentation. Internal refactors, tests, and CI changes are omitted.
 
 ## Unreleased
 
+### Performance
+
+- Cover convex polygons and sweep segments from per-ring longitude intervals
+  instead of testing every center in the longitude envelope, while narrow
+  envelopes keep the existing scan.
+
 ## [0.5.0] — 2026-09-05
 
 ### Breaking changes

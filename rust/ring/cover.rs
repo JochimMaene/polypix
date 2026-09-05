@@ -345,9 +345,12 @@ pub(super) fn compute_mixed_coverage(
                 candidates,
                 resolution,
                 threads,
-                prepare,
-                PreparedFootprint::z_bounds,
-                |footprint, cell| footprint.overlaps_cell(cell, resolution),
+                |index| {
+                    prepare(index)
+                        .map(|footprint| PreparedFootprintOverlap::new(footprint, resolution))
+                },
+                PreparedFootprintOverlap::z_bounds,
+                |footprint, cell| footprint.overlaps_cell(cell),
             )
         } else {
             compute_candidate_coverage(
@@ -406,10 +409,6 @@ impl PreparedRegionPolygon {
         self.footprint.contains(point)
     }
 
-    fn overlaps_cell(&self, cell: u64, resolution: u8) -> bool {
-        self.footprint.overlaps_cell(cell, resolution)
-    }
-
     fn cover(&self, resolution: u8, cells: &mut Vec<u64>) -> NativeResult<()> {
         self.footprint.cover(resolution, cells)
     }
@@ -460,16 +459,6 @@ fn region_contains<P: Borrow<PreparedRegionPolygon>>(polygons: &[P], point: Vec3
     polygons
         .iter()
         .any(|polygon| polygon.borrow().contains(point))
-}
-
-fn region_overlaps_cell<P: Borrow<PreparedRegionPolygon>>(
-    polygons: &[P],
-    cell: u64,
-    resolution: u8,
-) -> bool {
-    polygons
-        .iter()
-        .any(|polygon| polygon.borrow().overlaps_cell(cell, resolution))
 }
 
 fn cover_prepared_region<P: Borrow<PreparedRegionPolygon>>(
@@ -533,9 +522,25 @@ pub(crate) fn cover_prepared_regions(
                 candidates,
                 resolution,
                 threads,
-                |region| Ok::<_, String>(regions[region].as_slice()),
-                |polygons| region_z_bounds(polygons),
-                |polygons, cell| region_overlaps_cell(polygons, cell, resolution),
+                |region| {
+                    Ok::<_, String>(
+                        regions[region]
+                            .iter()
+                            .map(|polygon| {
+                                PreparedFootprintOverlap::new(&polygon.footprint, resolution)
+                            })
+                            .collect::<Vec<_>>(),
+                    )
+                },
+                |polygons| {
+                    polygons
+                        .iter()
+                        .map(PreparedFootprintOverlap::z_bounds)
+                        .fold((1.0_f64, -1.0_f64), |bounds, (minimum, maximum)| {
+                            (bounds.0.min(minimum), bounds.1.max(maximum))
+                        })
+                },
+                |polygons, cell| polygons.iter().any(|polygon| polygon.overlaps_cell(cell)),
             )
         } else {
             compute_candidate_coverage(
@@ -855,14 +860,13 @@ pub(crate) fn count_caps_per_cell(
         return Ok(Some(counts));
     }
 
-    let parallel_work = caps.iter().fold(
-        caps.len().saturating_mul(SCAN_PREPARATION_WORK),
-        |total, cap| total.saturating_add(expected_cells_for_cap(cap, resolution)),
-    );
+    let ring_visits = caps.iter().fold(0_usize, |total, cap| {
+        total.saturating_add(cap_count_ring_visits(cap, resolution))
+    });
     let parallel_worthwhile = dense_accumulator_parallel_worthwhile(
         cell_count.saturating_add(1),
         caps.len(),
-        parallel_work,
+        ring_visits,
         threads,
     );
     run_with_parallelism(caps.len(), parallel_worthwhile, threads, |parallel| {
@@ -871,41 +875,55 @@ pub(crate) fn count_caps_per_cell(
         } else {
             1
         };
-        let chunk_size = caps.len().div_ceil(worker_count);
-        let ranges = (0..caps.len())
-            .step_by(chunk_size)
-            .map(|start| start..(start + chunk_size).min(caps.len()))
-            .collect::<Vec<_>>();
-        let partial = if parallel {
-            ranges
-                .into_par_iter()
-                .map(|range| count_cap_chunk(&caps, range, resolution, cell_count))
-                .collect::<Vec<_>>()
-        } else {
-            ranges
-                .into_iter()
-                .map(|range| count_cap_chunk(&caps, range, resolution, cell_count))
-                .collect::<Vec<_>>()
-        };
-        let mut partial = partial.into_iter().collect::<Result<Vec<_>, _>>()?;
-        let mut deltas = partial
-            .pop()
-            .expect("at least one cap produces one partial result");
-        for other in partial {
-            for (total, value) in deltas.iter_mut().zip(other) {
-                *total += value;
-            }
-        }
-        let mut running = 0_i64;
-        for value in deltas.iter_mut().take(cell_count) {
-            running += *value;
-            debug_assert!(running >= 0);
-            *value = running;
-        }
-        debug_assert_eq!(running + deltas[cell_count], 0);
-        deltas.pop();
-        Ok(Some(deltas))
+        count_caps_chunked(&caps, resolution, cell_count, worker_count).map(Some)
     })?
+}
+
+/// Count caps with an explicit worker count, merging one delta buffer per
+/// chunk by addition. Testing this directly - rather than through the thread
+/// pool dispatch above - exercises the chunked merge path on any host,
+// including single-CPU ones that would otherwise never select it.
+fn count_caps_chunked(
+    caps: &[Cap],
+    resolution: u8,
+    cell_count: usize,
+    worker_count: usize,
+) -> NativeResult<Vec<i64>> {
+    let worker_count = worker_count.min(caps.len()).max(1);
+    let chunk_size = caps.len().div_ceil(worker_count);
+    let ranges = (0..caps.len())
+        .step_by(chunk_size)
+        .map(|start| start..(start + chunk_size).min(caps.len()))
+        .collect::<Vec<_>>();
+    let partial = if worker_count > 1 {
+        ranges
+            .into_par_iter()
+            .map(|range| count_cap_chunk(caps, range, resolution, cell_count))
+            .collect::<Vec<_>>()
+    } else {
+        ranges
+            .into_iter()
+            .map(|range| count_cap_chunk(caps, range, resolution, cell_count))
+            .collect::<Vec<_>>()
+    };
+    let mut partial = partial.into_iter().collect::<Result<Vec<_>, _>>()?;
+    let mut deltas = partial
+        .pop()
+        .expect("at least one cap produces one partial result");
+    for other in partial {
+        for (total, value) in deltas.iter_mut().zip(other) {
+            *total += value;
+        }
+    }
+    let mut running = 0_i64;
+    for value in deltas.iter_mut().take(cell_count) {
+        running += *value;
+        debug_assert!(running >= 0);
+        *value = running;
+    }
+    debug_assert_eq!(running + deltas[cell_count], 0);
+    deltas.pop();
+    Ok(deltas)
 }
 
 pub(super) fn compute_sweep_chunk(
@@ -995,9 +1013,12 @@ pub(crate) fn cover_sweep(
                 candidates,
                 resolution,
                 threads,
-                prepare,
-                PreparedFootprint::z_bounds,
-                |footprint, cell| footprint.overlaps_cell(cell, resolution),
+                |index| {
+                    prepare(index)
+                        .map(|footprint| PreparedFootprintOverlap::new(footprint, resolution))
+                },
+                PreparedFootprintOverlap::z_bounds,
+                |footprint, cell| footprint.overlaps_cell(cell),
             )
         } else {
             compute_candidate_coverage(
@@ -1178,18 +1199,14 @@ fn compute_planned_candidate_cells(
 /// buffers rather than the scan dominated. Declining before any buffer is
 /// allocated is what keeps the sequential fallback cheap.
 ///
-/// `parallel_work` is the same per-item estimate `dispatch_coverage` weighs, not
-/// a cell count, so the ratio against `buffer_length` is calibrated against that
-/// measured crossover rather than derived, with margin on the side that costs a
-/// missed speedup rather than a regression.
 fn dense_accumulator_parallel_worthwhile(
     buffer_length: usize,
     item_count: usize,
-    parallel_work: usize,
+    ring_visits: usize,
     threads: Option<usize>,
 ) -> bool {
-    if parallel_work < SCAN_PARALLEL_MIN_WORK
-        || parallel_work < buffer_length.saturating_mul(DENSE_ACCUMULATOR_PARALLEL_WORK_RATIO)
+    if ring_visits < DENSE_ACCUMULATOR_PARALLEL_MIN_RING_VISITS
+        || ring_visits < buffer_length.saturating_mul(DENSE_ACCUMULATOR_PARALLEL_RING_VISIT_RATIO)
     {
         return false;
     }
@@ -1209,8 +1226,12 @@ fn dense_accumulator_parallel_worthwhile(
 
 #[cfg(test)]
 mod tests {
-    use super::{count_caps_per_cell, raw_cell_count};
+    use super::{
+        count_caps_chunked, count_caps_per_cell, dense_accumulator_parallel_worthwhile,
+        raw_cell_count,
+    };
     use crate::ring::fixtures::caps_along_equator;
+    use crate::ring::shape::{cap_count_ring_visits, prepare_caps};
 
     #[test]
     fn selected_cap_counts_decline_when_covering_is_cheaper() {
@@ -1240,20 +1261,47 @@ mod tests {
     #[test]
     fn dense_cap_counts_agree_regardless_of_thread_count() {
         // The dense fixture above passes `threads=Some(1)`, so it never
-        // reaches the chunked-and-merged path at all. This one does. Few,
-        // modest caps against a grid large enough to make merging relatively
-        // expensive is also the shape `DENSE_ACCUMULATOR_PARALLEL_WORK_RATIO`
-        // exists to decline, so agreement here covers both the decision and
-        // the merge it guards.
-        let (centers, radii) = caps_along_equator(400, 0.035);
-        let sequential = count_caps_per_cell(&centers, &radii, 9, None, Some(1))
+        // reaches the chunked-and-merged path at all. This batch is large
+        // enough to exercise that path on a multi-core host.
+        let (centers, radii) = caps_along_equator(12_000, 0.12);
+        let sequential = count_caps_per_cell(&centers, &radii, 6, None, Some(1))
             .unwrap()
             .expect("a dense cap count never declines");
         for threads in [None, Some(2), Some(8)] {
-            let actual = count_caps_per_cell(&centers, &radii, 9, None, threads)
+            let actual = count_caps_per_cell(&centers, &radii, 6, None, threads)
                 .unwrap()
                 .expect("a dense cap count never declines");
             assert_eq!(actual, sequential, "threads={threads:?}");
         }
+    }
+
+    #[test]
+    fn dense_cap_chunked_merge_matches_sequential_on_any_host() {
+        // The pool dispatch above only selects parallel execution when the
+        // host reports multiple CPUs. Driving the chunked path with two
+        // workers directly exercises its merge on single-CPU hosts too.
+        let (centers, radii) = caps_along_equator(12_000, 0.12);
+        let caps = prepare_caps(&centers, &radii).unwrap();
+        let cell_count = raw_cell_count(6) as usize;
+        let sequential = count_caps_chunked(&caps, 6, cell_count, 1).unwrap();
+        let merged = count_caps_chunked(&caps, 6, cell_count, 2).unwrap();
+        assert_eq!(merged, sequential);
+        assert!(sequential.iter().any(|&value| value > 0));
+    }
+
+    #[test]
+    fn full_sphere_cap_counts_do_not_parallelize_one_range_per_cap() {
+        let centers = [1.0, 0.0, 0.0].repeat(100);
+        let radii = vec![std::f64::consts::PI; 100];
+        let caps = prepare_caps(&centers, &radii).unwrap();
+        let ring_visits = caps.iter().map(|cap| cap_count_ring_visits(cap, 8)).sum();
+
+        assert_eq!(ring_visits, 100);
+        assert!(!dense_accumulator_parallel_worthwhile(
+            raw_cell_count(8) as usize + 1,
+            caps.len(),
+            ring_visits,
+            Some(8),
+        ));
     }
 }
