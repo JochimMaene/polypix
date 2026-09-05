@@ -339,7 +339,7 @@ impl Cap {
             longitude_intervals,
             interval_count,
             resolution,
-            |cell| overlap.overlaps_cell(cell),
+            |cell, point| overlap.overlaps_cell_at(cell, point),
             |cell| push_coverage_cell(cells, cell, 1024),
         )
     }
@@ -367,8 +367,12 @@ impl<'cap> CapOverlap<'cap> {
     }
 
     pub(super) fn overlaps_cell(&self, cell: u64) -> bool {
+        self.overlaps_cell_at(cell, center(cell, self.resolution))
+    }
+
+    fn overlaps_cell_at(&self, cell: u64, point: Vec3) -> bool {
         let cap = self.cap;
-        if cap.full_sphere || cap.contains(center(cell, self.resolution)) {
+        if cap.full_sphere || cap.contains(point) {
             return true;
         }
         // A cap smaller than one cell can sit entirely inside it, missing
@@ -557,6 +561,15 @@ pub(super) fn visit_cap_ranges(cap: &Cap, resolution: u8, mut visit: impl FnMut(
     }
 }
 
+pub(super) fn cap_count_ring_visits(cap: &Cap, resolution: u8) -> usize {
+    if cap.full_sphere {
+        return 1;
+    }
+    let nside = 1_u64 << resolution;
+    let (first, last) = ring_range(nside, cap.minimum_z, cap.maximum_z);
+    (last - first + 1) as usize
+}
+
 pub(super) fn cover_centers(
     vertices: &[Vec3],
     edge_normals: &[Vec3],
@@ -638,33 +651,41 @@ fn cover_cells_in_bounds<const PAD_LONGITUDE: bool>(
         };
 
         if PAD_LONGITUDE {
-            let mut ranges = Vec::with_capacity(4);
+            let mut ranges = [(0_u64, 0_u64); 4];
+            let mut range_count = 0;
+            let mut push_range = |range| {
+                ranges[range_count] = range;
+                range_count += 1;
+            };
             for &(start, end) in longitude_intervals.iter().take(interval_count) {
                 let first = (start / step - ring.shift).ceil() as i64 - 1;
                 let last = (end / step - ring.shift).floor() as i64 + 1;
                 let count = ring.cells as i64;
                 if first < 0 {
-                    ranges.push((0_u64, last.min(count - 1).max(0) as u64));
-                    ranges.push(((first + count).max(0) as u64, ring.cells - 1));
+                    push_range((0, last.min(count - 1).max(0) as u64));
+                    push_range(((first + count).max(0) as u64, ring.cells - 1));
                 } else if last >= count {
-                    ranges.push((first.min(count - 1) as u64, ring.cells - 1));
-                    ranges.push((0, (last - count).min(count - 1) as u64));
+                    push_range((first.min(count - 1) as u64, ring.cells - 1));
+                    push_range((0, (last - count).min(count - 1) as u64));
                 } else if first <= last {
-                    ranges.push((first as u64, last as u64));
+                    push_range((first as u64, last as u64));
                 }
             }
-            ranges.sort_unstable();
-            let mut merged: Vec<(u64, u64)> = Vec::with_capacity(ranges.len());
-            for (first, last) in ranges {
-                if let Some((_, merged_last)) = merged.last_mut() {
+            ranges[..range_count].sort_unstable();
+            let mut merged_count = 0;
+            for index in 0..range_count {
+                let (first, last) = ranges[index];
+                if merged_count > 0 {
+                    let merged_last = &mut ranges[merged_count - 1].1;
                     if first <= merged_last.saturating_add(1) {
                         *merged_last = (*merged_last).max(last);
                         continue;
                     }
                 }
-                merged.push((first, last));
+                ranges[merged_count] = (first, last);
+                merged_count += 1;
             }
-            for (first, last) in merged {
+            for &(first, last) in &ranges[..merged_count] {
                 scan_offsets(first, last)?;
             }
             continue;
@@ -727,8 +748,6 @@ const CELL_EDGE_NODE_BUDGET: u32 = 32_768;
 const CELL_EDGE_CHORD_GUARD: f64 = 64.0 * f64::EPSILON;
 
 struct CellBoundary {
-    cell: u64,
-    resolution: u8,
     face: u8,
     x: i64,
     y: i64,
@@ -739,14 +758,7 @@ impl CellBoundary {
     fn new(cell: u64, resolution: u8) -> Self {
         let nside = 1_u64 << resolution;
         let (face, x, y) = ring_to_face_xy(cell, nside);
-        Self {
-            cell,
-            resolution,
-            face,
-            x,
-            y,
-            nside,
-        }
+        Self { face, x, y, nside }
     }
 
     fn point(&self, edge: u8, parameter: f64) -> Vec3 {
@@ -1054,31 +1066,13 @@ fn cell_edge_intersects_arc(boundary: &CellBoundary, edge: u8, arc: MinorArc) ->
     cell_edge_arc_intersection(boundary, edge, arc, &mut budget).overlaps()
 }
 
-fn ring_boundary_overlaps_cell(vertices: &[Vec3], boundary: &CellBoundary) -> bool {
-    if vertices
-        .iter()
-        .any(|&vertex| normalized_cell_at(vertex, boundary.resolution) == boundary.cell)
-    {
-        return true;
-    }
-    vertices
-        .iter()
-        .copied()
-        .zip(vertices.iter().copied().cycle().skip(1))
-        .take(vertices.len())
-        .any(|(start, end)| {
-            let arc = MinorArc::new(start, end);
-            (0..4).any(|edge| cell_edge_intersects_arc(boundary, edge, arc))
-        })
-}
-
 fn cover_overlapping_cells(
     minimum_z: f64,
     maximum_z: f64,
     longitude_intervals: [(f64, f64); 2],
     interval_count: usize,
     resolution: u8,
-    overlaps: impl Fn(u64) -> bool,
+    overlaps: impl Fn(u64, Vec3) -> bool,
     visit: impl FnMut(u64) -> NativeResult<()>,
 ) -> NativeResult<()> {
     cover_cells_in_bounds::<true>(
@@ -1087,7 +1081,7 @@ fn cover_overlapping_cells(
         longitude_intervals,
         interval_count,
         resolution,
-        |cell, _, _, _| overlaps(cell),
+        |cell, x, y, z| overlaps(cell, [x, y, z]),
         visit,
     )
 }
@@ -1135,6 +1129,106 @@ pub(super) fn prepare_normalized_quad(
         edge_normals,
         len,
     })
+}
+
+pub(super) struct PreparedFootprintOverlap<T> {
+    footprint: T,
+    resolution: u8,
+    vertex_cells: Vec<u64>,
+    arcs: Vec<MinorArc>,
+}
+
+impl<T: std::borrow::Borrow<PreparedFootprint>> PreparedFootprintOverlap<T> {
+    pub(super) fn new(footprint: T, resolution: u8) -> Self {
+        let mut vertex_cells = Vec::new();
+        let mut arcs = Vec::new();
+        let mut prepare_ring = |vertices: &[Vec3]| {
+            vertex_cells.extend(
+                vertices
+                    .iter()
+                    .map(|&vertex| normalized_cell_at(vertex, resolution)),
+            );
+            arcs.extend(
+                vertices
+                    .iter()
+                    .copied()
+                    .zip(vertices.iter().copied().cycle().skip(1))
+                    .take(vertices.len())
+                    .map(|(start, end)| MinorArc::new(start, end)),
+            );
+        };
+        match footprint.borrow() {
+            PreparedFootprint::Quad(quad) => prepare_ring(&quad.vertices[..quad.len]),
+            PreparedFootprint::Polygon(polygon) => prepare_ring(&polygon.vertices),
+            PreparedFootprint::General(polygon) => {
+                prepare_ring(&polygon.outer.vertices);
+                for hole in &polygon.holes {
+                    prepare_ring(&hole.vertices);
+                }
+            }
+        }
+        Self {
+            footprint,
+            resolution,
+            vertex_cells,
+            arcs,
+        }
+    }
+
+    pub(super) fn z_bounds(&self) -> (f64, f64) {
+        self.footprint.borrow().z_bounds()
+    }
+
+    pub(super) fn overlaps_cell(&self, cell: u64) -> bool {
+        self.overlaps_cell_at(cell, center(cell, self.resolution))
+    }
+
+    fn overlaps_cell_at(&self, cell: u64, point: Vec3) -> bool {
+        if self.footprint.borrow().contains(point) || self.vertex_cells.contains(&cell) {
+            return true;
+        }
+        let boundary = CellBoundary::new(cell, self.resolution);
+        self.arcs
+            .iter()
+            .any(|&arc| (0..4).any(|edge| cell_edge_intersects_arc(&boundary, edge, arc)))
+    }
+
+    pub(super) fn cover(&self, cells: &mut Vec<u64>) -> NativeResult<()> {
+        let footprint = self.footprint.borrow();
+        let (minimum_z, maximum_z, longitude_intervals, interval_count) = match footprint {
+            PreparedFootprint::Quad(quad) => {
+                let vertices = &quad.vertices[..quad.len];
+                let normals = &quad.edge_normals[..quad.len];
+                let (minimum_z, maximum_z) = polygon_z_bounds(vertices, normals);
+                let (longitude_intervals, interval_count) = longitude_bounds(vertices, normals);
+                (minimum_z, maximum_z, longitude_intervals, interval_count)
+            }
+            PreparedFootprint::Polygon(polygon) => {
+                let (minimum_z, maximum_z) =
+                    polygon_z_bounds(&polygon.vertices, &polygon.edge_normals);
+                let (longitude_intervals, interval_count) =
+                    longitude_bounds(&polygon.vertices, &polygon.edge_normals);
+                (minimum_z, maximum_z, longitude_intervals, interval_count)
+            }
+            PreparedFootprint::General(polygon) => {
+                let (minimum_z, maximum_z) = general_polygon_z_bounds(polygon);
+                let (longitude_intervals, interval_count) =
+                    longitude_bounds_for(&polygon.outer.vertices, |point| {
+                        ring_contains(&polygon.outer, point)
+                    });
+                (minimum_z, maximum_z, longitude_intervals, interval_count)
+            }
+        };
+        cover_overlapping_cells(
+            minimum_z,
+            maximum_z,
+            longitude_intervals,
+            interval_count,
+            self.resolution,
+            |cell, point| self.overlaps_cell_at(cell, point),
+            |cell| push_coverage_cell(cells, cell, 1024),
+        )
+    }
 }
 
 impl PreparedFootprint {
@@ -1196,24 +1290,6 @@ impl PreparedFootprint {
         }
     }
 
-    pub(super) fn overlaps_cell(&self, cell: u64, resolution: u8) -> bool {
-        if self.contains(center(cell, resolution)) {
-            return true;
-        }
-        let boundary = CellBoundary::new(cell, resolution);
-        match self {
-            Self::Quad(quad) => ring_boundary_overlaps_cell(&quad.vertices[..quad.len], &boundary),
-            Self::Polygon(polygon) => ring_boundary_overlaps_cell(&polygon.vertices, &boundary),
-            Self::General(polygon) => {
-                ring_boundary_overlaps_cell(&polygon.outer.vertices, &boundary)
-                    || polygon
-                        .holes
-                        .iter()
-                        .any(|hole| ring_boundary_overlaps_cell(&hole.vertices, &boundary))
-            }
-        }
-    }
-
     pub(super) fn cover(&self, resolution: u8, cells: &mut Vec<u64>) -> NativeResult<()> {
         let visit = |cell| push_coverage_cell(cells, cell, 1024);
         match self {
@@ -1236,39 +1312,7 @@ impl PreparedFootprint {
     }
 
     pub(super) fn cover_overlap(&self, resolution: u8, cells: &mut Vec<u64>) -> NativeResult<()> {
-        let (minimum_z, maximum_z, longitude_intervals, interval_count) = match self {
-            Self::Quad(quad) => {
-                let vertices = &quad.vertices[..quad.len];
-                let normals = &quad.edge_normals[..quad.len];
-                let (minimum_z, maximum_z) = polygon_z_bounds(vertices, normals);
-                let (longitude_intervals, interval_count) = longitude_bounds(vertices, normals);
-                (minimum_z, maximum_z, longitude_intervals, interval_count)
-            }
-            Self::Polygon(polygon) => {
-                let (minimum_z, maximum_z) =
-                    polygon_z_bounds(&polygon.vertices, &polygon.edge_normals);
-                let (longitude_intervals, interval_count) =
-                    longitude_bounds(&polygon.vertices, &polygon.edge_normals);
-                (minimum_z, maximum_z, longitude_intervals, interval_count)
-            }
-            Self::General(polygon) => {
-                let (minimum_z, maximum_z) = general_polygon_z_bounds(polygon);
-                let (longitude_intervals, interval_count) =
-                    longitude_bounds_for(&polygon.outer.vertices, |point| {
-                        ring_contains(&polygon.outer, point)
-                    });
-                (minimum_z, maximum_z, longitude_intervals, interval_count)
-            }
-        };
-        cover_overlapping_cells(
-            minimum_z,
-            maximum_z,
-            longitude_intervals,
-            interval_count,
-            resolution,
-            |cell| self.overlaps_cell(cell, resolution),
-            |cell| push_coverage_cell(cells, cell, 1024),
-        )
+        PreparedFootprintOverlap::new(self, resolution).cover(cells)
     }
 }
 
@@ -1308,8 +1352,8 @@ pub(super) fn prepare_sweep_footprint(
 mod tests {
     use super::{
         cell_edge_arc_intersection, prepare_caps, ring_info, CapOverlap, CellBoundary,
-        Intersection, MinorArc, PreparedFootprint, CELL_EDGE_DOT_LIPSCHITZ, CELL_EDGE_NODE_BUDGET,
-        ROTATION_RESYNC_STEPS, TAU,
+        Intersection, MinorArc, PreparedFootprint, PreparedFootprintOverlap,
+        CELL_EDGE_DOT_LIPSCHITZ, CELL_EDGE_NODE_BUDGET, ROTATION_RESYNC_STEPS, TAU,
     };
     use crate::geometry::{cross, dot, norm, CONTAINMENT_EPSILON};
     use crate::ring::grid::raw_cell_count;
@@ -1396,8 +1440,9 @@ mod tests {
             for footprint in &footprints {
                 let mut actual = Vec::new();
                 footprint.cover_overlap(resolution, &mut actual).unwrap();
+                let overlap = PreparedFootprintOverlap::new(footprint, resolution);
                 let expected = (0..raw_cell_count(resolution))
-                    .filter(|&cell| footprint.overlaps_cell(cell, resolution))
+                    .filter(|&cell| overlap.overlaps_cell(cell))
                     .collect::<Vec<_>>();
                 assert_eq!(actual, expected, "polygon resolution {resolution}");
             }
