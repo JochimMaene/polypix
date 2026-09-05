@@ -763,23 +763,15 @@ pub(super) fn count_cap_chunk(
     Ok(deltas)
 }
 
-/// Count caps over a selection without materializing coverage.
-///
-/// Sorts and deduplicates the requested cells - retaining each request's
-/// position so the original order and duplicates restore with one gather -
-/// then reuses `visit_cap_ranges` directly: every covered range
-/// binary-searches its endpoints in the sorted selection and updates a
-/// difference array over selection positions, prefix-summed at the end.
-///
-/// Memory stays proportional to the selection: no full-grid accumulator and
-/// no intermediate coverage array. It wins where covering would emit far more
-/// cells than the selection holds - few huge caps against a moderate request -
-/// and the caller keeps covering everywhere else.
+/// Count caps over a selection without materializing coverage: sort and
+/// deduplicate the request, binary-search every covered range from
+/// `visit_cap_ranges` in it, and prefix-sum the difference array. Memory stays
+/// proportional to the selection. Wins where covering would emit far more
+/// cells than the request holds; the caller keeps covering elsewhere.
 pub(super) fn count_caps_selected_via_ranges(
     caps: &[Cap],
     resolution: u8,
     cells: &[u64],
-    threads: Option<usize>,
 ) -> NativeResult<Vec<i64>> {
     let oom = || {
         NativeError::out_of_memory("Selected cap-count working data is too large to fit in memory.")
@@ -802,71 +794,22 @@ pub(super) fn count_caps_selected_via_ranges(
         position[index] = unique.len() - 1;
     }
     drop(order);
-    if unique.is_empty() {
-        return Ok(Vec::new());
-    }
-    let ring_visits = caps.iter().fold(0_usize, |total, cap| {
-        total.saturating_add(cap_count_ring_visits(cap, resolution))
-    });
-    // Per-worker difference buffers scale with the selection, not the grid,
-    // but the same total budget still bounds their fan-out.
-    let probable_workers = threads.unwrap_or_else(rayon::current_num_threads).max(1);
-    let buffer_per_worker = (unique.len() + 1).saturating_mul(size_of::<i64>());
-    let memory_bounded_workers = if buffer_per_worker == 0 {
-        probable_workers
-    } else {
-        (DENSE_ACCUMULATOR_PARALLEL_MAX_BYTES / buffer_per_worker).max(1)
-    };
-    let parallel_worthwhile = threads != Some(1)
-        && ring_visits >= DENSE_ACCUMULATOR_PARALLEL_MIN_RING_VISITS
-        && probable_workers.min(caps.len().max(1)) >= 2
-        && memory_bounded_workers >= 2;
-    let partial = run_with_parallelism(caps.len(), parallel_worthwhile, threads, |parallel| {
-        let worker_count = if parallel {
-            rayon::current_num_threads()
-                .min(caps.len())
-                .min(memory_bounded_workers)
-                .max(1)
-        } else {
-            1
-        };
-        let chunk_size = caps.len().div_ceil(worker_count);
-        let ranges = (0..caps.len())
-            .step_by(chunk_size)
-            .map(|start| start..(start + chunk_size).min(caps.len()))
-            .collect::<Vec<_>>();
-        let count_chunk = |range: Range<usize>| -> NativeResult<Vec<i64>> {
-            let mut deltas = Vec::new();
-            deltas
-                .try_reserve_exact(unique.len() + 1)
-                .map_err(|_| oom())?;
-            deltas.resize(unique.len() + 1, 0_i64);
-            for index in range {
-                visit_cap_ranges(&caps[index], resolution, |covered| {
-                    let start = unique.partition_point(|&cell| cell < covered.start);
-                    let end = unique.partition_point(|&cell| cell < covered.end);
-                    if start < end {
-                        deltas[start] += 1;
-                        deltas[end] -= 1;
-                    }
-                });
+    let mut deltas = Vec::new();
+    deltas
+        .try_reserve_exact(unique.len() + 1)
+        .map_err(|_| oom())?;
+    deltas.resize(unique.len() + 1, 0_i64);
+    // Sequential: the firing regime is few huge caps, with little fan-out to
+    // exploit. Parallelize when a benchmark says otherwise.
+    for cap in caps {
+        visit_cap_ranges(cap, resolution, |covered| {
+            let start = unique.partition_point(|&cell| cell < covered.start);
+            let end = unique.partition_point(|&cell| cell < covered.end);
+            if start < end {
+                deltas[start] += 1;
+                deltas[end] -= 1;
             }
-            Ok(deltas)
-        };
-        if parallel {
-            ranges.into_par_iter().map(count_chunk).collect::<Vec<_>>()
-        } else {
-            ranges.into_iter().map(count_chunk).collect::<Vec<_>>()
-        }
-    })?;
-    let mut partial = partial.into_iter().collect::<Result<Vec<_>, _>>()?;
-    let mut deltas = partial
-        .pop()
-        .expect("at least one cap produces one partial result");
-    for other in partial {
-        for (total, value) in deltas.iter_mut().zip(other) {
-            *total += value;
-        }
+        });
     }
     let mut running = 0_i64;
     for value in deltas.iter_mut().take(unique.len()) {
@@ -882,13 +825,10 @@ pub(super) fn count_caps_selected_via_ranges(
     }
     Ok(counts)
 }
-
 /// Answer a selected cap count from ring ranges when that beats covering.
-///
-/// `None` keeps the existing decline: the caller covers once and counts.
-/// The estimate prices two binary searches per covered range against one
-/// emitted cell per hit; ranges are bounded by two per visited ring without
-/// preparing a single cap.
+/// `None` keeps the existing decline. Prices two binary searches per covered
+/// range against one emitted cell per hit, with ranges bounded by two per
+/// visited ring and hits estimated from radii alone.
 fn selected_range_count_worthwhile(radii: &[f64], resolution: u8, selected: usize) -> bool {
     if selected == 0 {
         return false;
@@ -942,7 +882,7 @@ pub(crate) fn count_caps_per_cell(
                         .to_owned()
                         .into());
                 }
-                return count_caps_selected_via_ranges(&caps, resolution, cells, threads).map(Some);
+                return count_caps_selected_via_ranges(&caps, resolution, cells).map(Some);
             }
             return Ok(None);
         }
@@ -1435,16 +1375,8 @@ mod tests {
         selections.push((0..1000_u64).map(|_| next_u64(&mut state) % grid).collect());
         for cells in &selections {
             let expected = reference(cells);
-            let actual = count_caps_selected_via_ranges(&caps, resolution, cells, Some(1)).unwrap();
+            let actual = count_caps_selected_via_ranges(&caps, resolution, cells).unwrap();
             assert_eq!(actual, expected, "selection of {}", cells.len());
-        }
-        // Thread counts must agree, duplicates included.
-        let cells = selections[2].clone();
-        let expected = reference(&cells);
-        for threads in [None, Some(2), Some(8)] {
-            let actual =
-                count_caps_selected_via_ranges(&caps, resolution, &cells, threads).unwrap();
-            assert_eq!(actual, expected, "threads={threads:?}");
         }
     }
 
