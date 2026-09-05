@@ -694,6 +694,11 @@ fn cover_convex_intervals(
         return None;
     }
     let (first_ring, last_ring) = ring_range(nside, bounds.minimum_z, bounds.maximum_z);
+    let mut edges = [IntervalEdge::default(); MAX_SOLVER_EDGES];
+    for (edge, &normal) in edges.iter_mut().zip(edge_normals) {
+        *edge = IntervalEdge::new(normal);
+    }
+    let edges = &edges[..edge_normals.len()];
     // Solve and emit one ring at a time: scratch state stays on the stack no
     // matter how many rings the band holds.
     let ring_table = cached_scan_rings(resolution);
@@ -716,8 +721,7 @@ fn cover_convex_intervals(
         };
         let ring = &scan_ring.ring;
         let step = scan_ring.step;
-        let Some(piece_count) =
-            convex_ring_intervals(edge_normals, ring.z, ring.radial, &mut pieces)
+        let Some(piece_count) = convex_ring_intervals(edges, ring.z, ring.radial, &mut pieces)
         else {
             // Degenerate geometry or a tangency needing more pieces than fit
             // the buffer: scan this ring's envelope instead.
@@ -728,19 +732,12 @@ fn cover_convex_intervals(
         };
         let mut next_unscanned: i64 = 0;
         for &(start, end) in pieces.iter().take(piece_count) {
-            let first_value = start / step - ring.shift;
-            let last_value = end / step - ring.shift;
-            let index_uncertainty = INDEX_UNCERTAINTY_ULPS * f64::EPSILON * ring.cells as f64;
-            let ambiguous_first = (first_value - first_value.round()).abs() <= index_uncertainty;
-            let ambiguous_last = (last_value - last_value.round()).abs() <= index_uncertainty;
-            let nominal_first = first_value.ceil() as i64;
-            let nominal_last = last_value.floor() as i64;
-            let mut first = nominal_first - i64::from(ambiguous_first);
-            let mut last = nominal_last + i64::from(ambiguous_last);
+            let mut first = (start / step - ring.shift).ceil() as i64 - 1;
+            let mut last = (end / step - ring.shift).floor() as i64 + 1;
             first = first.max(0).max(next_unscanned);
             last = last.min((ring.cells - 1) as i64);
-            // Endpoints are the only place the continuous solve can disagree
-            // with the discrete centers; correct them with the predicate.
+            // Check neighboring centers too: acos rounding can exceed the
+            // index-only guard used by the longitude-envelope scanner.
             while first <= last && !ring_offset_contains(ring, first as u64, &contains) {
                 first += 1;
             }
@@ -773,17 +770,31 @@ const MAX_RING_PIECES: usize = 8;
 // so re-measure it on new hardware alongside the other planning thresholds.
 const INTERVAL_MIN_WIDTH: usize = 64;
 
-/// Widest per-center predicate the solver takes on. Solving costs libm calls
-/// per edge per ring; footprints past this test most centers against every
-/// edge anyway, while many-sided ones short-circuit through their
-/// interior cap and scan faster than any solve.
+/// Many-sided footprints use an interior-cap shortcut in the bounding scan.
 const MAX_SOLVER_EDGES: usize = 8;
+
+#[derive(Clone, Copy, Default)]
+struct IntervalEdge {
+    radial: f64,
+    longitude: f64,
+    z: f64,
+}
+
+impl IntervalEdge {
+    fn new(normal: Vec3) -> Self {
+        Self {
+            radial: normal[0].hypot(normal[1]),
+            longitude: normal[1].atan2(normal[0]),
+            z: normal[2],
+        }
+    }
+}
 
 /// Solve one convex polygon's allowed longitudes on a fixed ring: intersect
 /// each edge's `P*cos(phi) + Q*sin(phi) >= threshold` set across all edges.
-/// `None` means a degenerate ring or more than `MAX_RING_PIECES` pieces.
+/// `None` requests a scan for degenerate rings, tangencies, or too many pieces.
 fn convex_ring_intervals(
-    edge_normals: &[Vec3],
+    edges: &[IntervalEdge],
     z: f64,
     radial: f64,
     pieces: &mut [(f64, f64); MAX_RING_PIECES],
@@ -795,9 +806,9 @@ fn convex_ring_intervals(
     allowed[0] = (0.0, TAU);
     let mut allowed_count = 1_usize;
     let mut edge_pieces = [(0.0, 0.0); 2];
-    for &normal in edge_normals {
-        let threshold = -normal[2] * z - CONTAINMENT_EPSILON;
-        let amplitude = (normal[0] * radial).hypot(normal[1] * radial);
+    for edge in edges {
+        let threshold = -edge.z * z - CONTAINMENT_EPSILON;
+        let amplitude = edge.radial * radial;
         if amplitude <= 0.0 {
             // The edge condition is longitude-independent on this ring.
             if threshold > 0.0 {
@@ -806,13 +817,19 @@ fn convex_ring_intervals(
             continue;
         }
         let cosine = threshold / amplitude;
+        // acos amplifies rounding near tangency; an index-space endpoint
+        // guard cannot recover centers lost by that solve. Use the existing
+        // ring scan when the edge is numerically tangent on either side.
+        if (cosine.abs() - 1.0).abs() <= INDEX_UNCERTAINTY_ULPS * f64::EPSILON {
+            return None;
+        }
         if cosine <= -1.0 {
             continue;
         }
         if cosine >= 1.0 {
             return Some(0);
         }
-        let center = (normal[1] * radial).atan2(normal[0] * radial);
+        let center = edge.longitude;
         let half_width = cosine.clamp(-1.0, 1.0).acos();
         let edge_count =
             split_wrapped_interval(center - half_width, center + half_width, &mut edge_pieces);
@@ -852,7 +869,7 @@ fn split_wrapped_interval(start: f64, end: f64, pieces: &mut [(f64, f64); 2]) ->
     // two cases below applies.
     let normalized_start = start.rem_euclid(TAU);
     let normalized_end = normalized_start + (end - start);
-    if normalized_end > TAU {
+    if normalized_end >= TAU {
         // Straddles the branch cut: emit the wrapped pair with the same
         // rounding convention as the longitude-bound computation.
         pieces[0] = (0.0, normalized_end - TAU);
@@ -1962,6 +1979,44 @@ mod tests {
     }
 
     #[test]
+    fn convex_intervals_preserve_boundary_centers() {
+        let mut wrapped = [(0.0, 0.0); 2];
+        assert_eq!(super::split_wrapped_interval(-1.0, 0.0, &mut wrapped), 2);
+        assert_eq!(wrapped[0], (0.0, 0.0));
+        let nside = 1_u64 << 29;
+        for index in 0..100 {
+            let ring = ring_info(nside, nside + index * 10_001);
+            let normal = normalize([ring.z, 0.0, -ring.radial]).unwrap();
+            let mut pieces = [(0.0, 0.0); super::MAX_RING_PIECES];
+            let Some(count) = super::convex_ring_intervals(
+                &[super::IntervalEdge::new(normal)],
+                ring.z,
+                ring.radial,
+                &mut pieces,
+            ) else {
+                continue;
+            };
+            for offset in (0..300).chain(ring.cells - 300..ring.cells) {
+                let longitude = (offset as f64 + ring.shift) * TAU / ring.cells as f64;
+                let point = [
+                    ring.radial * longitude.cos(),
+                    ring.radial * longitude.sin(),
+                    ring.z,
+                ];
+                if contains_center(&[normal], point) {
+                    assert!(
+                        pieces[..count]
+                            .iter()
+                            .any(|&(start, end)| start <= longitude && longitude <= end),
+                        "ring {index}, offset {offset}, longitude {longitude}, pieces {:?}",
+                        &pieces[..count]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn convex_ring_intervals_give_up_past_eight_pieces() {
         // Eight near-latitude edges excluding spread slivers: the surviving
         // set is eight arcs, nine linear pieces once the branch cut splits
@@ -1971,7 +2026,9 @@ mod tests {
                 let angle =
                     std::f64::consts::FRAC_PI_8 + index as f64 * std::f64::consts::FRAC_PI_4;
                 let (sine, cosine) = angle.sin_cos();
-                normalize([1.000_000_1e-14 * cosine, 1.000_000_1e-14 * sine, -1.0]).unwrap()
+                super::IntervalEdge::new(
+                    normalize([1.000_000_1e-14 * cosine, 1.000_000_1e-14 * sine, -1.0]).unwrap(),
+                )
             })
             .collect::<Vec<_>>();
         let mut pieces = [(0.0, 0.0); super::MAX_RING_PIECES];
