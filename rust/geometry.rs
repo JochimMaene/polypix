@@ -299,10 +299,17 @@ fn ring_location(ring: &Ring, point: Vec3) -> RingLocation {
         if side.abs() <= CONTAINMENT_EPSILON {
             let start = ring.vertices[index];
             let end = ring.vertices[next];
-            let edge_cosine = dot(start, end);
-            if dot(start, point) >= edge_cosine - CONTAINMENT_EPSILON
-                && dot(end, point) >= edge_cosine - CONTAINMENT_EPSILON
-            {
+            let edge_normal = ring.edge_normals[index];
+            // Each span is the sine of the point's displacement from one
+            // endpoint, so the tolerance is an angle no matter how short the
+            // edge is. Comparing endpoint cosines against the same epsilon
+            // instead scales the slack by the reciprocal of the edge length,
+            // and a short edge then claims a point some `sqrt(epsilon)`
+            // radians past its end - far enough that the interval solver,
+            // whose own bounds hold to one epsilon, disagrees over the cell.
+            let start_span = dot(stable_cross(start, point), edge_normal);
+            let end_span = dot(stable_cross(point, end), edge_normal);
+            if start_span >= -CONTAINMENT_EPSILON && end_span >= -CONTAINMENT_EPSILON {
                 return true;
             }
         }

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import copy
 import inspect
 import math
+import pickle
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from functools import cache
@@ -1243,6 +1245,109 @@ class PolypixTests(unittest.TestCase):
         native = px.cover_polygon([], resolution=1)
         self.assertFalse(native.cells.flags.writeable)
         self.assertFalse(native.offsets.flags.writeable)
+
+    def test_coverage_copies_rebuild_through_the_validating_entry_point(self) -> None:
+        coverage = px.Coverage.from_arrays([5, 7], [0, 2], resolution=0)
+        routes = (
+            ("deepcopy", copy.deepcopy(coverage)),
+            ("copy", copy.copy(coverage)),
+            ("pickle", pickle.loads(pickle.dumps(coverage))),
+        )
+        for name, restored in routes:
+            with self.subTest(route=name):
+                np.testing.assert_array_equal(restored.cells, [5, 7])
+                np.testing.assert_array_equal(restored.offsets, [0, 2])
+                self.assertEqual(restored.resolution, 0)
+                # Without this, an ordinary assignment on a copy could put a
+                # duplicate hit inside one segment, and revisit believes what
+                # a Coverage tells it instead of rescanning.
+                self.assertFalse(restored.cells.flags.writeable)
+                self.assertFalse(restored.offsets.flags.writeable)
+                self.assertFalse(np.shares_memory(restored.cells, coverage.cells))
+
+        rebuild, arguments = coverage.__reduce__()
+        self.assertEqual(arguments[2], 0)
+        with self.assertRaisesRegex(ValueError, "unique"):
+            rebuild([5, 5], [0, 2], 0)
+
+    def test_copied_coverage_still_counts_one_source_once(self) -> None:
+        first = copy.deepcopy(px.Coverage.from_arrays([5, 7], [0, 2], resolution=0))
+        second = px.Coverage.from_arrays([9], [0, 1], resolution=0)
+        # A writable copy accepts this, and the duplicate then reads as two
+        # sources covering cell 5 in bin 0, when only the first one saw it.
+        with self.assertRaises(ValueError):
+            first.cells[1] = 5
+        thresholded = px.revisit([first, second], minimum_sources=2)
+        self.assertEqual(thresholded.cells.size, 0)
+
+    def test_cover_cap_resolves_radii_just_short_of_pi(self) -> None:
+        resolution = 0
+        antipodal_cell = 4
+        axis = np.asarray([-1.0, 0.0, 0.0])
+        # The cell centre is the exact antipode of the axis, so every radius
+        # below pi must leave it out. The direct squared chord cannot say so:
+        # it saturates at 4 once the radius comes within ~3e-8 of pi.
+        np.testing.assert_array_equal(
+            px.cell_centers(antipodal_cell, resolution)[0], [1.0, 0.0, 0.0]
+        )
+        for gap in (1e-8, 1e-10, 1e-12):
+            with self.subTest(gap=gap):
+                radius = math.pi - gap
+                scanned = px.cover_cap(axis, radius, resolution, threads=1)
+                selected = px.cover_cap(
+                    axis,
+                    radius,
+                    resolution,
+                    candidate_cells=[antipodal_cell],
+                    threads=1,
+                )
+                counted = px.cover_cap(
+                    axis,
+                    radius,
+                    resolution,
+                    candidate_cells=[antipodal_cell],
+                    reduce=px.Count(),
+                    threads=1,
+                )
+                self.assertNotIn(antipodal_cell, scanned.cells)
+                self.assertEqual(len(scanned.cells), 11)
+                self.assertEqual(selected.cells.size, 0)
+                self.assertEqual(int(np.asarray(counted)[0]), 0)
+
+        for radius in (math.pi, math.pi - 1e-15):
+            with self.subTest(radius=radius):
+                whole = px.cover_cap(axis, radius, resolution, threads=1)
+                counted = px.cover_cap(
+                    axis,
+                    radius,
+                    resolution,
+                    candidate_cells=[antipodal_cell],
+                    reduce=px.Count(),
+                    threads=1,
+                )
+                self.assertEqual(len(whole.cells), 12)
+                self.assertEqual(int(np.asarray(counted)[0]), 1)
+
+    def test_cover_cap_matches_brute_force_around_a_quarter_turn(self) -> None:
+        # The centre predicate changes representation past a quarter turn, so
+        # radii either side of it must still agree with the angles.
+        resolution = 4
+        cells = np.arange(px.cell_count(resolution), dtype=np.int64)
+        centers = px.cell_centers(cells, resolution)
+        axis = lonlat_to_vec(28.0, -14.0)
+        radii = (
+            math.pi / 2 - 1e-9,
+            math.pi / 2,
+            math.pi / 2 + 1e-9,
+            2.0,
+            math.pi - 1e-3,
+        )
+        for radius in radii:
+            with self.subTest(radius=radius):
+                angles = np.arccos(np.clip(centers @ axis, -1.0, 1.0))
+                expected = cells[angles <= radius + 1e-13]
+                scanned = np.sort(px.cover_cap(axis, radius, resolution).cells)
+                np.testing.assert_array_equal(scanned, expected)
 
     def test_cover_rejects_nonempty_zero_vertex_batch(self) -> None:
         for shape in ((0, 3), (1, 0, 3)):

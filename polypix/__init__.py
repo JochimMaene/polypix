@@ -197,6 +197,11 @@ class Coverage:
     against deliberate flag manipulation. Imported arrays are copied, so
     later edits to your own input cannot reach into a Coverage.
 
+    Pickling and :func:`copy.deepcopy` rebuild through :meth:`from_arrays`,
+    so a restored coverage is read-only and revalidated. That costs one pass
+    over the cells on the way back in, which is the price of a stored
+    coverage still being proof of its own invariants.
+
     Equality is identity-based, so comparing two large coverages never
     starts an implicit linear scan. Compare ``cells``, ``offsets``, and
     ``resolution`` yourself when you want value equality.
@@ -310,6 +315,20 @@ class Coverage:
         object.__setattr__(result, "offsets", _signed_view(offsets))
         object.__setattr__(result, "resolution", resolution)
         return result
+
+    def __reduce__(self) -> tuple[object, tuple[object, ...]]:
+        """Rebuild through :meth:`from_arrays` on unpickle or deep copy.
+
+        Both routes hand the arrays back to the validating entry point, so a
+        reconstructed coverage owns read-only copies and still carries the
+        invariants. A pickle payload is not trusted to have preserved them,
+        which is why this pays for validation rather than taking the arrays
+        as they arrive.
+        """
+        return (
+            Coverage.from_arrays,
+            (self.cells, self.offsets, self.resolution),
+        )
 
     def __len__(self) -> int:
         """Return the number of input items (segments)."""
@@ -1335,6 +1354,11 @@ def cover_cap(
     the cap or on its boundary. ``mode="overlap"`` instead returns every cell
     whose true curved area touches the cap, so even a point cap returns the
     cell containing that point.
+
+    A radius within roughly 2e-8 radians of pi reads as a full sphere under
+    ``mode="overlap"``, so from resolution 26 that mode reports cells around
+    the antipode which the cap excludes. ``mode="center"`` measures such a
+    cap from its antipode and stays exact.
 
     Counting center-selected caps is the one place where fusing the reduction
     into the geometry kernel currently wins by a wide margin, because the cap kernel

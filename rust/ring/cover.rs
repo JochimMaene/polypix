@@ -817,18 +817,7 @@ pub(crate) fn count_caps_per_cell(
                 "Selected cap-count working data is too large to fit in memory.",
             )
         })?;
-        tested_caps.extend(caps.iter().map(|cap| {
-            [
-                cap.axis[0],
-                cap.axis[1],
-                cap.axis[2],
-                if cap.full_sphere {
-                    f64::INFINITY
-                } else {
-                    cap.squared_chord_radius
-                },
-            ]
-        }));
+        tested_caps.extend(caps.iter().map(packed_cap_center));
         drop(caps);
         let mut counts = Vec::new();
         counts.try_reserve_exact(cells.len()).map_err(|_| {
@@ -844,9 +833,7 @@ pub(crate) fn count_caps_per_cell(
                     let point = center(cell, resolution);
                     tested_caps
                         .iter()
-                        .filter(|cap| {
-                            squared_chord_contains([cap[0], cap[1], cap[2]], cap[3], point)
-                        })
+                        .filter(|cap| packed_center_contains(cap, point))
                         .count() as i64
                 };
                 if parallel {
