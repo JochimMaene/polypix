@@ -64,13 +64,25 @@ def _polygon_margins(vertices: np.ndarray, resolution: int) -> np.ndarray:
     return (_grid_centers(resolution) @ _edge_normals(vertices).T).min(axis=1)
 
 
-def _cap_margins(center: np.ndarray, radius: float, resolution: int) -> np.ndarray:
-    """Squared-chord slack for every cell, positive inside, as the kernel tests."""
+def _cap_angular_margins(
+    center: np.ndarray, radius: float, resolution: int
+) -> np.ndarray:
+    """Angular slack for every cell, independent of the kernel's chord test."""
     centers = _grid_centers(resolution)
     axis = _unit(np.asarray(center, dtype=np.float64))
     effective = min(radius + CONTAINMENT_EPSILON, np.pi)
-    squared_chord = 4.0 * np.sin(0.5 * effective) ** 2
-    return squared_chord - np.sum((centers - axis) ** 2, axis=1)
+    angles = np.arctan2(np.linalg.norm(np.cross(centers, axis), axis=1), centers @ axis)
+    return effective - angles
+
+
+def _assert_cap_matches(
+    hits: np.ndarray, center: np.ndarray, radius: float, resolution: int, label: str
+) -> None:
+    """Compare cap hits exactly against an independent angular-distance oracle."""
+    expected = np.flatnonzero(_cap_angular_margins(center, radius, resolution) >= 0.0)
+    actual = np.sort(np.asarray(hits, dtype=np.int64))
+    assert actual.size == np.unique(actual).size, f"{label}: duplicate cells"
+    np.testing.assert_array_equal(actual, expected, err_msg=label)
 
 
 def _assert_matches(
@@ -251,20 +263,31 @@ def test_a_convex_polygon_can_meet_one_ring_in_two_arcs() -> None:
 def test_cap_coverage_matches_brute_force_centers(resolution: int, subtests) -> None:
     """The analytic cap ranges must agree with the cap predicate everywhere."""
     rng = np.random.default_rng(20260821 + resolution)
+    every_cell = np.arange(px.cell_count(resolution))
     radii = [1e-6, 0.01, 0.2, 1.0, 1.5, np.pi / 2, 3.0, np.pi]
     centers = np.vstack([_unit(rng.normal(size=3)) for _ in radii])
     # Axes on and beside both poles: the pole cases take their own branches.
     centers = np.vstack([centers, [[0.0, 0.0, 1.0], [0.0, 0.0, -1.0]]])
     radii = radii + [0.3, 0.3]
     for index, (center, radius) in enumerate(zip(centers, radii, strict=True)):
-        with subtests.test(index=index, radius=radius):
-            coverage = px.cover_cap(center[None], radius, resolution)
-            _assert_matches(
-                coverage.cells,
-                _cap_margins(center, radius, resolution),
-                0.0,
-                f"cap {index} radius {radius} at resolution {resolution}",
-            )
+        paths = {
+            "scan": px.cover_cap(center[None], radius, resolution).cells,
+            "candidates": px.cover_cap(
+                center[None], radius, resolution, candidate_cells=every_cell
+            ).cells,
+            "fused count": np.flatnonzero(
+                px.cover_cap(center[None], radius, resolution, reduce=px.Count())
+            ),
+        }
+        for path, hits in paths.items():
+            with subtests.test(index=index, radius=radius, path=path):
+                _assert_cap_matches(
+                    hits,
+                    center,
+                    radius,
+                    resolution,
+                    f"{path} cap {index} radius {radius} at resolution {resolution}",
+                )
 
 
 @pytest.mark.parametrize("resolution", [1, 3, 5])
