@@ -1129,8 +1129,10 @@ def cover_polygon(
         region, including boundary tangency.
     candidate_cells : array_like of int, optional
         RING indices at ``resolution`` limiting which cells are tested.
-        Duplicates and order are ignored. An empty selection
-        returns empty segments without dropping any input item.
+        Without ``reduce``, duplicates and order are ignored. With a reducer,
+        the result has one value per requested cell in the original order,
+        including duplicates. An empty selection returns empty segments or an
+        empty reduced array without dropping any input item.
     threads : int, optional
         ``None`` picks the automatic policy, ``1`` runs sequentially, and a
         larger value sets the maximum size of the reusable worker pool,
@@ -1322,7 +1324,9 @@ def cover_cap(
         cap, including boundary tangency.
     candidate_cells : array_like of int, optional
         RING indices at ``resolution`` limiting which cells are tested.
-        Duplicates and order are ignored.
+        Without ``reduce``, duplicates and order are ignored. With a reducer,
+        the result has one value per requested cell in the original order,
+        including duplicates.
     threads : int, optional
         ``None`` picks the automatic policy, ``1`` runs sequentially, and a
         larger value sets the maximum size of the reusable worker pool.
@@ -1594,7 +1598,9 @@ def cover_sweep(
         segment, including boundary tangency.
     candidate_cells : array_like of int, optional
         RING indices at ``resolution`` limiting which cells are tested.
-        Duplicates and order are ignored.
+        Without ``reduce``, duplicates and order are ignored. With a reducer,
+        the result has one value per requested cell in the original order,
+        including duplicates.
     threads : int, optional
         ``None`` picks the automatic policy, ``1`` runs sequentially, and a
         larger value sets the maximum size of the reusable worker pool.

@@ -29,10 +29,10 @@ counts = px.cover_cap(
 )
 ```
 
-`Count()` and `Sum(values)` do the accumulation inside the geometry operation.
-They avoid building a large list of hits and then collecting it in Python.
-`cover_cap(..., reduce=px.Count())` is usually the best way to count caps per
-cell.
+Reducers return the accumulated array directly instead of exposing a hit list
+to Python. Center-mode `cover_cap(..., reduce=px.Count())` also fuses covering
+and counting, avoiding the intermediate native coverage; other covering calls
+may materialize that intermediate internally.
 
 Without a selection, a reducer returns one value for every cell in the grid.
 For covering calls, pass `candidate_cells` when you only need a small

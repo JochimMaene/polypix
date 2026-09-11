@@ -60,10 +60,11 @@ The result contains one segment per input circle. `len(cap_coverage)` is the
 number of input regions, and `cap_coverage[i]` is the cell-ID array for region
 `i`.
 
-```python
-len(cap_coverage)       # 2
-cap_coverage[0]         # cells covered by the first circle
-cap_coverage.offsets    # boundaries of all segments in cap_coverage.cells
+```{doctest}
+>>> len(cap_coverage)
+2
+>>> first_cap_cells = cap_coverage[0]
+>>> segment_boundaries = cap_coverage.offsets
 ```
 
 ## Cover polygons
@@ -90,6 +91,16 @@ A polygon footprint and the cells it covers.
 `cover_polygon()` also accepts GeoJSON-like mappings and objects with a
 `__geo_interface__`. Those coordinates are longitude and latitude in decimal
 degrees. Reproject them yourself first; the interface carries no reliable CRS.
+
+```{doctest}
+>>> geojson_polygon = {
+...     "type": "Polygon",
+...     "coordinates": [[
+...         [-9.0, -6.0], [7.0, -8.0], [11.0, 4.0], [-2.0, 8.0], [-9.0, -6.0]
+...     ]],
+... }
+>>> geo_coverage = px.cover_polygon(geojson_polygon, resolution=4)
+```
 
 For several polygons, pass a sequence or a dense array shaped
 `(regions, vertices, 3)`. A `Polygon` can include holes, and a `MultiPolygon`
@@ -123,20 +134,22 @@ swath you mean.
 
 By default, a cell is selected when its center is inside the region:
 
-```python
-center_coverage = px.cover_cap(center, radius, resolution=8)
+```{doctest}
+>>> center = unit_vector(-7.5, 3.0)
+>>> radius = np.radians(6.0)
+>>> center_coverage = px.cover_cap(center, radius, resolution=8)
 ```
 
 This is fast, but a region smaller than a cell can return no cells. Use
 `mode="overlap"` when every touched cell must be included:
 
-```python
-overlap_coverage = px.cover_cap(
-    center,
-    radius,
-    resolution=8,
-    mode="overlap",
-)
+```{doctest}
+>>> overlap_coverage = px.cover_cap(
+...     center,
+...     radius,
+...     resolution=8,
+...     mode="overlap",
+... )
 ```
 
 Overlap mode costs more, especially for detailed polygons. The same option is
@@ -174,8 +187,8 @@ not recover the original directions:
 Use `cell_neighbors()` when you need the cells touching a set of cells at an
 edge or corner. The input cells themselves aren't included:
 
-```python
-neighbors = px.cell_neighbors(point_cells, resolution=4)
+```{doctest}
+>>> neighbors = px.cell_neighbors(point_cells, resolution=4)
 ```
 
 ## Count or sum over cells
@@ -183,27 +196,28 @@ neighbors = px.cell_neighbors(point_cells, resolution=4)
 `Coverage` keeps the cell IDs in one flat `cells` array and uses `offsets` to
 separate the input regions. Reduce it when you want one value per cell:
 
-```python
-counts = cap_coverage.reduce(px.Count())
+```{doctest}
+>>> counts = cap_coverage.reduce(px.Count())
 ```
 
 Because HEALPix cells have equal area, these counts can be compared directly.
 For weights or durations, use `Sum`:
 
-```python
-exposure = cap_coverage.reduce(px.Sum(values))
+```{doctest}
+>>> values = np.array([2.0, 1.5])
+>>> exposure = cap_coverage.reduce(px.Sum(values))
 ```
 
 If you only need counts, ask for them during covering. This avoids creating the
 individual region-cell hits:
 
-```python
-counts = px.cover_cap(
-    unit_vector(cap_lon, cap_lat),
-    np.radians(cap_radius_deg),
-    resolution=8,
-    reduce=px.Count(),
-)
+```{doctest}
+>>> counts = px.cover_cap(
+...     unit_vector(cap_lon, cap_lat),
+...     np.radians(cap_radius_deg),
+...     resolution=8,
+...     reduce=px.Count(),
+... )
 ```
 
 ```{figure} assets/generated/earth-observation-count.png
@@ -216,14 +230,33 @@ Cell counts can be plotted directly as a global map.
 
 For a small set of cells at a high resolution, add `candidate_cells`:
 
-```python
-site_counts = px.cover_cap(
-    unit_vector(cap_lon, cap_lat),
-    np.radians(cap_radius_deg),
-    resolution=20,
-    candidate_cells=site_cells,
-    reduce=px.Count(),
-)
+```{doctest}
+>>> site_cells = px.cell_at(unit_vector(cap_lon, cap_lat), resolution=20)
+>>> site_counts = px.cover_cap(
+...     unit_vector(cap_lon, cap_lat),
+...     np.radians(cap_radius_deg),
+...     resolution=20,
+...     candidate_cells=site_cells,
+...     reduce=px.Count(),
+... )
+>>> site_counts.shape == site_cells.shape
+True
+```
+
+Without a reducer, candidate cells are a set: output is sorted and duplicates
+are removed. With a reducer, they define the result's index space, so order and
+duplicates are preserved. Without candidates, a reducer returns a dense grid:
+
+```{doctest}
+>>> requested = np.array([7, 2, 7])
+>>> px.cover_cap([1, 0, 0], np.pi, 0, candidate_cells=requested).cells.tolist()
+[2, 7]
+>>> px.cover_cap(
+...     [1, 0, 0], np.pi, 0, candidate_cells=requested, reduce=px.Count()
+... ).tolist()
+[1, 1, 1]
+>>> px.cover_cap([1, 0, 0], np.pi, 0, reduce=px.Count()).shape
+(12,)
 ```
 
 See [Performance](performance.md) for resolution, memory, batching, and thread
@@ -234,10 +267,23 @@ choices.
 When coverage segments are consecutive time bins, `revisit()` summarizes when
 each cell was occupied:
 
-```python
-stats = px.revisit(swath_coverage)
+```{doctest}
+>>> stats = px.revisit(swath_coverage)
+>>> cadence_minutes = 1.0
+>>> gap_count = stats.run_counts - 1
+>>> mean_internal_gap_minutes = np.full(gap_count.shape, np.nan)
+>>> measured = gap_count > 0
+>>> mean_internal_gap_minutes[measured] = (
+...     stats.internal_gap_steps_sum[measured] / gap_count[measured]
+... ) * cadence_minutes
 ```
 
 The bins are ordinal. Map `stats.first_start`, `stats.last_stop`, and the gap
 fields to your own timestamps. Matching segment indices must describe matching
-time boundaries; Polypix has no clock to check that for you.
+time boundaries; Polypix has no clock to check that for you. Multiplying step
+counts by a cadence, as above, is valid only for uniformly spaced bins.
+
+For persistence, see the runnable
+[`examples/coverage_archive.py`](https://github.com/JochimMaene/polypix/blob/main/examples/coverage_archive.py)
+example, which stores the two `Coverage` arrays and reconstructs them with
+validation on load.
