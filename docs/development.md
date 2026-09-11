@@ -49,7 +49,7 @@ below.
 | Command | Does |
 | --- | --- |
 | `pixi run test` | Run the test suite |
-| `pixi run --environment test lint` | Ruff, formatting, mypy, and stub checks |
+| `pixi run lint` | Ruff, formatting, mypy, and stub checks |
 | `pixi run maturin develop` | Build the extension in place |
 | `pixi run wheel` | Build a release-mode wheel |
 | `pixi run --environment bench bench` | Run the CodSpeed benchmarks locally |
@@ -57,6 +57,7 @@ below.
 | `pixi run --environment docs docs-doctest` | Test interactive documentation examples |
 | `pixi run --environment docs docs-serve` | Preview with autobuild |
 | `pixi run --environment docs docs-figures` | Regenerate the example figures |
+| `pixi run --environment docs docs-clean` | Remove generated documentation output |
 
 ## Documentation
 
@@ -128,7 +129,8 @@ step with it.
 1. Open a release pull request setting the version, dating and completing the
    `CHANGELOG.md` section, and updating license notices if they changed. Run the
    test, lint, and docs commands, and merge only once the required workflows
-   pass.
+   pass. For every breaking change, include a before/after migration snippet in
+   the changelog.
 2. On `main`, run **Build and publish** manually as a dry run. Manual runs build
    and test the full wheel matrix without publishing.
 3. Draft a GitHub release tagged `v<version>` at the release commit, using the
