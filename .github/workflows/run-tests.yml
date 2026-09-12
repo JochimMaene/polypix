@@ -28,16 +28,12 @@ jobs:
         include:
           - os: ubuntu-latest
             macosx_deployment_target: ""
-            python_suite: false
           - os: macos-15-intel
             macosx_deployment_target: "11.0"
-            python_suite: true
           - os: macos-14
             macosx_deployment_target: "11.0"
-            python_suite: false
           - os: windows-latest
             macosx_deployment_target: ""
-            python_suite: false
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -56,7 +52,7 @@ jobs:
         run: pixi install --locked --environment default
 
       - name: Run test suite with Pixi
-        if: matrix.python_suite
+        if: matrix.os == 'macos-15-intel'
         working-directory: ${{ runner.temp }}
         env:
           PIXI_CACHE_DIR: ${{ runner.temp }}/pixi-cache

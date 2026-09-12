@@ -317,14 +317,7 @@ class Coverage:
         return result
 
     def __reduce__(self) -> tuple[object, tuple[object, ...]]:
-        """Rebuild through :meth:`from_arrays` on unpickle or deep copy.
-
-        Both routes hand the arrays back to the validating entry point, so a
-        reconstructed coverage owns read-only copies and still carries the
-        invariants. A pickle payload is not trusted to have preserved them,
-        which is why this pays for validation rather than taking the arrays
-        as they arrive.
-        """
+        """Rebuild through :meth:`from_arrays` on unpickle or copy."""
         return (
             Coverage.from_arrays,
             (self.cells, self.offsets, self.resolution),

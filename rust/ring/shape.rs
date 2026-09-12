@@ -60,15 +60,9 @@ pub(super) struct Cap {
     pub(super) sine_radius: f64,
     pub(super) cosine_radius: f64,
     pub(super) squared_chord_radius: f64,
-    /// Squared chord radius of the complementary cap around `-axis`, which is
-    /// `4 sin((pi - radius) / 2)^2`. The direct squared chord saturates at 4
-    /// once the radius comes within roughly 2.1e-8 of pi, taking the antipode
-    /// in with it; the complement keeps its own precision there because the
-    /// coordinate differences it subtracts are between neighbouring values.
+    /// Well-conditioned squared chord around `-axis` for radii past pi/2.
     pub(super) complement_squared_chord: f64,
-    /// Whether the centre predicate and the ring solver read the complement.
-    /// Past a quarter turn the boundary sits closer to `-axis` than to
-    /// `axis`, so that is the better conditioned side to measure from.
+    /// Whether containment is measured from the complementary cap.
     pub(super) complement: bool,
     pub(super) full_sphere: bool,
     pub(super) minimum_z: f64,
