@@ -21,6 +21,12 @@ REPO = Path(__file__).resolve().parent.parent
 GUIDE_LOOKUP = re.compile(r"""(?:page|guide\(\))\[["'](?P<name>[^"']+)["']\]""")
 
 
+def test_guide_has_no_unchecked_python_blocks() -> None:
+    """Tutorial Python belongs in doctest blocks so undefined names fail CI."""
+    guide = (REPO / "docs" / "guide.md").read_text()
+    assert "```python" not in guide
+
+
 def readme_quick_start() -> str:
     """Return the Python block under the README's Quick start heading."""
     text = (REPO / "README.md").read_text()

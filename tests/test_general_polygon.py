@@ -553,3 +553,103 @@ def test_general_scan_bounds_match_testing_every_cell(polygon: px.Polygon) -> No
     scanned = px.cover_polygon(polygon, resolution)
     tested = px.cover_polygon(polygon, resolution, candidate_cells=every_cell)
     np.testing.assert_array_equal(scanned.cells, tested.cells)
+
+
+def _equatorial_spike(
+    resolution: int, gap_cells: int, edge_length: float
+) -> tuple[np.ndarray, int, np.ndarray]:
+    """A concave ring whose easternmost feature is one short equatorial edge.
+
+    Cell centres on the ``z == 0`` ring share the edge's plane exactly, so
+    they reach the boundary branch of the containment test with nothing left
+    to break the tie but the endpoint check. The returned cell is the first
+    centre east of the tip: outside the ring by ``gap_cells`` cell widths,
+    and outside the ring's longitude bounds by the same amount.
+    """
+    nside = 1 << resolution
+    outside_cell = int(6 * nside * nside - 2 * nside + 123456)
+    center = px.cell_centers([outside_cell], resolution)[0]
+    longitude = float(np.arctan2(center[1], center[0]))
+    step = 2.0 * np.pi / (4 * nside)
+    gap = gap_cells * step
+    block = edge_length
+
+    def on_equator(offset: float) -> list[float]:
+        angle = longitude + offset
+        return [np.cos(angle), np.sin(angle), 0.0]
+
+    def vertex(offset: float, latitude: float) -> list[float]:
+        angle = longitude + offset
+        return [
+            np.cos(latitude) * np.cos(angle),
+            np.cos(latitude) * np.sin(angle),
+            np.sin(latitude),
+        ]
+
+    # The spike's own corner sits on the equator, so the tip edge stays in
+    # that plane exactly, and every other edge spans a whole `block`. No
+    # feature here is anywhere near the scale at which a ring's concavity
+    # stops being distinguishable from a straight edge.
+    ring = np.array(
+        [
+            vertex(-3.0 * block, -block),
+            vertex(-2.0 * block, -block),
+            on_equator(-gap - edge_length),
+            on_equator(-gap),
+            vertex(-2.0 * block, block),
+            vertex(-3.0 * block, block),
+        ]
+    )
+    window = np.arange(outside_cell - 40, outside_cell + 40, dtype=np.int64)
+    return ring, outside_cell, window
+
+
+def test_short_edge_boundary_agrees_between_scanning_and_candidates() -> None:
+    """Endpoint slack must not depend on how long the edge is.
+
+    Measuring the endpoint check in cosines lets a 1e-6-radian edge claim a
+    point 1e-14/sin(length) radians past its end, which at resolution 29 is
+    several cells. The ring scan bounds do not stretch that far, so the same
+    polygon then answered one way as a scan and another as a candidate test.
+    """
+    resolution = 29
+    ring, outside_cell, window = _equatorial_spike(resolution, 3, 1e-6)
+
+    scanned = px.cover_polygon(ring, resolution)
+    tested = px.cover_polygon(ring, resolution, candidate_cells=window)
+
+    assert outside_cell not in scanned.cells
+    assert outside_cell not in tested.cells
+    np.testing.assert_array_equal(
+        np.sort(tested.cells), np.sort(np.intersect1d(scanned.cells, window))
+    )
+    # The ring's cells step uniformly in longitude, so the tip sits exactly
+    # on the centre of the cell three west. Everything from there westward is
+    # inside, and that centre stays inside: the endpoint check still has to
+    # admit a point genuinely touching the edge's end.
+    tip_cell = outside_cell - 3
+    np.testing.assert_array_equal(np.sort(tested.cells), window[window <= tip_cell])
+    assert tip_cell in scanned.cells
+
+
+def test_short_edge_boundary_agrees_on_both_candidate_planner_choices() -> None:
+    """A reduction takes candidates as a hint, so both branches must agree.
+
+    Below the planner's threshold it tests the candidates; above it, it scans
+    and restricts afterwards. Those are different predicates on the same
+    cell, and a boundary case has to come out the same either way.
+    """
+    resolution = 29
+    ring, outside_cell, window = _equatorial_spike(resolution, 3, 1e-6)
+    # The estimate for this footprint puts the crossover near 166K cells.
+    scanning = np.arange(outside_cell - 200_000, outside_cell + 1, dtype=np.int64)
+
+    for candidates in (window, scanning):
+        counts = px.cover_polygon(
+            ring, resolution, candidate_cells=candidates, reduce=px.Count()
+        )
+        covered = px.cover_polygon(ring, resolution, candidate_cells=candidates)
+        assert int(np.asarray(counts)[candidates == outside_cell][0]) == 0
+        np.testing.assert_array_equal(
+            np.sort(candidates[np.asarray(counts) > 0]), np.sort(covered.cells)
+        )

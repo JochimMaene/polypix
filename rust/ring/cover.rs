@@ -158,7 +158,7 @@ pub(super) fn compute_candidate_coverage<T: Send + Sync>(
     threads: Option<usize>,
     prepare: impl Fn(usize) -> Result<T, String> + Send + Sync,
     z_bounds: impl Fn(&T) -> (f64, f64) + Send + Sync,
-    contains: impl Fn(&T, Vec3) -> bool + Send + Sync,
+    matches: impl Fn(&T, u64, Vec3) -> bool + Send + Sync,
 ) -> NativeResult<Coverage> {
     let prepare_all = |parallel| {
         let prepared = if parallel {
@@ -183,7 +183,7 @@ pub(super) fn compute_candidate_coverage<T: Send + Sync>(
             candidates,
             resolution,
             parallel,
-            |index, point| contains(&items[index], point),
+            |index, cell, point| matches(&items[index], cell, point),
         )
     };
     // Footprint preparation happens here too, so it counts toward the decision.
@@ -204,64 +204,6 @@ pub(super) fn compute_candidate_coverage<T: Send + Sync>(
         plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS,
         threads,
         |parallel| compute_planned(&footprints, &plan, parallel),
-    )?
-}
-
-pub(super) fn compute_candidate_overlap_coverage<T: Send + Sync>(
-    item_count: usize,
-    candidates: &[u64],
-    resolution: u8,
-    threads: Option<usize>,
-    prepare: impl Fn(usize) -> Result<T, String> + Send + Sync,
-    z_bounds: impl Fn(&T) -> (f64, f64) + Send + Sync,
-    overlaps: impl Fn(&T, u64, Vec3) -> bool + Send + Sync,
-) -> NativeResult<Coverage> {
-    let prepare_all = |parallel| {
-        let prepared = if parallel {
-            (0..item_count)
-                .into_par_iter()
-                .map(&prepare)
-                .collect::<Vec<_>>()
-        } else {
-            (0..item_count).map(&prepare).collect::<Vec<_>>()
-        };
-        prepared.into_iter().collect::<Result<Vec<_>, _>>()
-    };
-    let compute = |items: &[T], parallel| {
-        let plan = plan_item_candidates(items, candidates, resolution, parallel, &z_bounds);
-        compute_planned_candidate_cells(
-            item_count,
-            &plan,
-            candidates,
-            resolution,
-            parallel,
-            |index, cell, point| overlaps(&items[index], cell, point),
-        )
-    };
-    let preparation_work =
-        candidate_preparation_work(item_count, candidates.len(), CANDIDATE_PREPARATION_WORK);
-    if threads != Some(1) && preparation_work >= CANDIDATE_PARALLEL_MIN_VISITS {
-        return run_with_parallelism(item_count, true, threads, |parallel| {
-            let items = prepare_all(parallel)?;
-            compute(&items, parallel)
-        })?;
-    }
-    let items = prepare_all(false)?;
-    let plan = plan_item_candidates(&items, candidates, resolution, false, &z_bounds);
-    run_with_parallelism(
-        item_count,
-        plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS,
-        threads,
-        |parallel| {
-            compute_planned_candidate_cells(
-                item_count,
-                &plan,
-                candidates,
-                resolution,
-                parallel,
-                |index, cell, point| overlaps(&items[index], cell, point),
-            )
-        },
     )?
 }
 
@@ -346,7 +288,7 @@ pub(super) fn compute_mixed_coverage(
                 .map_err(|error| format!("geometry[{index}]: {error}"))
         };
         return if overlap {
-            compute_candidate_overlap_coverage(
+            compute_candidate_coverage(
                 polygon_count,
                 candidates,
                 resolution,
@@ -366,7 +308,7 @@ pub(super) fn compute_mixed_coverage(
                 threads,
                 prepare,
                 PreparedFootprint::z_bounds,
-                PreparedFootprint::contains,
+                |footprint, _cell, point| footprint.contains(point),
             )
         };
     }
@@ -523,7 +465,7 @@ pub(crate) fn cover_prepared_regions(
         )
     }) {
         return if overlap {
-            compute_candidate_overlap_coverage(
+            compute_candidate_coverage(
                 region_count,
                 candidates,
                 resolution,
@@ -560,7 +502,7 @@ pub(crate) fn cover_prepared_regions(
                 threads,
                 |region| Ok::<_, String>(regions[region].as_slice()),
                 |polygons| region_z_bounds(polygons),
-                |polygons, point| region_contains(polygons, point),
+                |polygons, _cell, point| region_contains(polygons, point),
             )
         };
     }
@@ -678,7 +620,7 @@ pub(crate) fn cover_caps(
                 .map(|cap| CapOverlap::new(cap, resolution))
                 .collect::<Vec<_>>();
             let compute_planned = |plan: &CandidatePlan, parallel| {
-                compute_planned_candidate_cells(
+                compute_planned_candidates(
                     caps.len(),
                     plan,
                     candidates,
@@ -710,7 +652,7 @@ pub(crate) fn cover_caps(
                 candidates,
                 resolution,
                 parallel,
-                |index, point| caps[index].contains(point),
+                |index, _cell, point| caps[index].contains(point),
             )
         };
         // Caps arrive prepared, so only planning and the candidate-center cache
@@ -817,18 +759,7 @@ pub(crate) fn count_caps_per_cell(
                 "Selected cap-count working data is too large to fit in memory.",
             )
         })?;
-        tested_caps.extend(caps.iter().map(|cap| {
-            [
-                cap.axis[0],
-                cap.axis[1],
-                cap.axis[2],
-                if cap.full_sphere {
-                    f64::INFINITY
-                } else {
-                    cap.squared_chord_radius
-                },
-            ]
-        }));
+        tested_caps.extend(caps.iter().map(packed_cap_center));
         drop(caps);
         let mut counts = Vec::new();
         counts.try_reserve_exact(cells.len()).map_err(|_| {
@@ -844,9 +775,7 @@ pub(crate) fn count_caps_per_cell(
                     let point = center(cell, resolution);
                     tested_caps
                         .iter()
-                        .filter(|cap| {
-                            squared_chord_contains([cap[0], cap[1], cap[2]], cap[3], point)
-                        })
+                        .filter(|cap| packed_center_contains(cap, point))
                         .count() as i64
                 };
                 if parallel {
@@ -1022,7 +951,7 @@ pub(crate) fn cover_sweep(
     }) {
         let prepare = |index| prepare_sweep_footprint(&normalized_left, &normalized_right, index);
         return if overlap {
-            compute_candidate_overlap_coverage(
+            compute_candidate_coverage(
                 segment_count,
                 candidates,
                 resolution,
@@ -1042,7 +971,7 @@ pub(crate) fn cover_sweep(
                 threads,
                 prepare,
                 PreparedFootprint::z_bounds,
-                PreparedFootprint::contains,
+                |footprint, _cell, point| footprint.contains(point),
             )
         };
     }
@@ -1099,7 +1028,7 @@ pub(super) fn compute_candidate_chunk_with(
     candidates: &[u64],
     range: Range<usize>,
     resolution: u8,
-    contains: impl Fn(usize, Vec3) -> bool,
+    matches: impl Fn(usize, u64, Vec3) -> bool,
 ) -> NativeResult<Coverage> {
     // Candidate hit rates vary from empty to dense; reserving from the full
     // candidate-set size overallocates badly for sparse queries. Grow
@@ -1119,16 +1048,18 @@ pub(super) fn compute_candidate_chunk_with(
         let candidate_range = plan.ranges[index].clone();
         if let Some(centers) = centers {
             for candidate_index in candidate_range {
+                let cell = candidates[candidate_index];
                 let point = centers[candidate_index - plan.center_start];
-                if contains(index, point) {
-                    push_coverage_cell(&mut coverage.cells, candidates[candidate_index], 1)?;
+                if matches(index, cell, point) {
+                    push_coverage_cell(&mut coverage.cells, cell, 1)?;
                 }
             }
         } else {
             for candidate_index in candidate_range {
-                let point = center(candidates[candidate_index], resolution);
-                if contains(index, point) {
-                    push_coverage_cell(&mut coverage.cells, candidates[candidate_index], 1)?;
+                let cell = candidates[candidate_index];
+                let point = center(cell, resolution);
+                if matches(index, cell, point) {
+                    push_coverage_cell(&mut coverage.cells, cell, 1)?;
                 }
             }
         }
@@ -1147,7 +1078,7 @@ pub(super) fn compute_planned_candidates(
     candidates: &[u64],
     resolution: u8,
     parallel: bool,
-    contains: impl Fn(usize, Vec3) -> bool + Send + Sync,
+    matches: impl Fn(usize, u64, Vec3) -> bool + Send + Sync,
 ) -> NativeResult<Coverage> {
     let centers = candidate_centers(plan, candidates, resolution, parallel)?;
     compute_coverage_chunks(item_count, parallel, |range| {
@@ -1157,83 +1088,15 @@ pub(super) fn compute_planned_candidates(
             candidates,
             range,
             resolution,
-            &contains,
+            &matches,
         )
     })
 }
 
-fn compute_candidate_cell_chunk_with(
-    plan: &CandidatePlan,
-    centers: Option<&[Vec3]>,
-    candidates: &[u64],
-    range: Range<usize>,
-    resolution: u8,
-    overlaps: impl Fn(usize, u64, Vec3) -> bool,
-) -> NativeResult<Coverage> {
-    let mut coverage = Coverage {
-        cells: Vec::new(),
-        offsets: Vec::new(),
-    };
-    coverage
-        .offsets
-        .try_reserve_exact(range.len() + 1)
-        .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
-    coverage.offsets.push(0);
-    for index in range {
-        if let Some(centers) = centers {
-            for candidate_index in plan.ranges[index].clone() {
-                let cell = candidates[candidate_index];
-                let point = centers[candidate_index - plan.center_start];
-                if overlaps(index, cell, point) {
-                    push_coverage_cell(&mut coverage.cells, cell, 1)?;
-                }
-            }
-        } else {
-            for candidate_index in plan.ranges[index].clone() {
-                let cell = candidates[candidate_index];
-                if overlaps(index, cell, center(cell, resolution)) {
-                    push_coverage_cell(&mut coverage.cells, cell, 1)?;
-                }
-            }
-        }
-        coverage.offsets.push(coverage.cells.len() as u64);
-    }
-    Ok(coverage)
-}
-
-fn compute_planned_candidate_cells(
-    item_count: usize,
-    plan: &CandidatePlan,
-    candidates: &[u64],
-    resolution: u8,
-    parallel: bool,
-    overlaps: impl Fn(usize, u64, Vec3) -> bool + Send + Sync,
-) -> NativeResult<Coverage> {
-    let centers = candidate_centers(plan, candidates, resolution, parallel)?;
-    compute_coverage_chunks(item_count, parallel, |range| {
-        compute_candidate_cell_chunk_with(
-            plan,
-            centers.as_deref(),
-            candidates,
-            range,
-            resolution,
-            &overlaps,
-        )
-    })
-}
-
-/// Would parallelizing a chunked dense accumulation pay for itself?
+/// Decide whether dense accumulation has enough work to justify one
+/// `buffer_length` scratch buffer per worker and the subsequent merge.
 ///
-/// Splitting `item_count` items across workers gives each one a private
-/// `buffer_length`-sized accumulator, merged by addition afterward. Two costs
-/// follow that more workers cannot shrink, because every buffer spans the whole
-/// grid however few items its chunk holds: the buffers themselves, and one pass
-/// over each of them during the merge. The scan therefore has to be large
-/// against both, or parallelizing is a net loss - measured up to 2x slower than
-/// staying sequential for a few thousand modest caps at resolution 9, where the
-/// buffers rather than the scan dominated. Declining before any buffer is
-/// allocated is what keeps the sequential fallback cheap.
-///
+/// Applies measured work thresholds and limits total scratch memory.
 fn dense_accumulator_parallel_worthwhile(
     buffer_length: usize,
     item_count: usize,

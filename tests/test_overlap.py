@@ -382,3 +382,32 @@ def test_mode_validation_and_center_default() -> None:
     )
     with pytest.raises(ValueError, match="mode must be 'center' or 'overlap'"):
         px.cover_polygon(polygon, 4, mode="full")  # type: ignore[arg-type]
+
+
+def test_overlap_reads_a_nearly_complete_cap_as_a_full_sphere() -> None:
+    """Pins the limit stated under "Numerical limits" in ``docs/api.md``.
+
+    The edge tests measure a cell against the cap's chord, and that chord
+    cannot separate a radius within roughly 2.1e-8 radians of pi from a
+    diameter. From resolution 26 a cell fits inside the sliver such a cap
+    excludes, so overlap claims it while center coverage, which measures the
+    cap from its antipode, correctly leaves it out. Change this test when
+    overlap gains the complementary form, and update the documentation with
+    it.
+    """
+    resolution = 26
+    antipodal_cell = px.cell_count(resolution) // 2 + 7
+    center = px.cell_centers([antipodal_cell], resolution)[0]
+    axis = -center
+    radius = np.pi - 2e-8
+
+    corners = px.cell_corners([antipodal_cell], resolution)[0]
+    reach = np.arccos(np.clip(corners @ center, -1.0, 1.0)).max()
+    assert reach < np.pi - radius, "the cell must lie wholly inside the sliver"
+
+    overlapping = px.cover_cap(
+        axis, radius, resolution, mode="overlap", candidate_cells=[antipodal_cell]
+    )
+    centered = px.cover_cap(axis, radius, resolution, candidate_cells=[antipodal_cell])
+    assert overlapping.cells.size == 1
+    assert centered.cells.size == 0

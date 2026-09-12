@@ -7,6 +7,21 @@ documentation. Internal refactors, tests, and CI changes are omitted.
 
 ## Unreleased
 
+### Fixes
+
+- Measure the polygon boundary endpoint check as an angle instead of a cosine
+  difference, so a short edge no longer claims a center past its end and
+  `candidate_cells=` agrees with a full scan on it.
+- Reconstruct `Coverage` through `Coverage.from_arrays()` when unpickled or
+  deep-copied, so a restored coverage keeps its validation and read-only
+  arrays.
+- Measure cap centre containment from the antipode past a quarter turn, so
+  direct-chord rounding no longer takes in the antipodal cell for gaps between
+  the usual containment tolerance and roughly 2.1e-8 radians. This covers
+  `mode="center"`, including its fused counts; under
+  `mode="overlap"` such a radius still reads as a full sphere, and from
+  resolution 26 that reports cells the cap excludes.
+
 ### Performance
 
 - Cover convex polygons and sweep segments from per-ring longitude intervals

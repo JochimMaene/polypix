@@ -60,6 +60,10 @@ pub(super) struct Cap {
     pub(super) sine_radius: f64,
     pub(super) cosine_radius: f64,
     pub(super) squared_chord_radius: f64,
+    /// Well-conditioned squared chord around `-axis` for radii past pi/2.
+    pub(super) complement_squared_chord: f64,
+    /// Whether containment is measured from the complementary cap.
+    pub(super) complement: bool,
     pub(super) full_sphere: bool,
     pub(super) minimum_z: f64,
     pub(super) maximum_z: f64,
@@ -274,11 +278,56 @@ fn cover_general_polygon(
 }
 
 #[inline(always)]
-pub(super) fn squared_chord_contains(axis: Vec3, squared_chord_radius: f64, point: Vec3) -> bool {
+fn squared_chord_distance(axis: Vec3, point: Vec3) -> f64 {
     let dx = point[0] - axis[0];
     let dy = point[1] - axis[1];
     let dz = point[2] - axis[2];
-    dx * dx + dy * dy + dz * dz <= squared_chord_radius
+    dx * dx + dy * dy + dz * dz
+}
+
+#[inline(always)]
+pub(super) fn squared_chord_contains(axis: Vec3, squared_chord_radius: f64, point: Vec3) -> bool {
+    squared_chord_distance(axis, point) <= squared_chord_radius
+}
+
+/// Centre predicate for a cap whose boundary is measured from `-axis`.
+///
+/// A point lies in the cap exactly when it is at least the complementary
+/// chord away from the antipode, so the inclusive boundary of the cap is the
+/// inclusive boundary here as well.
+#[inline(always)]
+fn complement_chord_contains(axis: Vec3, complement_squared_chord: f64, point: Vec3) -> bool {
+    squared_chord_distance([-axis[0], -axis[1], -axis[2]], point) >= complement_squared_chord
+}
+
+/// Pack one cap's centre predicate into the four values the fused count
+/// kernel keeps per cap.
+///
+/// The radius slot carries the branch: infinity always contains, a
+/// non-negative value is a direct squared chord around `axis`, and a
+/// negative value is the negated complementary chord, measured from
+/// `-axis`. A complement of exactly zero means a full sphere, which takes
+/// the infinite slot instead, so the sign stays unambiguous.
+pub(super) fn packed_cap_center(cap: &Cap) -> [f64; 4] {
+    let radius_slot = if cap.full_sphere {
+        f64::INFINITY
+    } else if cap.complement {
+        debug_assert!(cap.complement_squared_chord > 0.0);
+        -cap.complement_squared_chord
+    } else {
+        cap.squared_chord_radius
+    };
+    [cap.axis[0], cap.axis[1], cap.axis[2], radius_slot]
+}
+
+/// Test one point against a cap packed by [`packed_cap_center`].
+#[inline(always)]
+pub(super) fn packed_center_contains(packed: &[f64; 4], point: Vec3) -> bool {
+    let axis = [packed[0], packed[1], packed[2]];
+    if packed[3] < 0.0 {
+        return complement_chord_contains(axis, -packed[3], point);
+    }
+    squared_chord_contains(axis, packed[3], point)
 }
 
 impl Cap {
@@ -286,6 +335,9 @@ impl Cap {
     pub(super) fn contains(&self, point: Vec3) -> bool {
         if self.full_sphere {
             return true;
+        }
+        if self.complement {
+            return complement_chord_contains(self.axis, self.complement_squared_chord, point);
         }
         squared_chord_contains(self.axis, self.squared_chord_radius, point)
     }
@@ -297,10 +349,7 @@ impl Cap {
         }
         let longitude = (offset as f64 + ring.shift) * step;
         let (sine, cosine) = longitude.sin_cos();
-        let dx = ring.radial * cosine - self.axis[0];
-        let dy = ring.radial * sine - self.axis[1];
-        let dz = ring.z - self.axis[2];
-        dx * dx + dy * dy + dz * dz <= self.squared_chord_radius
+        self.contains([ring.radial * cosine, ring.radial * sine, ring.z])
     }
 
     fn longitude_bounds(&self) -> ([(f64, f64); 2], usize) {
@@ -352,6 +401,13 @@ impl Cap {
 /// cell in a scan, and the chord radius is a cap constant, so both are located
 /// once here instead of once per visited cell. Center mode never locates an
 /// axis and so never builds this.
+///
+/// The edge tests keep the direct chord radius, which saturates at a diameter
+/// for a radius within roughly 2.1e-8 radians of pi. That errs towards
+/// overlapping, so overlap coverage stays a superset of center coverage, but
+/// from resolution 26 a cell fits inside the sliver the cap should exclude
+/// and is then reported next to the antipode. `docs/api.md` states this
+/// limit; the centre predicate above does not share it.
 pub(super) struct CapOverlap<'cap> {
     cap: &'cap Cap,
     resolution: u8,
@@ -405,7 +461,7 @@ pub(super) fn prepare_caps(centers: &[f64], radii: &[f64]) -> Result<Vec<Cap>, S
             }
             let effective_radius = (radius + CONTAINMENT_EPSILON).min(std::f64::consts::PI);
             let (sine_radius, cosine_radius) = effective_radius.sin_cos();
-            let half_chord = (0.5 * effective_radius).sin();
+            let (half_chord, half_complement_chord) = (0.5 * effective_radius).sin_cos();
             let radial = axis[0].hypot(axis[1]);
             // A cap reaches a pole exactly when the axis-to-pole dot product
             // satisfies the same cosine predicate as any other point.
@@ -424,6 +480,8 @@ pub(super) fn prepare_caps(centers: &[f64], radii: &[f64]) -> Result<Vec<Cap>, S
                 sine_radius,
                 cosine_radius,
                 squared_chord_radius: 4.0 * half_chord * half_chord,
+                complement_squared_chord: 4.0 * half_complement_chord * half_complement_chord,
+                complement: effective_radius > std::f64::consts::FRAC_PI_2,
                 full_sphere: effective_radius == std::f64::consts::PI,
                 minimum_z: minimum_z.clamp(-1.0, 1.0),
                 maximum_z: maximum_z.clamp(-1.0, 1.0),
@@ -495,15 +553,35 @@ pub(super) fn visit_cap_ranges(cap: &Cap, resolution: u8, mut visit: impl FnMut(
         let minimum_squared_distance =
             radial_difference * radial_difference + z_difference * z_difference;
         let longitude_amplitude = 4.0 * cap.radial * ring.radial;
+        // How much squared chord this ring has left to spend on longitude at
+        // its closest approach to the axis, and how much it is short by at
+        // its farthest. Their sum is the longitude amplitude, so either one
+        // determines the crossing; carrying both keeps every decision on the
+        // side that is a sum of squares. A cap past a quarter turn measures
+        // from `-axis`, because near pi the difference `4 - complement`
+        // loses the complement entirely and takes the antipode in with it.
+        let (available, deficit) = if cap.complement {
+            let z_sum = ring.z + cap.axis[2];
+            let squared_z_sum = z_sum * z_sum;
+            let radial_sum = ring.radial + cap.radial;
+            let farthest = radial_sum * radial_sum + squared_z_sum;
+            let closest = radial_difference * radial_difference + squared_z_sum;
+            (
+                farthest - cap.complement_squared_chord,
+                cap.complement_squared_chord - closest,
+            )
+        } else {
+            let available = cap.squared_chord_radius - minimum_squared_distance;
+            (available, longitude_amplitude - available)
+        };
         if longitude_amplitude == 0.0 {
-            if minimum_squared_distance <= cap.squared_chord_radius {
+            if available >= 0.0 {
                 visit(ring.start..ring.start + ring.cells);
             }
             continue;
         }
 
-        let available = cap.squared_chord_radius - minimum_squared_distance;
-        if available >= longitude_amplitude {
+        if deficit <= 0.0 {
             visit(ring.start..ring.start + ring.cells);
             continue;
         }
@@ -521,9 +599,7 @@ pub(super) fn visit_cap_ranges(cap: &Cap, resolution: u8, mut visit: impl FnMut(
         let half_width = if bounded_available <= 0.5 * longitude_amplitude {
             2.0 * (bounded_available / longitude_amplitude).sqrt().asin()
         } else {
-            2.0 * bounded_available
-                .sqrt()
-                .atan2((longitude_amplitude - bounded_available).max(0.0).sqrt())
+            2.0 * bounded_available.sqrt().atan2(deficit.max(0.0).sqrt())
         };
         let start = cap.longitude - half_width;
         let end = cap.longitude + half_width;
