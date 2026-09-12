@@ -1359,10 +1359,11 @@ def cover_cap(
     whose true curved area touches the cap, so even a point cap returns the
     cell containing that point.
 
-    A radius within roughly 2e-8 radians of pi reads as a full sphere under
+    A radius within roughly 2.1e-8 radians of pi reads as a full sphere under
     ``mode="overlap"``, so from resolution 26 that mode reports cells around
-    the antipode which the cap excludes. ``mode="center"`` measures such a
-    cap from its antipode and stays exact.
+    the antipode which the cap excludes. ``mode="center"`` avoids this loss
+    of precision by measuring from the antipode, while retaining the usual
+    containment tolerance.
 
     Counting center-selected caps is the one place where fusing the reduction
     into the geometry kernel currently wins by a wide margin, because the cap kernel

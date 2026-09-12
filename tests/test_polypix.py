@@ -1285,8 +1285,9 @@ class PolypixTests(unittest.TestCase):
         antipodal_cell = 4
         axis = np.asarray([-1.0, 0.0, 0.0])
         # The cell centre is the exact antipode of the axis, so every radius
-        # below pi must leave it out. The direct squared chord cannot say so:
-        # it saturates at 4 once the radius comes within ~3e-8 of pi.
+        # more than the containment tolerance below pi must leave it out. The
+        # direct squared chord cannot say so: it saturates at 4 once the radius
+        # comes within ~2.1e-8 of pi.
         np.testing.assert_array_equal(
             px.cell_centers(antipodal_cell, resolution)[0], [1.0, 0.0, 0.0]
         )

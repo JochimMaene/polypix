@@ -178,14 +178,14 @@ Footprints below roughly 1e-8 radians across may be rejected. Where that starts 
 
 Coverage resolves floating-point boundary ties toward inclusion in both modes.
 
-A cap radius within roughly 2e-8 radians of pi is a full sphere as far as
+A cap radius within roughly 2.1e-8 radians of pi is a full sphere as far as
 `mode="overlap"` can tell, because the chord it measures cells against cannot
 separate that radius from a diameter. From resolution 26, where a cell is
 smaller than that, overlap coverage therefore reports cells around the
-antipode that the cap excludes. The default `mode="center"` is exact there:
-it measures such a cap from its antipode instead. Subtract the complement
-yourself, or use `mode="center"`, when a near-complete cap has to exclude its
-antipode by area.
+antipode that the cap excludes. The default `mode="center"` does not share
+this loss of precision: it measures such a cap from its antipode and retains
+the usual containment tolerance. Subtract the complement yourself, or use
+`mode="center"`, when a near-complete cap has to exclude its antipode by area.
 
 Validation compares vertex pairs and tests every edge against every vertex, so
 its cost grows with the square of the vertex count. Hand a densely sampled

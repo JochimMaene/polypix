@@ -388,7 +388,7 @@ def test_overlap_reads_a_nearly_complete_cap_as_a_full_sphere() -> None:
     """Pins the limit stated under "Numerical limits" in ``docs/api.md``.
 
     The edge tests measure a cell against the cap's chord, and that chord
-    cannot separate a radius within roughly 2e-8 radians of pi from a
+    cannot separate a radius within roughly 2.1e-8 radians of pi from a
     diameter. From resolution 26 a cell fits inside the sliver such a cap
     excludes, so overlap claims it while center coverage, which measures the
     cap from its antipode, correctly leaves it out. Change this test when

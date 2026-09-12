@@ -15,9 +15,10 @@ documentation. Internal refactors, tests, and CI changes are omitted.
 - Reconstruct `Coverage` through `Coverage.from_arrays()` when unpickled or
   deep-copied, so a restored coverage keeps its validation and read-only
   arrays.
-- Measure cap centre containment from the antipode past a quarter turn, so a
-  radius within roughly 3e-8 radians of pi no longer takes in the antipodal
-  cell. This covers `mode="center"`, including its fused counts; under
+- Measure cap centre containment from the antipode past a quarter turn, so
+  direct-chord rounding no longer takes in the antipodal cell for gaps between
+  the usual containment tolerance and roughly 2.1e-8 radians. This covers
+  `mode="center"`, including its fused counts; under
   `mode="overlap"` such a radius still reads as a full sphere, and from
   resolution 26 that reports cells the cap excludes.
 

@@ -62,7 +62,7 @@ pub(super) struct Cap {
     pub(super) squared_chord_radius: f64,
     /// Squared chord radius of the complementary cap around `-axis`, which is
     /// `4 sin((pi - radius) / 2)^2`. The direct squared chord saturates at 4
-    /// once the radius comes within roughly 3e-8 of pi, taking the antipode
+    /// once the radius comes within roughly 2.1e-8 of pi, taking the antipode
     /// in with it; the complement keeps its own precision there because the
     /// coordinate differences it subtracts are between neighbouring values.
     pub(super) complement_squared_chord: f64,
@@ -409,7 +409,7 @@ impl Cap {
 /// axis and so never builds this.
 ///
 /// The edge tests keep the direct chord radius, which saturates at a diameter
-/// for a radius within roughly 2e-8 radians of pi. That errs towards
+/// for a radius within roughly 2.1e-8 radians of pi. That errs towards
 /// overlapping, so overlap coverage stays a superset of center coverage, but
 /// from resolution 26 a cell fits inside the sliver the cap should exclude
 /// and is then reported next to the antipode. `docs/api.md` states this
