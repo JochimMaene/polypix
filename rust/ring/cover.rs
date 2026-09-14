@@ -761,6 +761,7 @@ pub(crate) fn count_caps_per_cell(
         })?;
         tested_caps.extend(caps.iter().map(packed_cap_center));
         drop(caps);
+        let all_direct = tested_caps.iter().all(|cap| cap[3] >= 0.0);
         let mut counts = Vec::new();
         counts.try_reserve_exact(cells.len()).map_err(|_| {
             NativeError::out_of_memory("Selected cap-overlap result is too large to fit in memory.")
@@ -773,10 +774,19 @@ pub(crate) fn count_caps_per_cell(
             |parallel| {
                 let count = |cell: u64| {
                     let point = center(cell, resolution);
-                    tested_caps
-                        .iter()
-                        .filter(|cap| packed_center_contains(cap, point))
-                        .count() as i64
+                    if all_direct {
+                        tested_caps
+                            .iter()
+                            .filter(|cap| {
+                                squared_chord_contains([cap[0], cap[1], cap[2]], cap[3], point)
+                            })
+                            .count() as i64
+                    } else {
+                        tested_caps
+                            .iter()
+                            .filter(|cap| packed_center_contains(cap, point))
+                            .count() as i64
+                    }
                 };
                 if parallel {
                     counts
