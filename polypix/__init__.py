@@ -197,6 +197,11 @@ class Coverage:
     against deliberate flag manipulation. Imported arrays are copied, so
     later edits to your own input cannot reach into a Coverage.
 
+    Pickling and :func:`copy.deepcopy` rebuild through :meth:`from_arrays`,
+    so a restored coverage is read-only and revalidated. That costs one pass
+    over the cells on the way back in, which is the price of a stored
+    coverage still being proof of its own invariants.
+
     Equality is identity-based, so comparing two large coverages never
     starts an implicit linear scan. Compare ``cells``, ``offsets``, and
     ``resolution`` yourself when you want value equality.
@@ -310,6 +315,13 @@ class Coverage:
         object.__setattr__(result, "offsets", _signed_view(offsets))
         object.__setattr__(result, "resolution", resolution)
         return result
+
+    def __reduce__(self) -> tuple[object, tuple[object, ...]]:
+        """Rebuild through :meth:`from_arrays` on unpickle or copy."""
+        return (
+            Coverage.from_arrays,
+            (self.cells, self.offsets, self.resolution),
+        )
 
     def __len__(self) -> int:
         """Return the number of input items (segments)."""
@@ -1110,8 +1122,10 @@ def cover_polygon(
         region, including boundary tangency.
     candidate_cells : array_like of int, optional
         RING indices at ``resolution`` limiting which cells are tested.
-        Duplicates and order are ignored. An empty selection
-        returns empty segments without dropping any input item.
+        Without ``reduce``, duplicates and order are ignored. With a reducer,
+        the result has one value per requested cell in the original order,
+        including duplicates. An empty selection returns empty segments or an
+        empty reduced array without dropping any input item.
     threads : int, optional
         ``None`` picks the automatic policy, ``1`` runs sequentially, and a
         larger value sets the maximum size of the reusable worker pool,
@@ -1303,7 +1317,9 @@ def cover_cap(
         cap, including boundary tangency.
     candidate_cells : array_like of int, optional
         RING indices at ``resolution`` limiting which cells are tested.
-        Duplicates and order are ignored.
+        Without ``reduce``, duplicates and order are ignored. With a reducer,
+        the result has one value per requested cell in the original order,
+        including duplicates.
     threads : int, optional
         ``None`` picks the automatic policy, ``1`` runs sequentially, and a
         larger value sets the maximum size of the reusable worker pool.
@@ -1335,6 +1351,12 @@ def cover_cap(
     the cap or on its boundary. ``mode="overlap"`` instead returns every cell
     whose true curved area touches the cap, so even a point cap returns the
     cell containing that point.
+
+    A radius within roughly 2.1e-8 radians of pi reads as a full sphere under
+    ``mode="overlap"``, so from resolution 26 that mode reports cells around
+    the antipode which the cap excludes. ``mode="center"`` avoids this loss
+    of precision by measuring from the antipode, while retaining the usual
+    containment tolerance.
 
     Counting center-selected caps is the one place where fusing the reduction
     into the geometry kernel currently wins by a wide margin, because the cap kernel
@@ -1570,7 +1592,9 @@ def cover_sweep(
         segment, including boundary tangency.
     candidate_cells : array_like of int, optional
         RING indices at ``resolution`` limiting which cells are tested.
-        Duplicates and order are ignored.
+        Without ``reduce``, duplicates and order are ignored. With a reducer,
+        the result has one value per requested cell in the original order,
+        including duplicates.
     threads : int, optional
         ``None`` picks the automatic policy, ``1`` runs sequentially, and a
         larger value sets the maximum size of the reusable worker pool.
