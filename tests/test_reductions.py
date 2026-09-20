@@ -190,3 +190,28 @@ def test_native_errors_map_to_distinct_python_exception_types() -> None:
     huge = px.Coverage.from_arrays([0], [0, 1], resolution=29)
     with pytest.raises(MemoryError, match="too large to fit in memory"):
         huge.reduce(px.Count())
+
+
+@pytest.mark.parametrize("resolution", [6, 29])
+def test_regional_cap_count_pruning_preserves_containment(resolution: int) -> None:
+    rng = np.random.default_rng(20260914)
+    centers = rng.normal(size=(300, 3))
+    centers /= np.linalg.norm(centers, axis=1, keepdims=True)
+    radii = rng.uniform(0.0, np.pi, len(centers))
+    radii[:3] = [0.0, np.pi / 2, np.pi]
+    # Polar, meridian, and scattered selections, including repeated requests.
+    for requested in (
+        np.array([0, 3, 1, 0]),
+        px.cell_at([[1, 0, 0], [1, 1e-5, 0], [1, -1e-5, 0]], resolution),
+        rng.integers(0, px.cell_count(resolution), 20),
+    ):
+        points = px.cell_centers(requested, resolution)
+        angles = np.arctan2(
+            np.linalg.norm(np.cross(points[:, None], centers), axis=-1),
+            points @ centers.T,
+        )
+        expected = (angles <= radii + 1e-14).sum(axis=1)
+        actual = px.cover_cap(
+            centers, radii, resolution, candidate_cells=requested, reduce=px.Count()
+        )
+        np.testing.assert_array_equal(actual, expected)

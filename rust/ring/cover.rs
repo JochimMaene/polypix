@@ -12,7 +12,10 @@ use rayon::prelude::*;
 use crate::error::{NativeError, NativeResult, COVERAGE_OUT_OF_MEMORY};
 use crate::geometry::{normalize, Vec3};
 
-use super::grid::{center, neighboring_cells, raw_cell_count, validate_cell_range, MAX_RESOLUTION};
+use super::grid::{
+    center, neighboring_cells, raw_cell_count, ring_range, ring_start, validate_cell_range,
+    MAX_RESOLUTION,
+};
 use super::parallel::run_with_parallelism;
 use super::plan::*;
 use super::shape::*;
@@ -739,7 +742,7 @@ pub(crate) fn count_caps_per_cell(
             return Ok(None);
         }
     }
-    let caps = prepare_caps(centers, radii)?;
+    let mut caps = prepare_caps(centers, radii)?;
     let raw_cells_total = raw_cell_count(resolution);
     let cell_count = usize::try_from(raw_cells_total).map_err(|_| {
         NativeError::out_of_memory("Dense cap-overlap result is too large to fit in memory.")
@@ -751,7 +754,30 @@ pub(crate) fn count_caps_per_cell(
     }
     if let Some(cells) = raw_cells {
         validate_cell_range(cells, resolution, "cells")?;
-        let work = cells.len().saturating_mul(caps.len());
+        // A regional selection cannot meet caps outside its Cartesian bounds.
+        // Only pay for another center decode when enough tests can be saved.
+        if caps.len() as f64 > CELL_DECODE_TESTS {
+            let mut minimum = [f64::INFINITY; 3];
+            let mut maximum = [f64::NEG_INFINITY; 3];
+            for point in cells.iter().map(|&cell| center(cell, resolution)) {
+                for axis in 0..3 {
+                    minimum[axis] = minimum[axis].min(point[axis]);
+                    maximum[axis] = maximum[axis].max(point[axis]);
+                }
+            }
+            caps.retain(|cap| {
+                cap.complement || cap.full_sphere || {
+                    let mut distance = 0.0;
+                    for axis in 0..3 {
+                        let delta = (minimum[axis] - cap.axis[axis])
+                            .max(cap.axis[axis] - maximum[axis])
+                            .max(0.0);
+                        distance += delta * delta;
+                    }
+                    distance <= cap.squared_chord_radius + 16.0 * f64::EPSILON
+                }
+            });
+        }
         // Pack only the 32 bytes used by the inner loop so larger batches fit in cache.
         let mut tested_caps = Vec::new();
         tested_caps.try_reserve_exact(caps.len()).map_err(|_| {
@@ -761,6 +787,7 @@ pub(crate) fn count_caps_per_cell(
         })?;
         tested_caps.extend(caps.iter().map(packed_cap_center));
         drop(caps);
+        let work = cells.len().saturating_mul(tested_caps.len());
         let all_direct = tested_caps.iter().all(|cap| cap[3] >= 0.0);
         let mut counts = Vec::new();
         counts.try_reserve_exact(cells.len()).map_err(|_| {
@@ -816,12 +843,8 @@ pub(crate) fn count_caps_per_cell(
     let ring_visits = sampled_total(caps.len(), |index| {
         cap_count_ring_visits(&caps[index], resolution)
     });
-    let parallel_worthwhile = dense_accumulator_parallel_worthwhile(
-        cell_count.saturating_add(1),
-        caps.len(),
-        ring_visits,
-        threads,
-    );
+    let parallel_worthwhile =
+        dense_accumulator_parallel_worthwhile(cell_count.saturating_add(1), ring_visits);
     run_with_parallelism(caps.len(), parallel_worthwhile, threads, |parallel| {
         let worker_count = if parallel {
             rayon::current_num_threads().min(caps.len())
@@ -832,50 +855,79 @@ pub(crate) fn count_caps_per_cell(
     })?
 }
 
-/// Count caps with an explicit worker count, merging one delta buffer per
-/// chunk by addition. Testing this directly - rather than through the thread
-/// pool dispatch above - exercises the chunked merge path on any host,
-// including single-CPU ones that would otherwise never select it.
+/// Split the output at ring boundaries. Each worker owns disjoint cells, so
+/// counting needs one output buffer, with no per-worker grid or merge.
 fn count_caps_chunked(
     caps: &[Cap],
     resolution: u8,
     cell_count: usize,
     worker_count: usize,
 ) -> NativeResult<Vec<i64>> {
-    let worker_count = worker_count.min(caps.len()).max(1);
-    let chunk_size = caps.len().div_ceil(worker_count);
-    let ranges = (0..caps.len())
-        .step_by(chunk_size)
-        .map(|start| start..(start + chunk_size).min(caps.len()))
-        .collect::<Vec<_>>();
-    let partial = if worker_count > 1 {
-        ranges
-            .into_par_iter()
-            .map(|range| count_cap_chunk(caps, range, resolution, cell_count))
-            .collect::<Vec<_>>()
-    } else {
-        ranges
-            .into_iter()
-            .map(|range| count_cap_chunk(caps, range, resolution, cell_count))
-            .collect::<Vec<_>>()
-    };
-    let mut partial = partial.into_iter().collect::<Result<Vec<_>, _>>()?;
-    let mut deltas = partial
-        .pop()
-        .expect("at least one cap produces one partial result");
-    for other in partial {
-        for (total, value) in deltas.iter_mut().zip(other) {
-            *total += value;
+    let prefix_sum = |values: &mut [i64]| {
+        let mut running = 0_i64;
+        for value in values {
+            running += *value;
+            debug_assert!(running >= 0);
+            *value = running;
         }
+    };
+    if worker_count <= 1 {
+        let mut deltas = count_cap_chunk(caps, 0..caps.len(), resolution, cell_count)?;
+        prefix_sum(&mut deltas[..cell_count]);
+        deltas.pop();
+        return Ok(deltas);
     }
-    let mut running = 0_i64;
-    for value in deltas.iter_mut().take(cell_count) {
-        running += *value;
-        debug_assert!(running >= 0);
-        *value = running;
-    }
-    debug_assert_eq!(running + deltas[cell_count], 0);
+    let nside = 1_u64 << resolution;
+    let ring_count = 4 * nside - 1;
+    let rings_per_chunk = ring_count
+        .div_ceil(worker_count.saturating_mul(4) as u64)
+        .max(1);
+    let mut bands = Vec::new();
+    bands
+        .try_reserve_exact(caps.len())
+        .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
+    bands.extend(
+        caps.iter()
+            .map(|cap| ring_range(nside, cap.minimum_z, cap.maximum_z)),
+    );
+    let mut deltas = zeroed_cap_deltas(cell_count)?;
     deltas.pop();
+    let mut remaining = deltas.as_mut_slice();
+    let mut chunks = Vec::new();
+    for first in (1..=ring_count).step_by(rings_per_chunk as usize) {
+        let last = (first + rings_per_chunk - 1).min(ring_count);
+        let start = ring_start(nside, first) as usize;
+        let end = ring_start(nside, last + 1) as usize;
+        let (chunk, tail) = remaining.split_at_mut(end - start);
+        remaining = tail;
+        chunks.push((first, last, start, chunk));
+    }
+    chunks
+        .into_par_iter()
+        .for_each(|(first, last, start, chunk)| {
+            for (cap, &(cap_first, cap_last)) in caps.iter().zip(&bands) {
+                if cap_first > last || cap_last < first {
+                    continue;
+                }
+                if cap.full_sphere {
+                    chunk[0] += 1;
+                    continue;
+                }
+                visit_cap_ranges_in_rings(
+                    cap,
+                    resolution,
+                    first.max(cap_first),
+                    last.min(cap_last),
+                    |range| {
+                        chunk[range.start as usize - start] += 1;
+                        if let Some(end) = chunk.get_mut(range.end as usize - start) {
+                            *end -= 1;
+                        }
+                    },
+                );
+            }
+            prefix_sum(chunk);
+        });
     Ok(deltas)
 }
 
@@ -1103,33 +1155,10 @@ pub(super) fn compute_planned_candidates(
     })
 }
 
-/// Decide whether dense accumulation has enough work to justify one
-/// `buffer_length` scratch buffer per worker and the subsequent merge.
-///
-/// Applies measured work thresholds and limits total scratch memory.
-fn dense_accumulator_parallel_worthwhile(
-    buffer_length: usize,
-    item_count: usize,
-    ring_visits: usize,
-    threads: Option<usize>,
-) -> bool {
-    if ring_visits < DENSE_ACCUMULATOR_PARALLEL_MIN_RING_VISITS
-        || ring_visits < buffer_length.saturating_mul(DENSE_ACCUMULATOR_PARALLEL_RING_VISIT_RATIO)
-    {
-        return false;
-    }
-    let available_workers = std::thread::available_parallelism()
-        .map(|count| count.get())
-        .unwrap_or(1);
-    let maximum_workers = match threads {
-        Some(requested) => requested.min(available_workers),
-        None => rayon::current_num_threads(),
-    }
-    .min(item_count);
-    buffer_length
-        .checked_mul(std::mem::size_of::<i64>())
-        .and_then(|bytes| bytes.checked_mul(maximum_workers))
-        .is_some_and(|bytes| bytes <= DENSE_ACCUMULATOR_PARALLEL_MAX_BYTES)
+/// Parallelism partitions the output; scratch memory does not grow with workers.
+fn dense_accumulator_parallel_worthwhile(buffer_length: usize, ring_visits: usize) -> bool {
+    ring_visits >= DENSE_ACCUMULATOR_PARALLEL_MIN_RING_VISITS
+        && ring_visits >= buffer_length.saturating_mul(DENSE_ACCUMULATOR_PARALLEL_RING_VISIT_RATIO)
 }
 
 #[cfg(test)]
@@ -1168,9 +1197,8 @@ mod tests {
 
     #[test]
     fn dense_cap_counts_agree_regardless_of_thread_count() {
-        // The dense fixture above passes `threads=Some(1)`, so it never
-        // reaches the chunked-and-merged path at all. This batch is large
-        // enough to exercise that path on a multi-core host.
+        // This batch is large enough to exercise the partitioned output on
+        // a multi-core host.
         let (centers, radii) = caps_along_equator(12_000, 0.12);
         let sequential = count_caps_per_cell(&centers, &radii, 6, None, Some(1))
             .unwrap()
@@ -1184,17 +1212,21 @@ mod tests {
     }
 
     #[test]
-    fn dense_cap_chunked_merge_matches_sequential_on_any_host() {
-        // The pool dispatch above only selects parallel execution when the
-        // host reports multiple CPUs. Driving the chunked path with two
-        // workers directly exercises its merge on single-CPU hosts too.
-        let (centers, radii) = caps_along_equator(12_000, 0.12);
+    fn dense_cap_ring_partitions_match_sequential_on_any_host() {
+        // Exercise partition boundaries even when the host has only one CPU.
+        let (mut centers, mut radii) = caps_along_equator(1000, 0.12);
+        centers.extend([0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 1.0, 0.0, 0.0]);
+        radii.extend([0.4, std::f64::consts::PI / 2.0, std::f64::consts::PI]);
         let caps = prepare_caps(&centers, &radii).unwrap();
-        let cell_count = raw_cell_count(6) as usize;
-        let sequential = count_caps_chunked(&caps, 6, cell_count, 1).unwrap();
-        let merged = count_caps_chunked(&caps, 6, cell_count, 2).unwrap();
-        assert_eq!(merged, sequential);
-        assert!(sequential.iter().any(|&value| value > 0));
+        for resolution in [0, 3, 6] {
+            let cell_count = raw_cell_count(resolution) as usize;
+            let sequential = count_caps_chunked(&caps, resolution, cell_count, 1).unwrap();
+            for workers in [2, 3, 8, 32] {
+                let partitioned =
+                    count_caps_chunked(&caps, resolution, cell_count, workers).unwrap();
+                assert_eq!(partitioned, sequential);
+            }
+        }
     }
 
     #[test]
@@ -1207,9 +1239,7 @@ mod tests {
         assert_eq!(ring_visits, 100);
         assert!(!dense_accumulator_parallel_worthwhile(
             raw_cell_count(8) as usize + 1,
-            caps.len(),
             ring_visits,
-            Some(8),
         ));
     }
 }

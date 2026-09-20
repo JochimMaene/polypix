@@ -816,6 +816,26 @@ def test_cover_cap_selected_count_small_request(
     )
 
 
+def test_cover_cap_regional_constellation_count(benchmark, constellation_caps) -> None:
+    centers, radii = constellation_caps
+    requested = px.cover_cap(_lonlat_to_xyz(10.0, 51.0), 0.06, 9).cells
+    counts = benchmark(
+        px.cover_cap,
+        centers,
+        radii,
+        9,
+        candidate_cells=requested,
+        reduce=px.Count(),
+        threads=1,
+    )
+    np.testing.assert_array_equal(
+        counts,
+        px.cover_cap(centers, radii, 9, candidate_cells=requested).reduce(
+            px.Count(), cells=requested
+        ),
+    )
+
+
 def test_cover_polygon_selected_count_small_request(
     benchmark, footprints: np.ndarray
 ) -> None:
