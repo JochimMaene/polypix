@@ -36,17 +36,9 @@ pub(super) const CANDIDATE_CENTER_CACHE_REUSE: usize = 3;
 
 pub(super) const CANDIDATE_CENTER_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
 
-// A chunked dense accumulator - today only the dense cap count - gives each
-// worker its own grid-sized buffer and merges them by addition afterward. That
-// buffer spans `cell_count` regardless of how few items a worker's chunk holds,
-// so unlike coverage chunking, more workers does not shrink it: at resolution
-// 11 one worker's buffer alone is 402 MiB. Bound the total rather than the
-// per-worker share, and fall back to a single sequential buffer above it.
-pub(super) const DENSE_ACCUMULATOR_PARALLEL_MAX_BYTES: usize = 256 * 1024 * 1024;
-
 // Dense cap counting touches two delta endpoints per emitted ring range; the
 // number of cells inside those ranges does not affect its work. Parallel scans
-// crossed over around one worker-buffer length and 128K visited rings on the
+// crossed over around one output-buffer length and 128K visited rings on the
 // reference eight-core workload.
 pub(super) const DENSE_ACCUMULATOR_PARALLEL_MIN_RING_VISITS: usize = 1 << 17;
 pub(super) const DENSE_ACCUMULATOR_PARALLEL_RING_VISIT_RATIO: usize = 1;

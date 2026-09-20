@@ -231,11 +231,10 @@ fn polygon_z_bounds_for(
         let cosine = dot(start, end).clamp(-1.0, 1.0);
         let derivative_at_start = end[2] - start[2] * cosine;
         let derivative_at_end = end[2] * cosine - start[2];
-        let extremum = edge_normal[0].hypot(edge_normal[1]);
         if derivative_at_start > 0.0 && derivative_at_end < 0.0 {
-            maximum = maximum.max(extremum);
+            maximum = maximum.max(edge_normal[0].hypot(edge_normal[1]));
         } else if derivative_at_start < 0.0 && derivative_at_end > 0.0 {
-            minimum = minimum.min(-extremum);
+            minimum = minimum.min(-edge_normal[0].hypot(edge_normal[1]));
         }
     }
 
@@ -492,6 +491,27 @@ pub(super) fn prepare_caps(centers: &[f64], radii: &[f64]) -> Result<Vec<Cap>, S
         .collect()
 }
 
+/// Inclusive integer endpoints, widened only at a floating-point tie. Ring
+/// coordinates are finite and bounded by [-1, 2^31], so truncation is exact
+/// here and avoids four libm rounding calls per interval on baseline x86-64.
+fn interval_offsets(first: f64, last: f64, cells: u64) -> (i64, i64, bool) {
+    let first_integer = first as i64;
+    let last_integer = last as i64;
+    let first_fraction = first - first_integer as f64;
+    let last_fraction = last - last_integer as f64;
+    let uncertainty = INDEX_UNCERTAINTY_ULPS * f64::EPSILON * cells as f64;
+    let ambiguous =
+        |fraction: f64| fraction.abs() <= uncertainty || 1.0 - fraction.abs() <= uncertainty;
+    let ambiguous_first = ambiguous(first_fraction);
+    let ambiguous_last = ambiguous(last_fraction);
+    (
+        first_integer + i64::from(first_fraction > 0.0) - i64::from(ambiguous_first),
+        last_integer - i64::from(last_fraction < 0.0) + i64::from(ambiguous_last),
+        ambiguous_first || ambiguous_last,
+    )
+}
+
+#[inline]
 pub(super) fn cap_interval_range(
     cap: &Cap,
     ring: &Ring,
@@ -502,20 +522,14 @@ pub(super) fn cap_interval_range(
 ) -> Option<Range<u64>> {
     let first_value = start / step - ring.shift;
     let last_value = end / step - ring.shift;
-    let index_uncertainty = INDEX_UNCERTAINTY_ULPS * f64::EPSILON * ring.cells as f64;
-    let ambiguous_first = (first_value - first_value.round()).abs() <= index_uncertainty;
-    let ambiguous_last = (last_value - last_value.round()).abs() <= index_uncertainty;
-    let nominal_first = first_value.ceil() as i64;
-    let nominal_last = last_value.floor() as i64;
-    let mut first = nominal_first - i64::from(ambiguous_first);
-    let mut last = nominal_last + i64::from(ambiguous_last);
+    let (mut first, mut last, ambiguous) = interval_offsets(first_value, last_value, ring.cells);
     first = first.max(0).max(*next_unscanned);
     last = last.min((ring.cells - 1) as i64);
     // The continuous solve is already much more precise than one discrete
     // center. Invoke the definitive chord predicate only when an endpoint is
     // numerically indistinguishable from an integer ring index; ordinary spans
     // avoid two libm calls per crossed ring.
-    if ambiguous_first || ambiguous_last {
+    if ambiguous {
         while first <= last && !cap.contains_on_ring(ring, step, first as u64) {
             first += 1;
         }
@@ -537,6 +551,17 @@ pub(super) fn visit_cap_ranges(cap: &Cap, resolution: u8, mut visit: impl FnMut(
         return;
     }
     let (first_ring, last_ring) = ring_range(nside, cap.minimum_z, cap.maximum_z);
+    visit_cap_ranges_in_rings(cap, resolution, first_ring, last_ring, visit);
+}
+
+pub(super) fn visit_cap_ranges_in_rings(
+    cap: &Cap,
+    resolution: u8,
+    first_ring: u64,
+    last_ring: u64,
+    mut visit: impl FnMut(Range<u64>),
+) {
+    let nside = 1_u64 << resolution;
     let ring_table = cached_scan_rings(resolution);
 
     for ring_index in first_ring..=last_ring {
@@ -1022,24 +1047,9 @@ fn cover_cells_in_bounds<const PAD_LONGITUDE: bool>(
             // Conversion to ring-index units magnifies angular rounding with
             // ring size. Check one neighboring cell only when a bound is
             // indistinguishable from an integer at that scale.
-            let index_uncertainty = INDEX_UNCERTAINTY_ULPS * f64::EPSILON * ring.cells as f64;
-            let widen_first = (first_value - first_value.round()).abs() <= index_uncertainty;
-            let widen_last = (last_value - last_value.round()).abs() <= index_uncertainty;
-            let nominal_first = first_value.ceil() as i64;
-            let nominal_last = last_value.floor() as i64;
-            let first = if widen_first {
-                nominal_first.saturating_sub(1)
-            } else {
-                nominal_first
-            }
-            .max(0)
-            .max(next_unscanned) as u64;
-            let last = if widen_last {
-                nominal_last.saturating_add(1)
-            } else {
-                nominal_last
-            }
-            .min((ring.cells - 1) as i64);
+            let (first, last, _) = interval_offsets(first_value, last_value, ring.cells);
+            let first = first.max(0).max(next_unscanned) as u64;
+            let last = last.min((ring.cells - 1) as i64);
             if last < first as i64 {
                 continue;
             }
@@ -1682,6 +1692,38 @@ mod tests {
         CONTAINMENT_EPSILON,
     };
     use crate::ring::grid::{center, raw_cell_count, ring_range};
+
+    #[test]
+    fn interval_rounding_matches_libm_at_cell_boundaries() {
+        for resolution in 0..=29 {
+            let cells = 4_u64 << resolution;
+            let uncertainty = super::INDEX_UNCERTAINTY_ULPS * f64::EPSILON * cells as f64;
+            for integer in [-1, 0, 1, cells as i64 / 2, cells as i64] {
+                for fraction in [
+                    -0.5,
+                    -2.0 * uncertainty,
+                    -uncertainty,
+                    0.0,
+                    uncertainty,
+                    2.0 * uncertainty,
+                    0.5,
+                ] {
+                    let first = integer as f64 + fraction;
+                    let last = first + 0.125;
+                    let ambiguous_first = (first - first.round()).abs() <= uncertainty;
+                    let ambiguous_last = (last - last.round()).abs() <= uncertainty;
+                    assert_eq!(
+                        super::interval_offsets(first, last, cells),
+                        (
+                            first.ceil() as i64 - i64::from(ambiguous_first),
+                            last.floor() as i64 + i64::from(ambiguous_last),
+                            ambiguous_first || ambiguous_last,
+                        )
+                    );
+                }
+            }
+        }
+    }
 
     /// Cover a convex footprint and check every cell against an independent
     /// per-center classification over the same latitude band.

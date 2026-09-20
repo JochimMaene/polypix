@@ -24,6 +24,11 @@ documentation. Internal refactors, tests, and CI changes are omitted.
 
 ### Performance
 
+- Count regional caps after pruning footprints outside the requested cells'
+  bounds, and partition dense cap counts into one shared output buffer instead
+  of allocating and merging a complete grid per worker.
+- Avoid redundant rounding calls in ring scans while preserving boundary
+  containment.
 - Cover convex polygons and sweep segments from per-ring longitude intervals
   instead of testing every center in the longitude envelope, while narrow
   envelopes keep the existing scan.
