@@ -24,6 +24,12 @@ polypix/_vendor/
 docs/assets/generated/*.png
 docs/assets/generated/*.json
 docs/assets/generated/*.html
+!docs/assets/generated/sphere-levels.png
 
 # Generated documentation figures
 docs/assets/generated/*.svg
+!docs/assets/generated/cell-at.svg
+!docs/assets/generated/cover-cap.svg
+!docs/assets/generated/cover-convex-polygon.svg
+!docs/assets/generated/cover-sweep.svg
+!docs/assets/generated/resolution-steps.svg
