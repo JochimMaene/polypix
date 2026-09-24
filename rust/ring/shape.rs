@@ -434,6 +434,14 @@ impl<'cap> CapOverlap<'cap> {
         if self.axis_cell == cell {
             return true;
         }
+        // The whole cell lies within this chord distance of its center.
+        // A more distant cap cannot meet any of its curved boundary edges.
+        let reach = self.chord_radius
+            + CELL_EDGE_DOT_LIPSCHITZ / (1_u64 << self.resolution) as f64
+            + CELL_EDGE_CHORD_GUARD;
+        if squared_chord_distance(cap.axis, point) > reach * reach {
+            return false;
+        }
         let boundary = CellBoundary::new(cell, self.resolution);
         let disk = CapDisk {
             axis: cap.axis,
@@ -1263,15 +1271,16 @@ fn cell_edge_plane_interval_intersects(
     boundary: &CellBoundary,
     edge: u8,
     arc: MinorArc,
-    start: f64,
-    end: f64,
+    interval: [(f64, f64); 2],
     depth: u8,
     budget: &mut u32,
 ) -> Intersection {
+    let [(start, start_residual), (end, end_residual)] = interval;
     let middle = 0.5 * (start + end);
     let point = boundary.point(edge, middle);
     let residual = dot(arc.normal, point);
-    let accepted = arc.contains(point);
+    let span_slack = arc.span_slack(point);
+    let accepted = span_slack >= -CONTAINMENT_EPSILON;
     if residual.abs() <= CONTAINMENT_EPSILON && accepted {
         return Intersection::Yes;
     }
@@ -1290,8 +1299,17 @@ fn cell_edge_plane_interval_intersects(
     // along a cell edge that is nearly coplanar with the arc's great circle
     // but lies far beyond its endpoints, which is most of the cost when a
     // footprint edge follows a chain of cell edges.
-    if arc.span_slack(point) < -residual_bound - CONTAINMENT_EPSILON {
+    if span_slack < -residual_bound - CONTAINMENT_EPSILON {
         return Intersection::No;
+    }
+    // Opposite plane signs guarantee a crossing. Once this whole interval
+    // lies inside the minor arc's endpoint planes, that crossing proves
+    // overlap without bisecting down to the plane tolerance.
+    if span_slack > residual_bound + CONTAINMENT_EPSILON
+        && ((start_residual < -CONTAINMENT_EPSILON && end_residual > CONTAINMENT_EPSILON)
+            || (end_residual < -CONTAINMENT_EPSILON && start_residual > CONTAINMENT_EPSILON))
+    {
+        return Intersection::Yes;
     }
     // A converged interval is a single point to within the plane tolerance, so
     // the sampled classification is the answer rather than a budget failure.
@@ -1304,10 +1322,24 @@ fn cell_edge_plane_interval_intersects(
         return Intersection::Indeterminate;
     }
     *budget -= 1;
-    cell_edge_plane_interval_intersects(boundary, edge, arc, start, middle, depth - 1, budget)
-        .or_else(|| {
-            cell_edge_plane_interval_intersects(boundary, edge, arc, middle, end, depth - 1, budget)
-        })
+    cell_edge_plane_interval_intersects(
+        boundary,
+        edge,
+        arc,
+        [(start, start_residual), (middle, residual)],
+        depth - 1,
+        budget,
+    )
+    .or_else(|| {
+        cell_edge_plane_interval_intersects(
+            boundary,
+            edge,
+            arc,
+            [(middle, residual), (end, end_residual)],
+            depth - 1,
+            budget,
+        )
+    })
 }
 
 fn cell_edge_cap_interval_intersects(
@@ -1393,7 +1425,14 @@ fn cell_edge_arc_intersection(
     {
         return Intersection::Yes;
     }
-    cell_edge_plane_interval_intersects(boundary, edge, arc, 0.0, 1.0, CELL_EDGE_ROOT_DEPTH, budget)
+    cell_edge_plane_interval_intersects(
+        boundary,
+        edge,
+        arc,
+        [(0.0, samples[0].1), (1.0, samples[4].1)],
+        CELL_EDGE_ROOT_DEPTH,
+        budget,
+    )
 }
 
 fn cell_edge_intersects_arc(boundary: &CellBoundary, edge: u8, arc: MinorArc) -> bool {
@@ -1519,9 +1558,21 @@ impl<T: std::borrow::Borrow<PreparedFootprint>> PreparedFootprintOverlap<T> {
             return true;
         }
         let boundary = CellBoundary::new(cell, self.resolution);
-        self.arcs
-            .iter()
-            .any(|&arc| (0..4).any(|edge| cell_edge_intersects_arc(&boundary, edge, arc)))
+        if (0..4).any(|edge| self.footprint.borrow().contains(boundary.point(edge, 0.0))) {
+            return true;
+        }
+        // From the face center to any boundary point, the two coordinate
+        // displacements sum to at most one. The existing face-map speed
+        // bound therefore bounds both the plane residual and arc-span change
+        // over the entire cell. Reject distant arcs before decoding its edges.
+        let bound = CELL_EDGE_DOT_LIPSCHITZ / boundary.nside as f64
+            + CELL_EDGE_CHORD_GUARD
+            + CONTAINMENT_EPSILON;
+        self.arcs.iter().any(|&arc| {
+            dot(arc.normal, point).abs() <= bound
+                && arc.span_slack(point) >= -bound
+                && (0..4).any(|edge| cell_edge_intersects_arc(&boundary, edge, arc))
+        })
     }
 
     pub(super) fn cover(&self, cells: &mut Vec<u64>) -> NativeResult<()> {
@@ -1870,7 +1921,20 @@ mod tests {
                 footprint.cover_overlap(resolution, &mut actual).unwrap();
                 let overlap = PreparedFootprintOverlap::new(footprint, resolution);
                 let expected = (0..raw_cell_count(resolution))
-                    .filter(|&cell| overlap.overlaps_cell_at(cell, center(cell, resolution)))
+                    .filter(|&cell| {
+                        // Independent of whole-cell arc rejection: test every
+                        // polygon arc against every cell boundary edge.
+                        footprint.contains(center(cell, resolution))
+                            || overlap.vertex_cells.contains(&cell)
+                            || {
+                                let boundary = CellBoundary::new(cell, resolution);
+                                overlap.arcs.iter().any(|&arc| {
+                                    (0..4).any(|edge| {
+                                        super::cell_edge_intersects_arc(&boundary, edge, arc)
+                                    })
+                                })
+                            }
+                    })
                     .collect::<Vec<_>>();
                 assert_eq!(actual, expected, "polygon resolution {resolution}");
             }
@@ -1879,7 +1943,16 @@ mod tests {
             cap.cover_overlap(resolution, &mut actual).unwrap();
             let overlap = CapOverlap::new(&cap, resolution);
             let expected = (0..raw_cell_count(resolution))
-                .filter(|&cell| overlap.overlaps_cell_at(cell, center(cell, resolution)))
+                .filter(|&cell| {
+                    cap.contains(center(cell, resolution)) || overlap.axis_cell == cell || {
+                        let boundary = CellBoundary::new(cell, resolution);
+                        let disk = super::CapDisk {
+                            axis: cap.axis,
+                            chord_radius: overlap.chord_radius,
+                        };
+                        (0..4).any(|edge| super::cell_edge_within_cap(&boundary, edge, disk))
+                    }
+                })
                 .collect::<Vec<_>>();
             assert_eq!(actual, expected, "cap resolution {resolution}");
         }
@@ -2252,12 +2325,19 @@ mod tests {
             let nside = 1_u64 << resolution;
             for cell in 0..raw_cell_count(resolution) {
                 let boundary = CellBoundary::new(cell, resolution);
+                let center = center(cell, resolution);
                 for edge in 0..4 {
                     let mut previous = boundary.point(edge, 0.0);
                     for step in 1..=steps {
                         let point = boundary.point(edge, step as f64 / steps as f64);
                         let distance = norm(cross(previous, point)).atan2(dot(previous, point));
                         let speed = distance * steps as f64 * nside as f64;
+                        let from_center = norm([
+                            point[0] - center[0],
+                            point[1] - center[1],
+                            point[2] - center[2],
+                        ]);
+                        assert!(from_center * (nside as f64) < CELL_EDGE_DOT_LIPSCHITZ);
                         assert!(
                             speed < CELL_EDGE_DOT_LIPSCHITZ,
                             "resolution {resolution}, cell {cell}, edge {edge}: {speed}"
@@ -2267,6 +2347,37 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn bracketed_arc_crossing_needs_no_subdivision() {
+        let resolution = 6;
+        let boundary = CellBoundary::new(raw_cell_count(resolution) / 2 + 7, resolution);
+        let point = boundary.point(0, 0.37);
+        let edge_plane =
+            normalize(cross(boundary.point(0, 0.36), boundary.point(0, 0.38))).unwrap();
+        let across = normalize(cross(cross(point, edge_plane), point)).unwrap();
+        let endpoint = |offset: f64| {
+            normalize([
+                point[0] + offset * across[0],
+                point[1] + offset * across[1],
+                point[2] + offset * across[2],
+            ])
+            .unwrap()
+        };
+        let arc = MinorArc::new(endpoint(-0.1), endpoint(0.1));
+        let mut budget = 0;
+        assert_eq!(
+            cell_edge_arc_intersection(&boundary, 0, arc, &mut budget),
+            Intersection::Yes
+        );
+        // The same great circle crosses, but outside this shorter arc.
+        let distant_arc = MinorArc::new(endpoint(0.05), endpoint(0.1));
+        let mut budget = CELL_EDGE_NODE_BUDGET;
+        assert_eq!(
+            cell_edge_arc_intersection(&boundary, 0, distant_arc, &mut budget),
+            Intersection::No
+        );
     }
 
     #[test]
