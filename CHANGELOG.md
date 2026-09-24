@@ -7,37 +7,25 @@ documentation. Internal refactors, tests, and CI changes are omitted.
 
 ## Unreleased
 
+## [0.5.1] — 2026-09-24
+
 ### Fixes
 
-- Measure the polygon boundary endpoint check as an angle instead of a cosine
-  difference, so a short edge no longer claims a center past its end and
-  `candidate_cells=` agrees with a full scan on it.
-- Reconstruct `Coverage` through `Coverage.from_arrays()` when unpickled or
-  deep-copied, so a restored coverage keeps its validation and read-only
-  arrays.
-- Measure cap centre containment from the antipode past a quarter turn, so
-  direct-chord rounding no longer takes in the antipodal cell for gaps between
-  the usual containment tolerance and roughly 2.1e-8 radians. This covers
-  `mode="center"`, including its fused counts; under
-  `mode="overlap"` such a radius still reads as a full sphere, and from
-  resolution 26 that reports cells the cap excludes.
+- Fixed coverage near short polygon edges, so full scans and
+  `candidate_cells=` return consistent results.
+- Kept `Coverage` arrays validated and read-only after copying or unpickling.
+- Fixed `mode="center"` coverage and counts for caps covering almost the
+  entire sphere.
+
+Known limitation: `mode="overlap"` still treats cap radii within roughly
+2.1e-8 radians of pi as a full sphere. At resolutions 26 and above, this can
+include cells outside the cap.
 
 ### Performance
 
-- Count regional caps after pruning footprints outside the requested cells'
-  bounds, and partition dense cap counts into one shared output buffer instead
-  of allocating and merging a complete grid per worker.
-- Avoid redundant rounding calls in ring scans while preserving boundary
-  containment.
-- Cover convex polygons and sweep segments from per-ring longitude intervals
-  instead of testing every center in the longitude envelope, while narrow
-  envelopes keep the existing scan.
-- Stopped full-sphere caps from triggering parallel dense accumulation when
-  counting caps per cell.
-- Precompute overlap arcs and vertex cells once per footprint instead of once
-  per tested cell in overlap coverage.
-- Answer sparse revisit statistics for a single minimum source without the
-  intermediate counting map.
+- Sped up cap counts and reduced memory use when counting across the full grid.
+- Sped up convex polygon and sweep coverage, ring scans, and overlap coverage.
+- Sped up sparse `revisit(minimum_sources=1)` calculations.
 
 ## [0.5.0] — 2026-09-05
 
@@ -173,7 +161,8 @@ available under their original license terms.
 - Returned packed HEALPix NESTED cell IDs with center and boundary helpers.
 - Published Python 3.12 wheels for Linux and macOS.
 
-[Unreleased]: https://github.com/JochimMaene/polypix/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/JochimMaene/polypix/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/JochimMaene/polypix/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/JochimMaene/polypix/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/JochimMaene/polypix/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/JochimMaene/polypix/compare/v0.2.1...v0.3.0
