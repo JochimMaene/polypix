@@ -68,10 +68,11 @@ signatures and validation rules on the site are the ones in the source rather
 than a second copy kept in step by hand.
 
 `docs-build` and `docs-serve` both run `docs-figures` first. That step executes
-both case studies and writes their maps and measurement tables into
-`docs/assets/generated/`, which the example pages then include directly, so the
-figures have to exist before Sphinx runs. After changing an example, regenerate
-them yourself; `docs-serve` will not do it on reload.
+both case studies and redraws the center-versus-overlap diagrams, writing their
+maps and measurement tables into `docs/assets/generated/`. The remaining guide
+figures are stable assets checked into that directory. After changing an
+example or coverage behavior, regenerate the dynamic figures yourself;
+`docs-serve` will not do it on reload.
 
 Each example also runs standalone, writing its maps to the working directory:
 
