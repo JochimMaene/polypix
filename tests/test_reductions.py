@@ -84,11 +84,7 @@ def test_fused_cap_counts_match_covering_then_reducing() -> None:
 
 
 def test_cap_counts_agree_on_both_sides_of_the_selected_work_estimate() -> None:
-    """Both sides of the fuse/cover decision must return the same counts.
-
-    ``cover_cap(reduce=Count(cells=...))`` fuses a small request and covers first
-    for a large one, because fusing costs one cap test per requested cell.
-    """
+    """Direct candidate tests and selected ring spans must return the same counts."""
     rng = np.random.default_rng(20240819)
     centers = rng.normal(size=(400, 3))
     centers /= np.linalg.norm(centers, axis=1, keepdims=True)

@@ -13,8 +13,8 @@ use crate::error::{NativeError, NativeResult, COVERAGE_OUT_OF_MEMORY};
 use crate::geometry::{normalize, Vec3};
 
 use super::grid::{
-    center, neighboring_cells, raw_cell_count, ring_range, ring_start, validate_cell_range,
-    MAX_RESOLUTION,
+    center, neighboring_cells, raw_cell_count, ring_of_cell, ring_range, ring_start,
+    validate_cell_range, MAX_RESOLUTION,
 };
 use super::parallel::run_with_parallelism;
 use super::plan::*;
@@ -731,15 +731,21 @@ pub(crate) fn count_caps_per_cell(
     threads: Option<usize>,
 ) -> NativeResult<Option<Vec<i64>>> {
     debug_assert!(resolution <= MAX_RESOLUTION);
-    // Decide before preparing or validating anything, so that declining costs
-    // almost nothing: the caller then covers once and counts instead.
+    // Choose before preparing geometry: a compact selection can accumulate
+    // ring spans directly; wider selections can still fall back to coverage.
+    let mut selected_span = None;
     if let Some(cells) = raw_cells {
-        if scanning_beats_testing(
-            expected_total_hits(radii, resolution),
-            radii.len(),
-            cells.len(),
-        ) {
-            return Ok(None);
+        let expected_hits = expected_total_hits(radii, resolution);
+        if scanning_beats_testing(expected_hits, radii.len(), cells.len()) {
+            validate_cell_range(cells, resolution, "cells")?;
+            let first = cells.iter().copied().min().unwrap_or(0);
+            let end = cells.iter().copied().max().map_or(0, |last| last + 1);
+            // Only scan a span smaller than the expected hit list it replaces.
+            // Cap scratch at about 64 MiB; wider spans use coverage fallback.
+            if end - first > (1 << 23) || (end - first) as f64 > expected_hits {
+                return Ok(None);
+            }
+            selected_span = Some(first..end);
         }
     }
     let mut caps = prepare_caps(centers, radii)?;
@@ -753,6 +759,9 @@ pub(crate) fn count_caps_per_cell(
             .into());
     }
     if let Some(cells) = raw_cells {
+        if let Some(span) = selected_span {
+            return count_caps_in_cell_span(&caps, resolution, cells, span).map(Some);
+        }
         validate_cell_range(cells, resolution, "cells")?;
         // A regional selection cannot meet caps outside its Cartesian bounds.
         // Only pay for another center decode when enough tests can be saved.
@@ -853,6 +862,58 @@ pub(crate) fn count_caps_per_cell(
         };
         count_caps_chunked(&caps, resolution, cell_count, worker_count).map(Some)
     })?
+}
+
+/// Count only the bounded RING span containing a selection, without cell hits.
+fn count_caps_in_cell_span(
+    caps: &[Cap],
+    resolution: u8,
+    cells: &[u64],
+    span: Range<u64>,
+) -> NativeResult<Vec<i64>> {
+    let mut deltas = zeroed_cap_deltas((span.end - span.start) as usize)?;
+    if !span.is_empty() {
+        let nside = 1_u64 << resolution;
+        let first_ring = ring_of_cell(span.start, nside);
+        let last_ring = ring_of_cell(span.end - 1, nside);
+        for cap in caps {
+            let mut count_range = |range: Range<u64>| {
+                let start = range.start.max(span.start);
+                let end = range.end.min(span.end);
+                if start < end {
+                    deltas[(start - span.start) as usize] += 1;
+                    deltas[(end - span.start) as usize] -= 1;
+                }
+            };
+            if cap.full_sphere {
+                count_range(span.clone());
+            } else {
+                let (first, last) = ring_range(nside, cap.minimum_z, cap.maximum_z);
+                visit_cap_ranges_in_rings(
+                    cap,
+                    resolution,
+                    first.max(first_ring),
+                    last.min(last_ring),
+                    count_range,
+                );
+            }
+        }
+    }
+    let mut running = 0;
+    for delta in &mut deltas {
+        running += *delta;
+        *delta = running;
+    }
+    let mut counts = Vec::new();
+    counts
+        .try_reserve_exact(cells.len())
+        .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
+    counts.extend(
+        cells
+            .iter()
+            .map(|&cell| deltas[(cell - span.start) as usize]),
+    );
+    Ok(counts)
 }
 
 /// Split the output at ring boundaries. Each worker owns disjoint cells, so
@@ -1164,25 +1225,81 @@ fn dense_accumulator_parallel_worthwhile(buffer_length: usize, ring_visits: usiz
 #[cfg(test)]
 mod tests {
     use super::{
-        count_caps_chunked, count_caps_per_cell, dense_accumulator_parallel_worthwhile,
-        raw_cell_count,
+        count_caps_chunked, count_caps_in_cell_span, count_caps_per_cell,
+        dense_accumulator_parallel_worthwhile, raw_cell_count,
     };
     use crate::ring::fixtures::caps_along_equator;
     use crate::ring::shape::{cap_count_ring_visits, prepare_caps};
 
     #[test]
-    fn selected_cap_counts_decline_when_covering_is_cheaper() {
-        // Many small caps against a large request: covering once and counting
-        // wins, so the kernel declines and lets the caller reduce coverage.
-        let (centers, radii) = caps_along_equator(400, 0.035);
+    fn selected_cap_counts_scan_compact_spans_and_decline_wide_ones() {
+        let (centers, radii) = caps_along_equator(400, 0.1);
         let cells = (0..300_000_u64).collect::<Vec<_>>();
-        let declined = count_caps_per_cell(&centers, &radii, 8, Some(&cells), Some(1)).unwrap();
-        assert!(declined.is_none());
+        let selected = count_caps_per_cell(&centers, &radii, 8, Some(&cells), Some(1))
+            .unwrap()
+            .expect("a compact selection never materializes hits");
+        let dense = count_caps_per_cell(&centers, &radii, 8, None, Some(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(selected, dense[..cells.len()]);
+
+        let distributed = cells.iter().map(|cell| cell * 10).collect::<Vec<_>>();
+        let selected = count_caps_per_cell(&centers, &radii, 9, Some(&distributed), Some(1))
+            .unwrap()
+            .expect("a distributed selection can still fit bounded scratch");
+        let dense = count_caps_per_cell(&centers, &radii, 9, None, Some(1))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            selected,
+            distributed
+                .iter()
+                .map(|&cell| dense[cell as usize])
+                .collect::<Vec<_>>()
+        );
+
+        let wide = cells.iter().map(|cell| cell * 40).collect::<Vec<_>>();
+        assert!(count_caps_per_cell(
+            &centers,
+            &vec![0.035; radii.len()],
+            10,
+            Some(&wide),
+            Some(1)
+        )
+        .unwrap()
+        .is_none());
+        // Tiny caps must not zero a wide span just because it fits the budget.
+        assert!(
+            count_caps_per_cell(&centers, &vec![1e-6; radii.len()], 8, Some(&cells), Some(1))
+                .unwrap()
+                .is_none()
+        );
 
         // The same caps against a small request keep the direct count.
         let few = (0..1000_u64).collect::<Vec<_>>();
         let direct = count_caps_per_cell(&centers, &radii, 8, Some(&few), Some(1)).unwrap();
         assert_eq!(direct.map(|counts| counts.len()), Some(few.len()));
+    }
+
+    #[test]
+    fn selected_cap_spans_match_full_counts_at_partial_rings_and_poles() {
+        let (centers, _) = caps_along_equator(6, 0.0);
+        let radii = [0.0, 0.2, 1.0, 2.0, std::f64::consts::PI, 0.01];
+        let caps = prepare_caps(&centers, &radii).unwrap();
+        for resolution in [0, 3, 6] {
+            let total = raw_cell_count(resolution);
+            let dense = count_caps_chunked(&caps, resolution, total as usize, 1).unwrap();
+            for span in [0..total, 1..total - 1, total / 2..total / 2 + 1, 0..0] {
+                let mut cells = span.clone().rev().step_by(3).collect::<Vec<_>>();
+                cells.extend(cells.first().copied());
+                let actual = count_caps_in_cell_span(&caps, resolution, &cells, span).unwrap();
+                let expected = cells
+                    .iter()
+                    .map(|&cell| dense[cell as usize])
+                    .collect::<Vec<_>>();
+                assert_eq!(actual, expected, "resolution={resolution}");
+            }
+        }
     }
 
     #[test]

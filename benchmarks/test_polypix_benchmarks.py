@@ -332,7 +332,7 @@ def test_cover_detailed_polygon_overlap(
     benchmark,
     detailed_polygon_pair: tuple[px.Polygon, px.Polygon],
 ) -> None:
-    """Overlap mode tests every edge per cell, so this pins that scaling."""
+    """Detailed overlap must reject edges that cannot meet a cell."""
     coverage = benchmark(
         px.cover_polygon,
         detailed_polygon_pair[0],
@@ -662,6 +662,17 @@ def test_cover_sweep_coarse_diagonal_count(
     assert counts.shape == (px.cell_count(9),)
 
 
+def test_cover_sweep_coarse_diagonal_overlap(
+    benchmark, coarse_diagonal_strip_edges: tuple[np.ndarray, np.ndarray]
+) -> None:
+    """Loose longitude bounds must not trigger distant edge intersections."""
+    left, right = coarse_diagonal_strip_edges
+    coverage = benchmark(px.cover_sweep, left, right, 9, threads=1, mode="overlap")
+
+    assert coverage.offsets.shape == (left.shape[0],)
+    assert coverage.cells.size == 33_826
+
+
 def test_cover_sweep_dense_diagonal(
     benchmark, diagonal_strip_edges: tuple[np.ndarray, np.ndarray]
 ) -> None:
@@ -918,8 +929,8 @@ def test_cover_cap_selected_count_large_request(
 ) -> None:
     """A large request must not degrade to one cap test per requested cell.
 
-    Fusing this shape costs ``cells * caps`` cap tests and was measured at 47x
-    the cost of covering once and reducing, so the reducer has to decline.
+    Accumulate analytic ring spans within the selection's bounded cell range,
+    avoiding both ``cells * caps`` tests and the full cap-cell hit list.
     """
     centers, radii = constellation_caps
     requested = np.arange(100_000, dtype=np.int64)
@@ -954,6 +965,25 @@ def test_count_coverage_selected_small_work(
 
     assert counts.shape == requested.shape
     assert int(counts.sum()) >= 4
+
+
+def test_cover_cap_selected_count_distributed(benchmark, constellation_caps) -> None:
+    """A selection across the globe must avoid the much larger cap-cell list."""
+    centers, radii = constellation_caps
+    centers, radii = centers[:4000], radii[:4000]
+    requested = np.arange(0, px.cell_count(9), 8, dtype=np.int64)
+    counts = benchmark(
+        px.cover_cap,
+        centers,
+        radii,
+        9,
+        candidate_cells=requested,
+        reduce=px.Count(),
+        threads=1,
+    )
+
+    dense = px.cover_cap(centers, radii, 9, reduce=px.Count(), threads=1)
+    np.testing.assert_array_equal(counts, dense[requested])
 
 
 def test_sum_coverage_selected_sparse_high_resolution(
