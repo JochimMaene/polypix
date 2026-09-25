@@ -741,8 +741,7 @@ pub(crate) fn count_caps_per_cell(
             let first = cells.iter().copied().min().unwrap_or(0);
             let end = cells.iter().copied().max().map_or(0, |last| last + 1);
             // Only scan a span smaller than the expected hit list it replaces.
-            // ponytail: cap scratch at about 64 MiB; wider spans keep the
-            // coverage fallback until a sparse range accumulator is justified.
+            // Cap scratch at about 64 MiB; wider spans use coverage fallback.
             if end - first > (1 << 23) || (end - first) as f64 > expected_hits {
                 return Ok(None);
             }
