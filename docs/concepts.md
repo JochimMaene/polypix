@@ -36,7 +36,7 @@ healpy, astropy-healpix, or cdshealpix.
 
 ## Direction geometry
 
-The numeric API takes Cartesian directions shaped like `(..., 3)`. They can be
+The numeric API takes Cartesian directions shaped like `(3,)` or `(N, 3)`. They can be
 unit vectors or position vectors; Polypix ignores their magnitude. You choose
 the frame, such as Earth-fixed or celestial, and every vector in a call must
 use the same one. Polypix doesn't store or transform frame, datum, unit,
@@ -129,7 +129,7 @@ timestamps, because a `Coverage` has no clock:
 stats = px.revisit(coverage)
 ```
 
-Map `first_start`, `last_stop`, and the gap fields to your own time edges. Make
+Map `first_bin`, `stop_bin`, and the gap fields to your own time edges. Make
 sure consecutive segments really are adjacent in time. Insert an empty bin or
 split the analysis at a gap so a run cannot cross a discontinuity.
 

@@ -123,11 +123,11 @@ def test_overlap_matches_independent_boundary_fixtures() -> None:
     axis = xyz(17.0, 23.0)
 
     np.testing.assert_array_equal(
-        px.cover_polygon(polygon, 3, mode="overlap").cells,
+        px.cover_polygon(polygon, resolution=3, mode="overlap").cells,
         POLYGON_OVERLAP_RESOLUTION_3,
     )
     np.testing.assert_array_equal(
-        px.cover_cap(axis, np.radians(19.0), 3, mode="overlap").cells,
+        px.cover_cap(axis, np.radians(19.0), resolution=3, mode="overlap").cells,
         CAP_OVERLAP_RESOLUTION_3,
     )
 
@@ -137,22 +137,22 @@ def test_subcell_regions_and_point_caps_do_not_disappear() -> None:
         [10.0, 10.001, 10.001, 10.0],
         [10.0, 10.0, 10.001, 10.001],
     )
-    expected = px.cell_at(polygon[0], 8)
+    expected = px.cell_at(polygon[0], resolution=8)
 
-    assert px.cover_polygon(polygon, 8).cells.size == 0
+    assert px.cover_polygon(polygon, resolution=8).cells.size == 0
     np.testing.assert_array_equal(
-        px.cover_polygon(polygon, 8, mode="overlap").cells, expected
+        px.cover_polygon(polygon, resolution=8, mode="overlap").cells, expected
     )
-    assert px.cover_cap(polygon[0], 0.0, 8).cells.size == 0
+    assert px.cover_cap(polygon[0], 0.0, resolution=8).cells.size == 0
     np.testing.assert_array_equal(
-        px.cover_cap(polygon[0], 0.0, 8, mode="overlap").cells, expected
+        px.cover_cap(polygon[0], 0.0, resolution=8, mode="overlap").cells, expected
     )
 
 
 def test_emitted_transition_corner_does_not_abort_overlap() -> None:
     corner = np.asarray([-0.4140976024357428, 0.6197408581112958, 0.6666666666666667])
     np.testing.assert_array_equal(
-        px.cover_cap(corner, 0.0, 3, mode="overlap").cells,
+        px.cover_cap(corner, 0.0, resolution=3, mode="overlap").cells,
         [93, 122, 123, 155],
     )
 
@@ -163,23 +163,25 @@ def test_nearly_coplanar_polar_meridian_edges_complete() -> None:
         [180.0 + delta, 183.0 + delta, 183.0 + delta, 180.0 + delta],
         [70.0, 70.0, 75.0, 75.0],
     )
-    polygon_overlap = px.cover_polygon(polygon, 6, mode="overlap", threads=1)
+    polygon_overlap = px.cover_polygon(polygon, resolution=6, mode="overlap", threads=1)
     assert polygon_overlap.cells.size == 9
 
     axis = xyz(90.0, 0.0)
     radius = np.radians(90.0 - delta)
-    cap_center = px.cover_cap(axis, radius, 6, threads=1)
-    cap_overlap = px.cover_cap(axis, radius, 6, mode="overlap", threads=1)
+    cap_center = px.cover_cap(axis, radius, resolution=6, threads=1)
+    cap_overlap = px.cover_cap(axis, radius, resolution=6, mode="overlap", threads=1)
     assert np.setdiff1d(cap_center.cells, cap_overlap.cells).size == 0
     assert (
         cap_overlap.cells.size
-        < px.cover_cap(axis, np.pi / 2.0, 6, mode="overlap", threads=1).cells.size
+        < px.cover_cap(
+            axis, np.pi / 2.0, resolution=6, mode="overlap", threads=1
+        ).cells.size
     )
 
 
 def cell_block(cell: int, resolution: int) -> np.ndarray:
     """The cell and every cell touching it, from the neighbor table."""
-    neighbors = px.cell_neighbors(cell, resolution)[0]
+    neighbors = px.cell_neighbors(cell, resolution=resolution)[0]
     return np.sort(np.concatenate(([cell], neighbors)))
 
 
@@ -190,17 +192,17 @@ def test_cell_corner_quads_resolve_exactly(resolution: int) -> None:
     # coincident with a whole chain of them. It touches its own cell and the
     # eight cells sharing its corners, and nothing else, at every resolution.
     cell = px.cell_count(resolution) // 2 + 7
-    quad = px.cell_corners(np.asarray([cell]), resolution)[0]
+    quad = px.cell_corners(np.asarray([cell]), resolution=resolution)[0]
 
-    overlap = px.cover_polygon(quad, resolution, mode="overlap", threads=1)
+    overlap = px.cover_polygon(quad, resolution=resolution, mode="overlap", threads=1)
     np.testing.assert_array_equal(np.sort(overlap.cells), cell_block(cell, resolution))
 
 
 @pytest.mark.parametrize("resolution", [10, 13])
 def test_cell_corner_quads_resolve_either_side_of_coincidence(resolution: int) -> None:
     cell = px.cell_count(resolution) // 2 + 7
-    center = px.cell_centers(np.asarray([cell]), resolution)[0]
-    quad = px.cell_corners(np.asarray([cell]), resolution)[0]
+    center = px.cell_centers(np.asarray([cell]), resolution=resolution)[0]
+    quad = px.cell_corners(np.asarray([cell]), resolution=resolution)[0]
 
     def scaled(factor: float) -> np.ndarray:
         moved = center + factor * (quad - center)
@@ -208,9 +210,13 @@ def test_cell_corner_quads_resolve_either_side_of_coincidence(resolution: int) -
 
     # Pulled just inside the corners the quad clears its neighbors entirely,
     # and pushed just outside it still reaches no further than they do.
-    inside = px.cover_polygon(scaled(0.99), resolution, mode="overlap", threads=1)
+    inside = px.cover_polygon(
+        scaled(0.99), resolution=resolution, mode="overlap", threads=1
+    )
     np.testing.assert_array_equal(inside.cells, [cell])
-    outside = px.cover_polygon(scaled(1.01), resolution, mode="overlap", threads=1)
+    outside = px.cover_polygon(
+        scaled(1.01), resolution=resolution, mode="overlap", threads=1
+    )
     np.testing.assert_array_equal(np.sort(outside.cells), cell_block(cell, resolution))
 
 
@@ -219,9 +225,9 @@ def test_chained_cell_edges_stay_bounded_at_resolution_29() -> None:
     # so each edge runs along sixteen cell edges rather than one.
     source, resolution = 25, 29
     cell = px.cell_count(source) // 2 + 7
-    quad = px.cell_corners(np.asarray([cell]), source)[0]
+    quad = px.cell_corners(np.asarray([cell]), resolution=source)[0]
 
-    overlap = px.cover_polygon(quad, resolution, mode="overlap", threads=1)
+    overlap = px.cover_polygon(quad, resolution=resolution, mode="overlap", threads=1)
 
     steps = np.linspace(0.0, 1.0, 120)
     near = quad[0] * (1 - steps)[:, None] + quad[1] * steps[:, None]
@@ -232,9 +238,11 @@ def test_chained_cell_edges_stay_bounded_at_resolution_29() -> None:
     )
     lattice = lattice.reshape(-1, 3)
     lattice /= np.linalg.norm(lattice, axis=1, keepdims=True)
-    assert np.isin(px.cell_at(lattice, resolution), overlap.cells).all()
+    assert np.isin(px.cell_at(lattice, resolution=resolution), overlap.cells).all()
 
-    parents = px.cell_at(px.cell_centers(overlap.cells, resolution), source)
+    parents = px.cell_at(
+        px.cell_centers(overlap.cells, resolution=resolution), resolution=source
+    )
     assert np.isin(parents, cell_block(cell, source)).all()
     assert overlap.cells.size < 2 * 16 * 16
 
@@ -257,9 +265,9 @@ def test_short_edges_do_not_lose_overlapping_cells_at_resolution_28() -> None:
     )
     interior /= np.linalg.norm(interior, axis=1, keepdims=True)
 
-    overlap = px.cover_polygon(polygon, 28, mode="overlap", threads=1)
+    overlap = px.cover_polygon(polygon, resolution=28, mode="overlap", threads=1)
 
-    assert np.isin(px.cell_at(interior, 28), overlap.cells).all()
+    assert np.isin(px.cell_at(interior, resolution=28), overlap.cells).all()
 
 
 def test_overlap_respects_holes_candidates_and_binary_reducers() -> None:
@@ -267,13 +275,13 @@ def test_overlap_respects_holes_candidates_and_binary_reducers() -> None:
     hole = xyz([-10.0, 10.0, 10.0, -10.0], [-10.0, -10.0, 10.0, 10.0])
     polygon = px.Polygon(outer, hole)
     resolution = 5
-    full = px.cover_polygon(polygon, resolution, mode="overlap").cells
+    full = px.cover_polygon(polygon, resolution=resolution, mode="overlap").cells
     candidates = np.arange(0, px.cell_count(resolution), 11)
     expected = np.intersect1d(full, candidates)
 
     restricted = px.cover_polygon(
         polygon,
-        resolution,
+        resolution=resolution,
         mode="overlap",
         candidate_cells=candidates,
     )
@@ -281,7 +289,7 @@ def test_overlap_respects_holes_candidates_and_binary_reducers() -> None:
     np.testing.assert_array_equal(
         px.cover_polygon(
             polygon,
-            resolution,
+            resolution=resolution,
             mode="overlap",
             candidate_cells=candidates,
             reduce=px.Count(),
@@ -293,14 +301,14 @@ def test_overlap_respects_holes_candidates_and_binary_reducers() -> None:
 def test_overlap_sweep_segments_match_their_polygons() -> None:
     left = xyz([-10.0, 0.0, 10.0], [4.0, 5.0, 4.0])
     right = xyz([-10.0, 0.0, 10.0], [-4.0, -5.0, -4.0])
-    actual = px.cover_sweep(left, right, 5, mode="overlap")
+    actual = px.cover_sweep(left, right, resolution=5, mode="overlap")
 
     for index in range(2):
         polygon = np.asarray(
             [left[index], right[index], right[index + 1], left[index + 1]]
         )
         np.testing.assert_array_equal(
-            actual[index], px.cover_polygon(polygon, 5, mode="overlap").cells
+            actual[index], px.cover_polygon(polygon, resolution=5, mode="overlap").cells
         )
 
 
@@ -313,16 +321,16 @@ def test_center_coverage_is_a_subset_of_overlap() -> None:
     left = xyz([-10.0, 0.0, 10.0], [4.0, 5.0, 4.0])
     right = xyz([-10.0, 0.0, 10.0], [-4.0, -5.0, -4.0])
 
-    polygon_center = px.cover_polygon(polygon, 5)
-    polygon_overlap = px.cover_polygon(polygon, 5, mode="overlap")
+    polygon_center = px.cover_polygon(polygon, resolution=5)
+    polygon_overlap = px.cover_polygon(polygon, resolution=5, mode="overlap")
     assert np.setdiff1d(polygon_center.cells, polygon_overlap.cells).size == 0
 
-    cap_center = px.cover_cap(axis, np.radians(19.0), 5)
-    cap_overlap = px.cover_cap(axis, np.radians(19.0), 5, mode="overlap")
+    cap_center = px.cover_cap(axis, np.radians(19.0), resolution=5)
+    cap_overlap = px.cover_cap(axis, np.radians(19.0), resolution=5, mode="overlap")
     assert np.setdiff1d(cap_center.cells, cap_overlap.cells).size == 0
 
-    sweep_center = px.cover_sweep(left, right, 5)
-    sweep_overlap = px.cover_sweep(left, right, 5, mode="overlap")
+    sweep_center = px.cover_sweep(left, right, resolution=5)
+    sweep_overlap = px.cover_sweep(left, right, resolution=5, mode="overlap")
     for index in range(len(sweep_center)):
         assert np.setdiff1d(sweep_center[index], sweep_overlap[index]).size == 0
 
@@ -336,7 +344,7 @@ def test_candidate_cap_overlap_is_thread_invariant() -> None:
     sequential = px.cover_cap(
         centers,
         radii,
-        resolution,
+        resolution=resolution,
         candidate_cells=candidates,
         mode="overlap",
         threads=1,
@@ -344,7 +352,7 @@ def test_candidate_cap_overlap_is_thread_invariant() -> None:
     parallel = px.cover_cap(
         centers,
         radii,
-        resolution,
+        resolution=resolution,
         candidate_cells=candidates,
         mode="overlap",
         threads=8,
@@ -355,18 +363,18 @@ def test_candidate_cap_overlap_is_thread_invariant() -> None:
 
 def test_overlap_handles_poles_full_sphere_and_sparse_resolution_29() -> None:
     np.testing.assert_array_equal(
-        px.cover_cap([0.0, 0.0, 1.0], 0.0, 1, mode="overlap").cells,
+        px.cover_cap([0.0, 0.0, 1.0], 0.0, resolution=1, mode="overlap").cells,
         [0, 1, 2, 3],
     )
     np.testing.assert_array_equal(
-        px.cover_cap([1.0, 0.0, 0.0], np.pi, 1, mode="overlap").cells,
+        px.cover_cap([1.0, 0.0, 0.0], np.pi, resolution=1, mode="overlap").cells,
         np.arange(px.cell_count(1)),
     )
     cells = np.asarray([0, 1, px.cell_count(29) - 1], dtype=np.int64)
     counts = px.cover_cap(
-        px.cell_centers(cells[:1], 29),
+        px.cell_centers(cells[:1], resolution=29),
         0.0,
-        29,
+        resolution=29,
         mode="overlap",
         candidate_cells=cells,
         reduce=px.Count(),
@@ -377,37 +385,39 @@ def test_overlap_handles_poles_full_sphere_and_sparse_resolution_29() -> None:
 def test_mode_validation_and_center_default() -> None:
     polygon = xyz([-5.0, 5.0, 5.0, -5.0], [-5.0, -5.0, 5.0, 5.0])
     np.testing.assert_array_equal(
-        px.cover_polygon(polygon, 4).cells,
-        px.cover_polygon(polygon, 4, mode="center").cells,
+        px.cover_polygon(polygon, resolution=4).cells,
+        px.cover_polygon(polygon, resolution=4, mode="center").cells,
     )
     with pytest.raises(ValueError, match="mode must be 'center' or 'overlap'"):
-        px.cover_polygon(polygon, 4, mode="full")  # type: ignore[arg-type]
+        px.cover_polygon(polygon, resolution=4, mode="full")  # type: ignore[arg-type]
 
 
-def test_overlap_reads_a_nearly_complete_cap_as_a_full_sphere() -> None:
-    """Pins the limit stated under "Numerical limits" in ``docs/api.md``.
+def test_overlap_excludes_a_cell_inside_a_nearly_complete_caps_hole() -> None:
+    """A cap past a hemisphere is measured from its antipode in both modes.
 
-    The edge tests measure a cell against the cap's chord, and that chord
-    cannot separate a radius within roughly 2.1e-8 radians of pi from a
-    diameter. From resolution 26 a cell fits inside the sliver such a cap
-    excludes, so overlap claims it while center coverage, which measures the
-    cap from its antipode, correctly leaves it out. Change this test when
-    overlap gains the complementary form, and update the documentation with
-    it.
+    Measured from its own axis, the chord cannot separate a radius within
+    roughly 2.1e-8 radians of pi from a diameter, and from resolution 26 a
+    whole cell fits inside the sliver such a cap excludes.
     """
     resolution = 26
     antipodal_cell = px.cell_count(resolution) // 2 + 7
-    center = px.cell_centers([antipodal_cell], resolution)[0]
+    center = px.cell_centers([antipodal_cell], resolution=resolution)[0]
     axis = -center
     radius = np.pi - 2e-8
 
-    corners = px.cell_corners([antipodal_cell], resolution)[0]
+    corners = px.cell_corners([antipodal_cell], resolution=resolution)[0]
     reach = np.arccos(np.clip(corners @ center, -1.0, 1.0)).max()
     assert reach < np.pi - radius, "the cell must lie wholly inside the sliver"
 
     overlapping = px.cover_cap(
-        axis, radius, resolution, mode="overlap", candidate_cells=[antipodal_cell]
+        axis,
+        radius,
+        resolution=resolution,
+        mode="overlap",
+        candidate_cells=[antipodal_cell],
     )
-    centered = px.cover_cap(axis, radius, resolution, candidate_cells=[antipodal_cell])
-    assert overlapping.cells.size == 1
+    centered = px.cover_cap(
+        axis, radius, resolution=resolution, candidate_cells=[antipodal_cell]
+    )
+    assert overlapping.cells.size == 0
     assert centered.cells.size == 0

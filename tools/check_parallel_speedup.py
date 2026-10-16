@@ -53,7 +53,7 @@ def _seconds(
     started = time.perf_counter()
     coverage = px.cover_polygon(
         footprints,
-        12,
+        resolution=12,
         candidate_cells=candidates,
         threads=threads,
     )
@@ -77,9 +77,11 @@ def main() -> None:
 
     # Warm the reusable pool and native code before comparing steady state.
     serial_result = px.cover_polygon(
-        footprints, 12, candidate_cells=candidates, threads=1
+        footprints, resolution=12, candidate_cells=candidates, threads=1
     )
-    automatic_result = px.cover_polygon(footprints, 12, candidate_cells=candidates)
+    automatic_result = px.cover_polygon(
+        footprints, resolution=12, candidate_cells=candidates
+    )
     np.testing.assert_array_equal(automatic_result.cells, serial_result.cells)
     np.testing.assert_array_equal(automatic_result.offsets, serial_result.offsets)
 

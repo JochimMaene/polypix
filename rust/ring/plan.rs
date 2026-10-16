@@ -11,6 +11,7 @@ use std::ops::Range;
 
 use rayon::prelude::*;
 
+use crate::error::{NativeError, NativeResult, COVERAGE_OUT_OF_MEMORY};
 use crate::geometry::{dot, normalize, Vec3};
 
 use super::grid::{raw_cell_count, ring_range, ring_start, validate_cell_range};
@@ -58,7 +59,7 @@ pub(super) const SCAN_WORK_SAMPLE_SIZE: usize = 64;
 pub(super) fn candidate_cells<'a>(
     raw_candidates: Option<&'a [u64]>,
     resolution: u8,
-) -> Result<Option<Cow<'a, [u64]>>, String> {
+) -> NativeResult<Option<Cow<'a, [u64]>>> {
     let Some(raw_candidates) = raw_candidates else {
         return Ok(None);
     };
@@ -69,7 +70,11 @@ pub(super) fn candidate_cells<'a>(
         return Ok(Some(Cow::Borrowed(raw_candidates)));
     }
     validate_cell_range(raw_candidates, resolution, "candidate_cells")?;
-    let mut cells = raw_candidates.to_vec();
+    let mut cells = Vec::new();
+    cells
+        .try_reserve_exact(raw_candidates.len())
+        .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
+    cells.extend_from_slice(raw_candidates);
     cells.sort_unstable();
     cells.dedup();
     Ok(Some(Cow::Owned(cells)))
@@ -125,6 +130,29 @@ pub(super) fn plan_from_ranges(ranges: Vec<Range<usize>>) -> CandidatePlan {
     }
 }
 
+/// Map `0..len` into a vector reserved up front, so an input-sized batch
+/// reports running out of memory instead of aborting. Rayon's indexed
+/// collection reuses the reservation rather than allocating its own.
+pub(super) fn try_collect_indexed<T: Send>(
+    len: usize,
+    parallel: bool,
+    item: impl Fn(usize) -> T + Send + Sync,
+) -> NativeResult<Vec<T>> {
+    let mut items = Vec::new();
+    items
+        .try_reserve_exact(len)
+        .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
+    if parallel {
+        (0..len)
+            .into_par_iter()
+            .map(item)
+            .collect_into_vec(&mut items);
+    } else {
+        items.extend((0..len).map(item));
+    }
+    Ok(items)
+}
+
 /// Plan the candidate range each item can reach, from its latitude band.
 ///
 /// `z_bounds` is monomorphized per item type, so footprints and caps share the
@@ -135,19 +163,12 @@ pub(super) fn plan_item_candidates<T: Sync>(
     resolution: u8,
     parallel: bool,
     z_bounds: impl Fn(&T) -> (f64, f64) + Sync,
-) -> CandidatePlan {
-    let candidate_range_for = |item: &T| {
-        let (minimum_z, maximum_z) = z_bounds(item);
+) -> NativeResult<CandidatePlan> {
+    let ranges = try_collect_indexed(items.len(), parallel, |index| {
+        let (minimum_z, maximum_z) = z_bounds(&items[index]);
         candidate_range(candidates, resolution, minimum_z, maximum_z)
-    };
-    plan_from_ranges(if parallel {
-        items
-            .par_iter()
-            .map(candidate_range_for)
-            .collect::<Vec<_>>()
-    } else {
-        items.iter().map(candidate_range_for).collect::<Vec<_>>()
-    })
+    })?;
+    Ok(plan_from_ranges(ranges))
 }
 
 /// Work proxy for deciding whether to enter a thread pool before planning.

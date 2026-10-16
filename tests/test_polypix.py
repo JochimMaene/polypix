@@ -197,7 +197,7 @@ class PolypixTests(unittest.TestCase):
             # kernel's factored formulation.
             tolerance = 6e-15 if resolution == 7 else 2e-15
             np.testing.assert_allclose(
-                px.cell_centers(cells, resolution),
+                px.cell_centers(cells, resolution=resolution),
                 expected,
                 rtol=0.0,
                 atol=tolerance,
@@ -256,17 +256,19 @@ class PolypixTests(unittest.TestCase):
     def test_cover_cap_handles_exact_boundaries_and_full_sphere(self) -> None:
         resolution = 4
         boundary_cell = np.uint64(321)
-        boundary_center = px.cell_centers(boundary_cell, resolution)[0]
+        boundary_center = px.cell_centers(boundary_cell, resolution=resolution)[0]
         axis = lonlat_to_vec(35.0, -20.0)
         radius = math.atan2(
             float(np.linalg.norm(np.cross(axis, boundary_center))),
             float(np.dot(axis, boundary_center)),
         )
 
-        on_boundary = px.cover_cap(axis, radius, resolution, threads=1)
-        just_outside = px.cover_cap(axis, radius - 1e-12, resolution, threads=1)
-        point = px.cover_cap(boundary_center, 0.0, resolution, threads=1)
-        whole_sphere = px.cover_cap(axis, math.pi, resolution, threads=1)
+        on_boundary = px.cover_cap(axis, radius, resolution=resolution, threads=1)
+        just_outside = px.cover_cap(
+            axis, radius - 1e-12, resolution=resolution, threads=1
+        )
+        point = px.cover_cap(boundary_center, 0.0, resolution=resolution, threads=1)
+        whole_sphere = px.cover_cap(axis, math.pi, resolution=resolution, threads=1)
 
         self.assertIn(boundary_cell, on_boundary.cells)
         self.assertNotIn(boundary_cell, just_outside.cells)
@@ -281,7 +283,7 @@ class PolypixTests(unittest.TestCase):
         empty = np.empty((0, 3), dtype=np.float64)
         for radii in (0.2, np.empty(0, dtype=np.float64)):
             with self.subTest(radii=np.asarray(radii).shape):
-                coverage = px.cover_cap(empty, radii, resolution)
+                coverage = px.cover_cap(empty, radii, resolution=resolution)
                 np.testing.assert_array_equal(coverage.cells, [])
                 np.testing.assert_array_equal(coverage.offsets, [0])
                 np.testing.assert_array_equal(
@@ -303,7 +305,7 @@ class PolypixTests(unittest.TestCase):
 
         centers = np.asarray(([0.0, 0.0, 1.0], [0.0, 0.0, -1.0], [-1.0, 0.0, 0.0]))
         radii = np.asarray([0.2, 0.35, 0.4])
-        actual = px.cover_cap(centers, radii, resolution, threads=1)
+        actual = px.cover_cap(centers, radii, resolution=resolution, threads=1)
         self.assertSegmentsEqual(
             actual,
             [
@@ -315,19 +317,19 @@ class PolypixTests(unittest.TestCase):
     def test_cap_candidates_have_set_semantics(self) -> None:
         resolution = 4
         center = lonlat_to_vec(179.0, 20.0)
-        unfiltered = px.cover_cap(center, 0.5, resolution)
+        unfiltered = px.cover_cap(center, 0.5, resolution=resolution)
         selected = unfiltered.cells[::3]
         candidates = np.concatenate((selected[::-1], selected, selected[:2]))
 
         restricted = px.cover_cap(
             center,
             0.5,
-            resolution,
+            resolution=resolution,
             candidate_cells=candidates,
         )
 
         np.testing.assert_array_equal(restricted.cells, np.unique(selected))
-        empty = px.cover_cap(center, 0.5, resolution, candidate_cells=[])
+        empty = px.cover_cap(center, 0.5, resolution=resolution, candidate_cells=[])
         np.testing.assert_array_equal(empty.cells, [])
         np.testing.assert_array_equal(empty.offsets, [0, 0])
 
@@ -336,7 +338,7 @@ class PolypixTests(unittest.TestCase):
         resolution = 4
         centers = random.normal(size=(128, 3))
         radii = random.uniform(0.0, math.pi / 3.0, size=centers.shape[0])
-        coverage = px.cover_cap(centers, radii, resolution, threads=1)
+        coverage = px.cover_cap(centers, radii, resolution=resolution, threads=1)
         expected = np.bincount(
             coverage.cells.astype(np.int64, copy=False),
             minlength=12 * 4**resolution,
@@ -370,10 +372,10 @@ class PolypixTests(unittest.TestCase):
     ) -> None:
         resolution = 3
         centers = px.cell_centers(
-            np.asarray([3, 17, 42, 71], dtype=np.uint64), resolution
+            np.asarray([3, 17, 42, 71], dtype=np.uint64), resolution=resolution
         )
         radii = np.asarray([0.0, math.pi / 2.0, 3.0 * math.pi / 4.0, math.pi])
-        coverage = px.cover_cap(centers, radii, resolution, threads=1)
+        coverage = px.cover_cap(centers, radii, resolution=resolution, threads=1)
         expected = np.bincount(
             coverage.cells.astype(np.int64, copy=False),
             minlength=12 * 4**resolution,
@@ -412,7 +414,7 @@ class PolypixTests(unittest.TestCase):
                 [1.0, 0.0, 0.0], 0.1, resolution=high_resolution, reduce=px.Count()
             )
         with self.assertRaisesRegex(MemoryError, "too large"):
-            px.cover_cap([1.0, 0.0, 0.0], math.pi, high_resolution)
+            px.cover_cap([1.0, 0.0, 0.0], math.pi, resolution=high_resolution)
 
     def test_cap_inputs_are_validated(self) -> None:
         center = lonlat_to_vec(0.0, 0.0)
@@ -681,7 +683,7 @@ class PolypixTests(unittest.TestCase):
     def test_resolution_29_scan_keeps_a_center_on_the_longitude_bound(self) -> None:
         resolution = 29
         cell = np.uint64(6 * 4**resolution)
-        center = px.cell_centers(cell, resolution)[0]
+        center = px.cell_centers(cell, resolution=resolution)[0]
         tangent = np.cross(np.asarray([0.0, 0.0, 1.0]), center)
         tangent /= np.linalg.norm(tangent)
         inward = np.cross(center, tangent)
@@ -699,7 +701,7 @@ class PolypixTests(unittest.TestCase):
                 offset_point(-1.0, 2.0),
             ]
         )
-        actual = px.cover_polygon(footprint, resolution, threads=1)
+        actual = px.cover_polygon(footprint, resolution=resolution, threads=1)
         self.assertIn(cell, actual.cells)
 
     def test_large_cap_vertices_select_the_minor_arc_antipodal_cap(self) -> None:
@@ -896,8 +898,10 @@ class PolypixTests(unittest.TestCase):
         self.assertEqual(actual.dtype, np.dtype("int64"))
         self.assertEqual(actual.shape, cells.shape)
         np.testing.assert_array_equal(actual, cells)
-        np.testing.assert_array_equal(px.cell_at(vectors[0] * 1e200, 2), cells[:1])
-        self.assertEqual(px.cell_at(np.empty((0, 3)), 2).shape, (0,))
+        np.testing.assert_array_equal(
+            px.cell_at(vectors[0] * 1e200, resolution=2), cells[:1]
+        )
+        self.assertEqual(px.cell_at(np.empty((0, 3)), resolution=2).shape, (0,))
 
         for invalid in ([0.0, 0.0, 0.0], [np.nan, 0.0, 1.0]):
             with self.subTest(invalid=invalid):
@@ -992,21 +996,21 @@ class PolypixTests(unittest.TestCase):
         above every cell count. The kernel has to distinguish that from an index
         that is merely too large, at each public argument name.
         """
-        coverage = px.cover_cap(np.asarray([[1.0, 0.0, 0.0]]), 0.3, 4)
+        coverage = px.cover_cap(np.asarray([[1.0, 0.0, 0.0]]), 0.3, resolution=4)
         negative = np.asarray([-1], dtype=np.int64)
         cases = (
             ("cells", lambda: px.cell_centers(negative, resolution=7)),
             ("cells", lambda: px.cell_corners([-1], resolution=3)),
             ("cells", lambda: px.Coverage.from_arrays(negative, [0, 1], 0)),
             ("offsets", lambda: px.Coverage.from_arrays([0], [0, -1], 0)),
-            ("cells", lambda: coverage.reduce(px.Count(), cells=negative)),
-            ("cells", lambda: coverage.reduce(px.Sum(1.0), cells=negative)),
+            ("cells", lambda: coverage.reduce(px.Count(), candidate_cells=negative)),
+            ("cells", lambda: coverage.reduce(px.Sum(1.0), candidate_cells=negative)),
             (
                 "cells",
                 lambda: px.cover_cap(
                     np.asarray([[1.0, 0.0, 0.0]]),
                     0.1,
-                    4,
+                    resolution=4,
                     candidate_cells=negative,
                     reduce=px.Count(),
                 ),
@@ -1016,7 +1020,7 @@ class PolypixTests(unittest.TestCase):
                 lambda: px.cover_cap(
                     np.asarray([[1.0, 0.0, 0.0]]),
                     0.1,
-                    4,
+                    resolution=4,
                     candidate_cells=negative,
                 ),
             ),
@@ -1032,7 +1036,7 @@ class PolypixTests(unittest.TestCase):
         for call in (
             lambda: px.cell_centers([12 * 4**3], resolution=3),
             lambda: px.Coverage.from_arrays([12], [0, 1], 0),
-            lambda: coverage.reduce(px.Count(), cells=[12 * 4**4]),
+            lambda: coverage.reduce(px.Count(), candidate_cells=[12 * 4**4]),
         ):
             with self.subTest(kind="out of range"):
                 with self.assertRaisesRegex(ValueError, "valid RING indices"):
@@ -1066,10 +1070,10 @@ class PolypixTests(unittest.TestCase):
         center[:] = vectors([(0.0, 0.0)])
         radii = misaligned(np.float64, 1)
         radii[:] = 0.2
-        capped = px.cover_cap(center, radii, 5)
+        capped = px.cover_cap(center, radii, resolution=5)
         self.assertGreater(capped.cells.size, 0)
         np.testing.assert_array_equal(
-            px.cover_cap(center, radii, 5, reduce=px.Count()),
+            px.cover_cap(center, radii, resolution=5, reduce=px.Count()),
             capped.reduce(px.Count()),
         )
 
@@ -1079,9 +1083,15 @@ class PolypixTests(unittest.TestCase):
         offsets[:] = [0, 2]
         imported = px.Coverage.from_arrays(cells, offsets, resolution=2)
         np.testing.assert_array_equal(imported.cells, [1, 2])
-        np.testing.assert_array_equal(px.cell_centers(cells, 2).shape, (2, 3))
-        np.testing.assert_array_equal(px.cell_corners(cells, 2).shape, (2, 4, 3))
-        np.testing.assert_array_equal(px.cell_at(px.cell_centers(cells, 2), 2), [1, 2])
+        np.testing.assert_array_equal(
+            px.cell_centers(cells, resolution=2).shape, (2, 3)
+        )
+        np.testing.assert_array_equal(
+            px.cell_corners(cells, resolution=2).shape, (2, 4, 3)
+        )
+        np.testing.assert_array_equal(
+            px.cell_at(px.cell_centers(cells, resolution=2), resolution=2), [1, 2]
+        )
 
         values = misaligned(np.float64, len(capped))
         values[:] = 1.5
@@ -1289,23 +1299,23 @@ class PolypixTests(unittest.TestCase):
         # direct squared chord cannot say so: it saturates at 4 once the radius
         # comes within ~2.1e-8 of pi.
         np.testing.assert_array_equal(
-            px.cell_centers(antipodal_cell, resolution)[0], [1.0, 0.0, 0.0]
+            px.cell_centers(antipodal_cell, resolution=resolution)[0], [1.0, 0.0, 0.0]
         )
         for gap in (1e-8, 1e-10, 1e-12):
             with self.subTest(gap=gap):
                 radius = math.pi - gap
-                scanned = px.cover_cap(axis, radius, resolution, threads=1)
+                scanned = px.cover_cap(axis, radius, resolution=resolution, threads=1)
                 selected = px.cover_cap(
                     axis,
                     radius,
-                    resolution,
+                    resolution=resolution,
                     candidate_cells=[antipodal_cell],
                     threads=1,
                 )
                 counted = px.cover_cap(
                     axis,
                     radius,
-                    resolution,
+                    resolution=resolution,
                     candidate_cells=[antipodal_cell],
                     reduce=px.Count(),
                     threads=1,
@@ -1317,11 +1327,11 @@ class PolypixTests(unittest.TestCase):
 
         for radius in (math.pi, math.pi - 1e-15):
             with self.subTest(radius=radius):
-                whole = px.cover_cap(axis, radius, resolution, threads=1)
+                whole = px.cover_cap(axis, radius, resolution=resolution, threads=1)
                 counted = px.cover_cap(
                     axis,
                     radius,
-                    resolution,
+                    resolution=resolution,
                     candidate_cells=[antipodal_cell],
                     reduce=px.Count(),
                     threads=1,
@@ -1334,7 +1344,7 @@ class PolypixTests(unittest.TestCase):
         # radii either side of it must still agree with the angles.
         resolution = 4
         cells = np.arange(px.cell_count(resolution), dtype=np.int64)
-        centers = px.cell_centers(cells, resolution)
+        centers = px.cell_centers(cells, resolution=resolution)
         axis = lonlat_to_vec(28.0, -14.0)
         radii = (
             math.pi / 2 - 1e-9,
@@ -1347,7 +1357,9 @@ class PolypixTests(unittest.TestCase):
             with self.subTest(radius=radius):
                 angles = np.arccos(np.clip(centers @ axis, -1.0, 1.0))
                 expected = cells[angles <= radius + 1e-13]
-                scanned = np.sort(px.cover_cap(axis, radius, resolution).cells)
+                scanned = np.sort(
+                    px.cover_cap(axis, radius, resolution=resolution).cells
+                )
                 np.testing.assert_array_equal(scanned, expected)
 
     def test_cover_rejects_nonempty_zero_vertex_batch(self) -> None:

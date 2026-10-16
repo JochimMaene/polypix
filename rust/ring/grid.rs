@@ -211,7 +211,7 @@ pub(crate) fn cells_at(vectors: &[f64], resolution: u8) -> NativeResult<Vec<u64>
         NativeError::out_of_memory("Cell lookup result is too large to fit in memory.")
     })?;
     cells.resize(vector_count, 0_u64);
-    if vector_count < CELL_AT_PARALLEL_MIN_VECTORS {
+    if vector_count < CELL_AT_PARALLEL_MIN_VECTORS || crate::forked() {
         for (index, (cell, values)) in cells.iter_mut().zip(vectors.chunks_exact(3)).enumerate() {
             let direction = normalize([values[0], values[1], values[2]])
                 .map_err(|error| format!("vectors_xyz[{index}] {error}"))?;
@@ -524,7 +524,7 @@ pub(crate) fn raw_cell_count(resolution: u8) -> u64 {
 /// this pass already reads every element.
 pub(crate) fn invalid_cell_message(cell: u64, resolution: u8, argument_name: &str) -> String {
     if cell >= 1_u64 << 63 {
-        return format!("{argument_name} must contain non-negative integers.");
+        return format!("{argument_name} must contain non-negative integers below 2**63.");
     }
     format!("{argument_name} must contain valid RING indices at resolution {resolution}.")
 }
@@ -581,7 +581,7 @@ pub(crate) fn validate_coverage_arrays(
     cells: &[u64],
     offsets: &[u64],
     resolution: u8,
-) -> Result<(), String> {
+) -> NativeResult<()> {
     validate_offsets(offsets, cells.len() as u64, "")?;
     validate_cell_range(cells, resolution, "cells")?;
 
@@ -592,10 +592,11 @@ pub(crate) fn validate_coverage_arrays(
             continue;
         }
         seen.clear();
+        seen.try_reserve(segment.len()).map_err(|_| {
+            NativeError::out_of_memory("Coverage validation is too large to fit in memory.")
+        })?;
         if segment.iter().any(|&cell| !seen.insert(cell)) {
-            return Err(format!(
-                "cells within segment {segment_index} must be unique."
-            ));
+            return Err(format!("cells within segment {segment_index} must be unique.").into());
         }
     }
     Ok(())
@@ -609,7 +610,7 @@ pub(crate) fn centers(cells: &[u64], resolution: u8) -> NativeResult<Vec<f64>> {
     values
         .try_reserve_exact(output_count)
         .map_err(|_| NativeError::out_of_memory("Center result is too large to fit in memory."))?;
-    if cells.len() < CENTER_PARALLEL_MIN_CELLS {
+    if cells.len() < CENTER_PARALLEL_MIN_CELLS || crate::forked() {
         for &cell in cells {
             values.extend(center(cell, resolution));
         }
@@ -631,7 +632,7 @@ pub(crate) fn corners(cells: &[u64], resolution: u8) -> NativeResult<Vec<f64>> {
     values
         .try_reserve_exact(output_count)
         .map_err(|_| NativeError::out_of_memory("Corner result is too large to fit in memory."))?;
-    if cells.len() < BOUNDARY_PARALLEL_MIN_CELLS {
+    if cells.len() < BOUNDARY_PARALLEL_MIN_CELLS || crate::forked() {
         for &cell in cells {
             for corner in boundary(cell, resolution) {
                 values.extend(corner);
@@ -669,7 +670,7 @@ mod tests {
         assert!(large.contains("candidate_cells must contain valid RING indices"));
         assert_eq!(
             validate_cell_range(&[u64::MAX], 3, "cells").unwrap_err(),
-            "cells must contain non-negative integers."
+            "cells must contain non-negative integers below 2**63."
         );
         assert!(validate_cell_range(&[12 * 4 * 4 * 4], 3, "cells")
             .unwrap_err()

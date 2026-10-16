@@ -13,7 +13,7 @@ validation at the boundary rather than a check on every later hit.
 Reloaded coverages are ordinary coverages: this runs :func:`polypix.revisit`
 over them and asserts the statistics match the in-process originals exactly.
 
-It then asks a regional question with ``reduce(..., cells=)``, which answers
+It then asks a regional question with ``reduce(..., candidate_cells=)``, which answers
 about a named set of cells without ever allocating the grid. That matters as
 resolution rises: the array-level equivalent, ``np.bincount(cells,
 minlength=cell_count)[region]``, has to build the whole grid to index a few
@@ -128,7 +128,9 @@ def region_cells(resolution: int) -> npt.NDArray[np.uint64]:
             math.sin(latitude),
         ]
     )
-    return np.asarray(px.cover_cap(center, REGION_RADIUS_RAD, resolution).cells)
+    return np.asarray(
+        px.cover_cap(center, REGION_RADIUS_RAD, resolution=resolution).cells
+    )
 
 
 def analyze() -> ArchiveAnalysis:
@@ -156,16 +158,14 @@ def analyze() -> ArchiveAnalysis:
     revisit_elapsed_s = time.perf_counter() - started
     original = px.revisit(coverages)
     np.testing.assert_array_equal(stats.cells, original.cells)
-    np.testing.assert_array_equal(stats.run_counts, original.run_counts)
-    np.testing.assert_array_equal(
-        stats.maximum_internal_gap_steps, original.maximum_internal_gap_steps
-    )
+    np.testing.assert_array_equal(stats.visit_counts, original.visit_counts)
+    np.testing.assert_array_equal(stats.gap_steps_max, original.gap_steps_max)
 
     # --8<-- [start:archive-region]
     region = region_cells(HEALPIX_RESOLUTION)
     region_observations = np.zeros(region.size, dtype=np.int64)
     for coverage in reloaded:
-        region_observations += coverage.reduce(px.Count(), cells=region)
+        region_observations += coverage.reduce(px.Count(), candidate_cells=region)
     # --8<-- [end:archive-region]
 
     return ArchiveAnalysis(

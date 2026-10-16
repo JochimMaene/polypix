@@ -20,6 +20,7 @@ __all__ = [
     "_sum_coverage_per_cell",
     "_validate_coverage",
     "_prepare_polygon",
+    "_after_fork_in_child",
 ]
 
 def _cover(
@@ -114,3 +115,4 @@ def _neighbors(
     cells: npt.NDArray[np.uint64],
     resolution: int,
 ) -> tuple[npt.NDArray[np.uint64], npt.NDArray[np.uint64]]: ...
+def _after_fork_in_child() -> None: ...

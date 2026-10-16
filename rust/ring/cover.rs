@@ -163,18 +163,13 @@ pub(super) fn compute_candidate_coverage<T: Send + Sync>(
     z_bounds: impl Fn(&T) -> (f64, f64) + Send + Sync,
     matches: impl Fn(&T, u64, Vec3) -> bool + Send + Sync,
 ) -> NativeResult<Coverage> {
-    let prepare_all = |parallel| {
-        let prepared = if parallel {
-            (0..item_count)
-                .into_par_iter()
-                .map(&prepare)
-                .collect::<Vec<_>>()
-        } else {
-            (0..item_count).map(&prepare).collect::<Vec<_>>()
-        };
+    let prepare_all = |parallel| -> NativeResult<Vec<T>> {
+        let prepared = try_collect_indexed(item_count, parallel, &prepare)?;
         // Resolve errors after the indexed collection so the first invalid
-        // footprint is stable across thread counts.
-        prepared.into_iter().collect::<Result<Vec<_>, _>>()
+        // footprint is stable across thread counts. Unwrapping the results
+        // collects in place into the buffer reserved above, so it neither
+        // allocates nor touches a second, cold buffer.
+        Ok(prepared.into_iter().collect::<Result<Vec<_>, _>>()?)
     };
     let plan_for = |items: &[T], parallel| {
         plan_item_candidates(items, candidates, resolution, parallel, &z_bounds)
@@ -195,13 +190,13 @@ pub(super) fn compute_candidate_coverage<T: Send + Sync>(
     if threads != Some(1) && preparation_work >= CANDIDATE_PARALLEL_MIN_VISITS {
         return run_with_parallelism(item_count, true, threads, |parallel| {
             let footprints = prepare_all(parallel)?;
-            let plan = plan_for(&footprints, parallel);
+            let plan = plan_for(&footprints, parallel)?;
             compute_planned(&footprints, &plan, parallel)
         })?;
     }
 
     let footprints = prepare_all(false)?;
-    let plan = plan_for(&footprints, false);
+    let plan = plan_for(&footprints, false)?;
     run_with_parallelism(
         item_count,
         plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS,
@@ -445,7 +440,7 @@ fn cover_prepared_region<P: Borrow<PreparedRegionPolygon>>(
 }
 
 pub(crate) fn cover_prepared_regions(
-    regions: &[Vec<&PreparedRegionPolygon>],
+    regions: &[&[&PreparedRegionPolygon]],
     resolution: u8,
     raw_candidates: Option<&[u64]>,
     restrict_output: bool,
@@ -463,7 +458,7 @@ pub(crate) fn cover_prepared_regions(
         should_test_candidates(
             restrict_output,
             sampled_total(region_count, estimated_cells) as f64,
-            regions.iter().map(Vec::len).sum(),
+            regions.iter().map(|region| region.len()).sum(),
             candidates.len(),
         )
     }) {
@@ -503,7 +498,7 @@ pub(crate) fn cover_prepared_regions(
                 candidates,
                 resolution,
                 threads,
-                |region| Ok::<_, String>(regions[region].as_slice()),
+                |region| Ok::<_, String>(regions[region]),
                 |polygons| region_z_bounds(polygons),
                 |polygons, _cell, point| region_contains(polygons, point),
             )
@@ -529,7 +524,7 @@ pub(crate) fn cover_prepared_regions(
             };
             coverage.offsets.push(0);
             for region in range {
-                cover_prepared_region(&regions[region], resolution, &mut coverage.cells, overlap)?;
+                cover_prepared_region(regions[region], resolution, &mut coverage.cells, overlap)?;
                 coverage.offsets.push(coverage.cells.len() as u64);
             }
             Ok(coverage)
@@ -618,10 +613,9 @@ pub(crate) fn cover_caps(
         if overlap {
             // Bind every cap to the resolution once, rather than relocating
             // each axis cell for every candidate it is tested against.
-            let overlaps = caps
-                .iter()
-                .map(|cap| CapOverlap::new(cap, resolution))
-                .collect::<Vec<_>>();
+            let overlaps = try_collect_indexed(caps.len(), false, |index| {
+                CapOverlap::new(&caps[index], resolution)
+            })?;
             let compute_planned = |plan: &CandidatePlan, parallel| {
                 compute_planned_candidates(
                     caps.len(),
@@ -635,12 +629,12 @@ pub(crate) fn cover_caps(
             let preparation_work = candidate_preparation_work(caps.len(), candidates.len(), 0);
             if threads != Some(1) && preparation_work >= CANDIDATE_PARALLEL_MIN_VISITS {
                 return run_with_parallelism(caps.len(), true, threads, |parallel| {
-                    let plan = plan_for(parallel);
+                    let plan = plan_for(parallel)?;
                     compute_planned(&plan, parallel)
                 })?;
             }
 
-            let plan = plan_for(false);
+            let plan = plan_for(false)?;
             return run_with_parallelism(
                 caps.len(),
                 plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS,
@@ -665,12 +659,12 @@ pub(crate) fn cover_caps(
         let preparation_work = candidate_preparation_work(caps.len(), candidates.len(), 0);
         if threads != Some(1) && preparation_work >= CANDIDATE_PARALLEL_MIN_VISITS {
             return run_with_parallelism(caps.len(), true, threads, |parallel| {
-                let plan = plan_for(parallel);
+                let plan = plan_for(parallel)?;
                 compute_planned(&plan, parallel)
             })?;
         }
 
-        let plan = plan_for(false);
+        let plan = plan_for(false)?;
         return run_with_parallelism(
             caps.len(),
             plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS,
@@ -693,11 +687,11 @@ pub(crate) fn cover_caps(
 
 pub(super) fn zeroed_cap_deltas(cell_count: usize) -> NativeResult<Vec<i64>> {
     let length = cell_count.checked_add(1).ok_or_else(|| {
-        NativeError::out_of_memory("Dense cap-overlap result is too large to fit in memory.")
+        NativeError::out_of_memory("Dense cap-count result is too large to fit in memory.")
     })?;
     let mut deltas = Vec::new();
     deltas.try_reserve_exact(length).map_err(|_| {
-        NativeError::out_of_memory("Dense cap-overlap result is too large to fit in memory.")
+        NativeError::out_of_memory("Dense cap-count result is too large to fit in memory.")
     })?;
     deltas.resize(length, 0_i64);
     Ok(deltas)
@@ -751,7 +745,7 @@ pub(crate) fn count_caps_per_cell(
     let mut caps = prepare_caps(centers, radii)?;
     let raw_cells_total = raw_cell_count(resolution);
     let cell_count = usize::try_from(raw_cells_total).map_err(|_| {
-        NativeError::out_of_memory("Dense cap-overlap result is too large to fit in memory.")
+        NativeError::out_of_memory("Dense cap-count result is too large to fit in memory.")
     })?;
     if caps.len() > i64::MAX as usize {
         return Err("Too many caps to represent overlap counts as int64."
@@ -800,7 +794,7 @@ pub(crate) fn count_caps_per_cell(
         let all_direct = tested_caps.iter().all(|cap| cap[3] >= 0.0);
         let mut counts = Vec::new();
         counts.try_reserve_exact(cells.len()).map_err(|_| {
-            NativeError::out_of_memory("Selected cap-overlap result is too large to fit in memory.")
+            NativeError::out_of_memory("Selected cap-count result is too large to fit in memory.")
         })?;
         counts.resize(cells.len(), 0_i64);
         return run_with_parallelism(
@@ -1043,15 +1037,18 @@ pub(crate) fn cover_sweep(
     debug_assert_eq!(left.len(), right.len());
     let sample_count = left.len() / 3;
     let candidates = candidate_cells(raw_candidates, resolution)?;
-    let normalize_samples = |values: &[f64], name: &str| {
-        values
-            .chunks_exact(3)
-            .enumerate()
-            .map(|(index, value)| {
+    let normalize_samples = |values: &[f64], name: &str| -> NativeResult<Vec<Vec3>> {
+        let mut samples = Vec::new();
+        samples
+            .try_reserve_exact(values.len() / 3)
+            .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
+        for (index, value) in values.chunks_exact(3).enumerate() {
+            samples.push(
                 normalize([value[0], value[1], value[2]])
-                    .map_err(|error| format!("{name}[{index}] {error}"))
-            })
-            .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| format!("{name}[{index}] {error}"))?,
+            );
+        }
+        Ok(samples)
     };
     let normalized_left = normalize_samples(left, "left_edge_xyz")?;
     let normalized_right = normalize_samples(right, "right_edge_xyz")?;

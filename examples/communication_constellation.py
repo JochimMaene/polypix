@@ -110,7 +110,7 @@ def germany_cells() -> npt.NDArray[np.int64]:
             np.sin(latitude),
         )
     )
-    return px.cover_polygon(px.Polygon(boundary), GERMANY_RESOLUTION).cells
+    return px.cover_polygon(px.Polygon(boundary), resolution=GERMANY_RESOLUTION).cells
 
 
 # --8<-- [end:germany-aoi]
@@ -225,7 +225,7 @@ def plot_germany_availability(
     import matplotlib.pyplot as plt
     from matplotlib.collections import PolyCollection
 
-    corners = px.cell_corners(cells, GERMANY_RESOLUTION)
+    corners = px.cell_corners(cells, resolution=GERMANY_RESOLUTION)
     polygons = np.stack(
         (
             np.degrees(np.arctan2(corners[..., 1], corners[..., 0])),

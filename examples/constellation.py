@@ -136,7 +136,9 @@ def map_coordinates(
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Return longitude and latitude for every cell center."""
     cell_count = px.cell_count(resolution)
-    centers = px.cell_centers(np.arange(cell_count, dtype=np.int64), resolution)
+    centers = px.cell_centers(
+        np.arange(cell_count, dtype=np.int64), resolution=resolution
+    )
     return (
         np.arctan2(centers[:, 1], centers[:, 0]),
         np.arcsin(np.clip(centers[:, 2], -1.0, 1.0)),

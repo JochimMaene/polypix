@@ -56,7 +56,9 @@ jobs:
           target: ${{ inputs.target }}
           manylinux: ${{ inputs.manylinux }}
           args: --release --out dist
-          sccache: true
+          maturin-version: v1.14.1
+          # Release artifacts are built from a clean cache.
+          sccache: ${{ github.event_name != 'release' }}
 
       - name: Install built wheel
         working-directory: ${{ runner.temp }}

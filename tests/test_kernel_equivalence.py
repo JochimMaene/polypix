@@ -56,7 +56,7 @@ def _edge_normals(vertices: np.ndarray) -> np.ndarray:
 @functools.cache
 def _grid_centers(resolution: int) -> np.ndarray:
     """Every cell center of the grid, from a code path the kernel does not use."""
-    return px.cell_centers(np.arange(px.cell_count(resolution)), resolution)
+    return px.cell_centers(np.arange(px.cell_count(resolution)), resolution=resolution)
 
 
 def _polygon_margins(vertices: np.ndarray, resolution: int) -> np.ndarray:
@@ -191,7 +191,7 @@ def test_named_footprint_coverage_matches_brute_force_centers(
     """Every cell the kernel emits, and only those, passes the predicate."""
     for name, vertices in _named_footprints().items():
         with subtests.test(footprint=name):
-            coverage = px.cover_polygon(vertices[None], resolution)
+            coverage = px.cover_polygon(vertices[None], resolution=resolution)
             _assert_matches(
                 coverage.cells,
                 _polygon_margins(vertices, resolution),
@@ -211,7 +211,7 @@ def test_random_polygon_coverage_matches_brute_force_centers(
         radius = float(rng.uniform(0.01, 1.2))
         vertices = _convex_polygon(rng, sides, radius)
         with subtests.test(trial=trial, radius=radius):
-            coverage = px.cover_polygon(vertices[None], resolution)
+            coverage = px.cover_polygon(vertices[None], resolution=resolution)
             _assert_matches(
                 coverage.cells,
                 _polygon_margins(vertices, resolution),
@@ -244,8 +244,8 @@ def test_a_convex_polygon_can_meet_one_ring_in_two_arcs() -> None:
         ]
     )
     resolution = 5
-    covered = px.cover_polygon(vertices[None], resolution).cells
-    heights = np.round(px.cell_centers(covered, resolution)[:, 2], 12)
+    covered = px.cover_polygon(vertices[None], resolution=resolution).cells
+    heights = np.round(px.cell_centers(covered, resolution=resolution)[:, 2], 12)
 
     split = 0
     for height in np.unique(heights):
@@ -271,12 +271,14 @@ def test_cap_coverage_matches_brute_force_centers(resolution: int, subtests) -> 
     radii = radii + [0.3, 0.3]
     for index, (center, radius) in enumerate(zip(centers, radii, strict=True)):
         paths = {
-            "scan": px.cover_cap(center[None], radius, resolution).cells,
+            "scan": px.cover_cap(center[None], radius, resolution=resolution).cells,
             "candidates": px.cover_cap(
-                center[None], radius, resolution, candidate_cells=every_cell
+                center[None], radius, resolution=resolution, candidate_cells=every_cell
             ).cells,
             "fused count": np.flatnonzero(
-                px.cover_cap(center[None], radius, resolution, reduce=px.Count())
+                px.cover_cap(
+                    center[None], radius, resolution=resolution, reduce=px.Count()
+                )
             ),
         }
         for path, hits in paths.items():
@@ -307,7 +309,7 @@ def test_sweep_segments_match_their_quads(resolution: int) -> None:
             for lon, lat in zip(longitudes, latitudes, strict=True)
         ]
     )
-    coverage = px.cover_sweep(left, right, resolution)
+    coverage = px.cover_sweep(left, right, resolution=resolution)
 
     for segment in range(len(coverage)):
         quad = np.asarray(
@@ -340,13 +342,17 @@ def test_candidate_filtering_matches_the_full_scan(resolution: int) -> None:
     for name, scanned, filtered in [
         (
             "polygon",
-            px.cover_polygon(polygons, resolution),
-            px.cover_polygon(polygons, resolution, candidate_cells=every_cell),
+            px.cover_polygon(polygons, resolution=resolution),
+            px.cover_polygon(
+                polygons, resolution=resolution, candidate_cells=every_cell
+            ),
         ),
         (
             "cap",
-            px.cover_cap(caps, radii, resolution),
-            px.cover_cap(caps, radii, resolution, candidate_cells=every_cell),
+            px.cover_cap(caps, radii, resolution=resolution),
+            px.cover_cap(
+                caps, radii, resolution=resolution, candidate_cells=every_cell
+            ),
         ),
     ]:
         np.testing.assert_array_equal(scanned.offsets, filtered.offsets, err_msg=name)
@@ -393,13 +399,13 @@ def test_results_are_invariant_across_thread_counts(threads: int) -> None:
     )
     sweep_values = rng.normal(size=1500)
 
-    reference = px.cover_polygon(polygons, resolution, threads=1)
-    actual = px.cover_polygon(polygons, resolution, threads=threads)
+    reference = px.cover_polygon(polygons, resolution=resolution, threads=1)
+    actual = px.cover_polygon(polygons, resolution=resolution, threads=threads)
     np.testing.assert_array_equal(reference.cells, actual.cells)
     np.testing.assert_array_equal(reference.offsets, actual.offsets)
 
-    cap_reference = px.cover_cap(caps, radii, resolution, threads=1)
-    cap_actual = px.cover_cap(caps, radii, resolution, threads=threads)
+    cap_reference = px.cover_cap(caps, radii, resolution=resolution, threads=1)
+    cap_actual = px.cover_cap(caps, radii, resolution=resolution, threads=threads)
     np.testing.assert_array_equal(cap_reference.cells, cap_actual.cells)
     np.testing.assert_array_equal(cap_reference.offsets, cap_actual.offsets)
 
@@ -480,15 +486,21 @@ def test_fused_reducers_match_materialize_then_reduce(threads: int | None) -> No
     for name, cover in [
         (
             "cap",
-            lambda **kw: px.cover_cap(caps, radii, resolution, threads=threads, **kw),
+            lambda **kw: px.cover_cap(
+                caps, radii, resolution=resolution, threads=threads, **kw
+            ),
         ),
         (
             "polygon",
-            lambda **kw: px.cover_polygon(polygons, resolution, threads=threads, **kw),
+            lambda **kw: px.cover_polygon(
+                polygons, resolution=resolution, threads=threads, **kw
+            ),
         ),
         (
             "sweep",
-            lambda **kw: px.cover_sweep(left, right, resolution, threads=threads, **kw),
+            lambda **kw: px.cover_sweep(
+                left, right, resolution=resolution, threads=threads, **kw
+            ),
         ),
     ]:
         coverage = cover()
@@ -501,7 +513,7 @@ def test_fused_reducers_match_materialize_then_reduce(threads: int | None) -> No
             request = {} if cells is None else {"candidate_cells": cells}
             np.testing.assert_array_equal(
                 cover(reduce=reducer, **request),
-                coverage.reduce(reducer, cells=cells),
+                coverage.reduce(reducer, candidate_cells=cells),
                 err_msg=f"{name} {type(reducer).__name__} threads={threads}",
             )
 
@@ -518,7 +530,7 @@ def test_sum_adds_in_segment_order_and_reports_overflow() -> None:
     coverage = px.Coverage.from_arrays(
         cells=[cell, cell, cell], offsets=[0, 1, 2, 3], resolution=2
     )
-    ordered = coverage.reduce(px.Sum([1e16, 1.0, -1e16]), cells=[cell])
+    ordered = coverage.reduce(px.Sum([1e16, 1.0, -1e16]), candidate_cells=[cell])
     assert ordered[0] == 0.0
     assert (1e16 + 1.0) - 1e16 == 0.0
     assert (1e16 - 1e16) + 1.0 == 1.0
@@ -563,11 +575,11 @@ def test_revisit_agrees_across_memory_profiles(minimum_sources: int) -> None:
     dense, sparse = summarize(6), summarize(10)
     for name in [
         "cells",
-        "run_counts",
-        "internal_gap_steps_sum",
-        "maximum_internal_gap_steps",
-        "first_start",
-        "last_stop",
+        "visit_counts",
+        "gap_steps_total",
+        "gap_steps_max",
+        "first_bin",
+        "stop_bin",
     ]:
         np.testing.assert_array_equal(
             getattr(dense, name), getattr(sparse, name), err_msg=name
@@ -617,7 +629,7 @@ def test_edge_lying_exactly_on_a_cell_center_is_covered(resolution: int) -> None
         for pole in poles:
             for half_angle in (0.05, 0.3):
                 quad = _quad_through_point(centers[cell], pole, half_angle)
-                coverage = px.cover_polygon(quad[None], resolution)
+                coverage = px.cover_polygon(quad[None], resolution=resolution)
                 assert int(cell) in set(coverage.cells.tolist()), (
                     f"cell {cell} lies on the edge of its own footprint but was "
                     f"not covered at resolution {resolution}"
@@ -635,7 +647,9 @@ def test_edge_lying_exactly_on_a_cell_center_is_covered(resolution: int) -> None
                     np.sort(coverage.cells),
                     np.sort(
                         px.cover_polygon(
-                            quad[None], resolution, candidate_cells=every_cell
+                            quad[None],
+                            resolution=resolution,
+                            candidate_cells=every_cell,
                         ).cells
                     ),
                     err_msg=f"scan and candidate paths differ on cell {cell}",
@@ -654,7 +668,7 @@ def test_cell_corner_footprints_match_brute_force_centers(
     still provide a dense deterministic supply of near-zero containment margins.
     """
     corners = px.cell_corners(
-        np.arange(px.cell_count(source_resolution)), source_resolution
+        np.arange(px.cell_count(source_resolution)), resolution=source_resolution
     )
     for target_resolution in (
         source_resolution,
@@ -663,7 +677,7 @@ def test_cell_corner_footprints_match_brute_force_centers(
     ):
         for cell in range(px.cell_count(source_resolution)):
             quad = corners[cell]
-            coverage = px.cover_polygon(quad[None], target_resolution)
+            coverage = px.cover_polygon(quad[None], resolution=target_resolution)
             _assert_matches(
                 coverage.cells,
                 _polygon_margins(quad, target_resolution),
@@ -716,7 +730,7 @@ def test_selected_reducers_ignore_how_the_kernel_reaches_the_cells(
                 np.sort(rng.choice(grid, size=size // 2, replace=False)), 2
             ),
         }
-        coverage = px.cover_polygon(quads, resolution, threads=1)
+        coverage = px.cover_polygon(quads, resolution=resolution, threads=1)
         for name, selected in selections.items():
             for reducer in (px.Count(), px.Sum(values)):
                 with subtests.test(
@@ -725,12 +739,12 @@ def test_selected_reducers_ignore_how_the_kernel_reaches_the_cells(
                     np.testing.assert_array_equal(
                         px.cover_polygon(
                             quads,
-                            resolution,
+                            resolution=resolution,
                             threads=1,
                             candidate_cells=selected,
                             reduce=reducer,
                         ),
-                        coverage.reduce(reducer, cells=selected),
+                        coverage.reduce(reducer, candidate_cells=selected),
                     )
 
 
@@ -760,8 +774,8 @@ def test_the_kernel_may_ignore_a_candidate_set_it_prices_as_more_expensive() -> 
             results.append(
                 (
                     len(cells),
-                    coverage.reduce(px.Count(), cells=selected),
-                    coverage.reduce(px.Sum(values), cells=selected),
+                    coverage.reduce(px.Count(), candidate_cells=selected),
+                    coverage.reduce(px.Sum(values), candidate_cells=selected),
                 )
             )
         (tested, count_tested, _), (chosen, count_chosen, _) = results
@@ -784,14 +798,14 @@ def test_reduced_candidates_are_positional_and_zero_where_uncovered() -> None:
     rng = np.random.default_rng(20260827)
     resolution = 6
     quads = _grid_quads(rng, 200, 2.0)
-    dense = px.cover_polygon(quads, resolution, threads=1, reduce=px.Count())
+    dense = px.cover_polygon(quads, resolution=resolution, threads=1, reduce=px.Count())
     covered = np.flatnonzero(dense)
     uncovered = np.flatnonzero(dense == 0)
     requested = np.concatenate([covered[:4], uncovered[:4], covered[:4]])
 
     selected = px.cover_polygon(
         quads,
-        resolution,
+        resolution=resolution,
         threads=1,
         candidate_cells=requested,
         reduce=px.Count(),
@@ -828,12 +842,16 @@ def test_selected_cap_and_sweep_reductions_match_materialize_then_reduce(
     for name, cover, segments in [
         (
             "cap",
-            lambda **kw: px.cover_cap(caps, radii, resolution, threads=1, **kw),
+            lambda **kw: px.cover_cap(
+                caps, radii, resolution=resolution, threads=1, **kw
+            ),
             300,
         ),
         (
             "sweep",
-            lambda **kw: px.cover_sweep(left, right, resolution, threads=1, **kw),
+            lambda **kw: px.cover_sweep(
+                left, right, resolution=resolution, threads=1, **kw
+            ),
             39,
         ),
     ]:
@@ -842,6 +860,6 @@ def test_selected_cap_and_sweep_reductions_match_materialize_then_reduce(
         for reducer in (px.Count(), px.Sum(values)):
             np.testing.assert_array_equal(
                 cover(candidate_cells=small, reduce=reducer),
-                coverage.reduce(reducer, cells=small),
+                coverage.reduce(reducer, candidate_cells=small),
                 err_msg=f"{name} {type(reducer).__name__}",
             )

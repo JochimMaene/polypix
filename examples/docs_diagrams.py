@@ -65,7 +65,7 @@ def window_cells(resolution: int) -> npt.NDArray[np.int64]:
         np.linspace(WINDOW_LAT[0], WINDOW_LAT[1], 400),
     )
     directions = from_lonlat(longitude.ravel(), latitude.ravel())
-    return np.unique(px.cell_at(directions, resolution))
+    return np.unique(px.cell_at(directions, resolution=resolution))
 
 
 def cell_polygons(
@@ -73,8 +73,8 @@ def cell_polygons(
     resolution: int,
 ) -> list[npt.NDArray[np.float64]]:
     """Return each cell's four corners as a longitude/latitude polygon."""
-    corners = to_lonlat(px.cell_corners(cells, resolution))
-    centers = to_lonlat(px.cell_centers(cells, resolution))
+    corners = to_lonlat(px.cell_corners(cells, resolution=resolution))
+    centers = to_lonlat(px.cell_centers(cells, resolution=resolution))
     polygons = []
     for corner, center in zip(corners, centers, strict=True):
         # Keep every corner on the same side of the seam as its own center.
@@ -151,7 +151,7 @@ def draw_grid(
             )
         )
     if centers:
-        points = to_lonlat(px.cell_centers(cells, resolution))
+        points = to_lonlat(px.cell_centers(cells, resolution=resolution))
         # Only genuinely covered cells get the emphasised center. A highlighted
         # near-miss keeps the plain marker, because its center is what excluded it.
         inside = np.array([int(c) in covered for c in cells])
@@ -180,7 +180,7 @@ def center_sampling(path: Path) -> None:
     """A cap, the cells it selects, and one cell it overlaps but misses."""
     cells = window_cells(RESOLUTION)
     center, radius = from_lonlat(0.0, 0.0), 7.5
-    coverage = px.cover_cap(center, math.radians(radius), RESOLUTION)
+    coverage = px.cover_cap(center, math.radians(radius), resolution=RESOLUTION)
     covered = {int(c) for c in coverage.cells}
 
     missed: tuple[int, npt.NDArray[np.float64]] | None = None
@@ -188,7 +188,11 @@ def center_sampling(path: Path) -> None:
         if int(cell) in covered:
             continue
         corner_angles = np.degrees(
-            np.arccos(np.clip(px.cell_corners(cell, RESOLUTION)[0] @ center, -1.0, 1.0))
+            np.arccos(
+                np.clip(
+                    px.cell_corners(cell, resolution=RESOLUTION)[0] @ center, -1.0, 1.0
+                )
+            )
         )
         if (corner_angles < radius).any():
             missed = (int(cell), polygon)
@@ -228,12 +232,13 @@ def overlap_coverage(path: Path) -> None:
     cells = window_cells(RESOLUTION)
     center, radius = from_lonlat(0.0, 0.0), 7.5
     centered = {
-        int(c) for c in px.cover_cap(center, math.radians(radius), RESOLUTION).cells
+        int(c)
+        for c in px.cover_cap(center, math.radians(radius), resolution=RESOLUTION).cells
     }
     touched = {
         int(c)
         for c in px.cover_cap(
-            center, math.radians(radius), RESOLUTION, mode="overlap"
+            center, math.radians(radius), resolution=RESOLUTION, mode="overlap"
         ).cells
     }
     added = {cell: MISSED_FILL for cell in touched - centered}
