@@ -359,9 +359,10 @@ impl Cap {
         let half_width = (self.sine_radius / self.radial).clamp(0.0, 1.0).asin();
         let start = self.longitude - half_width;
         let end = self.longitude + half_width;
+        // An inclusive end exactly at 2pi is longitude zero, so it wraps too.
         if start < 0.0 {
             ([(0.0, end), (start + TAU, TAU)], 2)
-        } else if end > TAU {
+        } else if end >= TAU {
             ([(0.0, end - TAU), (start, TAU)], 2)
         } else {
             ([(start, end), (0.0, 0.0)], 1)
@@ -663,14 +664,15 @@ pub(super) fn visit_cap_ranges_in_rings(
         };
         let start = cap.longitude - half_width;
         let end = cap.longitude + half_width;
+        // An inclusive end exactly at 2pi is longitude zero, so it wraps too.
         let intervals = if start < 0.0 {
             [(0.0, end), (start + TAU, TAU)]
-        } else if end > TAU {
+        } else if end >= TAU {
             [(0.0, end - TAU), (start, TAU)]
         } else {
             [(start, end), (0.0, 0.0)]
         };
-        let interval_count = if start < 0.0 || end > TAU { 2 } else { 1 };
+        let interval_count = if start < 0.0 || end >= TAU { 2 } else { 1 };
         let step = scan_ring.step;
         let mut next_unscanned = 0;
         for &(interval_start, interval_end) in intervals.iter().take(interval_count) {
@@ -1685,15 +1687,9 @@ impl PreparedFootprint {
     }
 
     pub(super) fn from_raw(raw: &[f64]) -> Result<Self, String> {
-        // A convex fast path is only taken when it answers like the exact
-        // path: a tiny concave footprint can slip through the convex
-        // validator and lose the cells in its dent, and a very sharp vertex
-        // lets the convex test reach cells well past its tip.
-        let exact_enough = |vertices: &[Vec3], edge_normals: &[Vec3]| {
-            !has_reflex_vertex(vertices, edge_normals) && !has_sharp_vertex(edge_normals)
+        let convex_quad = |quad: &Quad| {
+            convex_path_is_exact(&quad.vertices[..quad.len], &quad.edge_normals[..quad.len])
         };
-        let convex_quad =
-            |quad: &Quad| exact_enough(&quad.vertices[..quad.len], &quad.edge_normals[..quad.len]);
         if raw.len() == 12 {
             if let Ok(quad) = prepare_quad(raw, ["vector"; 4], false) {
                 if convex_quad(&quad) {
@@ -1719,7 +1715,7 @@ impl PreparedFootprint {
             .map(|value| [value[0], value[1], value[2]])
             .collect::<Vec<_>>();
         match prepare_polygon(&raw_polygon) {
-            Ok(polygon) if exact_enough(&polygon.vertices, &polygon.edge_normals) => {
+            Ok(polygon) if convex_path_is_exact(&polygon.vertices, &polygon.edge_normals) => {
                 Ok(Self::Polygon(polygon))
             }
             _ => prepare_general_polygon(&[raw_polygon]).map(Self::General),
@@ -1789,17 +1785,32 @@ pub(super) fn sweep_quad(left: &[f64], right: &[f64], index: usize) -> [f64; 12]
     ]
 }
 
+/// A convex fast path is only taken when it answers like the exact path: a
+/// tiny concave footprint can slip through the convex validator and lose the
+/// cells in its dent, and a very sharp vertex lets the convex test reach cells
+/// well past its tip.
+fn convex_path_is_exact(vertices: &[Vec3], edge_normals: &[Vec3]) -> bool {
+    !has_reflex_vertex(vertices, edge_normals) && !has_sharp_vertex(edge_normals)
+}
+
 pub(super) fn prepare_sweep_footprint(
     left: &[Vec3],
     right: &[Vec3],
     index: usize,
 ) -> Result<PreparedFootprint, String> {
-    prepare_normalized_quad(
+    let quad = prepare_normalized_quad(
         [left[index], right[index], right[index + 1], left[index + 1]],
         true,
     )
-    .map(PreparedFootprint::Quad)
-    .map_err(|error| format!("sweep segment {index}: {error}"))
+    .map_err(|error| format!("sweep segment {index}: {error}"))?;
+    let vertices = &quad.vertices[..quad.len];
+    if convex_path_is_exact(vertices, &quad.edge_normals[..quad.len]) {
+        return Ok(PreparedFootprint::Quad(quad));
+    }
+    // A segment the general path cannot prepare keeps the convex answer it
+    // always had, rather than becoming a new error.
+    Ok(prepare_general_polygon(&[vertices.to_vec()])
+        .map_or(PreparedFootprint::Quad(quad), PreparedFootprint::General))
 }
 
 #[cfg(test)]

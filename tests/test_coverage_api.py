@@ -191,6 +191,9 @@ calls = [
     lambda: px.cover_polygon(quads, resolution=4, candidate_cells=[0], threads=1),
     lambda: px.cover_sweep(directions, directions + 1e-3, resolution=0, threads=1),
     lambda: px.Coverage.from_arrays(unsorted, [0, unsorted.size], resolution=10),
+    lambda: px.cover_polygon(
+        [px.Polygon(quads[0])] * 100_000, resolution=4, candidate_cells=[], threads=1
+    ),
 ]
 _, hard = resource.getrlimit(resource.RLIMIT_AS)
 for megabytes in (*range(1, 41), 48, 64, 96, 128):
@@ -223,3 +226,15 @@ def test_allocation_failures_raise_instead_of_aborting() -> None:
     )
     assert result.returncode == 0, result.stderr[-2000:]
     assert result.stdout.strip() == "survived"
+
+
+def test_cap_ending_exactly_at_longitude_zero_includes_that_cell() -> None:
+    # The cap's longitude span ends exactly at 2 pi, the center of cell 4.
+    axis = [math.cos(0.1), -math.sin(0.1), 0.0]
+    radius = 0.1 - 1e-14
+    assert px.cover_cap(axis, radius, resolution=0).cells.tolist() == [4]
+    assert px.cover_cap(
+        axis, radius, resolution=0, candidate_cells=[4]
+    ).cells.tolist() == [4]
+    assert px.cover_cap(axis, radius, resolution=0, reduce=px.Count())[4] == 1
+    assert 4 in px.cover_cap(axis, radius, resolution=0, mode="overlap").cells

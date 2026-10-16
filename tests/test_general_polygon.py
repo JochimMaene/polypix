@@ -688,7 +688,18 @@ def test_barely_concave_polygon_keeps_the_cells_in_its_dent() -> None:
     assert np.isin(holed, plain).all()
 
 
-def test_tiny_concave_polygon_keeps_interior_cells() -> None:
+def _cover_as(kind: str, vertices: np.ndarray, **options: object) -> px.Coverage:
+    """Cover a triangle or quad as a polygon, or as the one-segment sweep
+    whose quad (left[0], right[0], right[1], left[1]) has the same vertices.
+    A triangle becomes a sweep pinched at its first vertex."""
+    if kind == "polygon":
+        return px.cover_polygon(vertices, **options)  # type: ignore[call-overload]
+    left = vertices[[0, 3]] if len(vertices) == 4 else vertices[[0, 0]]
+    return px.cover_sweep(left, vertices[[1, 2]], **options)  # type: ignore[call-overload]
+
+
+@pytest.mark.parametrize("kind", ["polygon", "sweep"])
+def test_tiny_concave_footprint_keeps_interior_cells(kind: str) -> None:
     vertices = np.array(
         [
             [-0.2528946054863888, -0.2284496612206952, 0.940135666169534],
@@ -699,15 +710,16 @@ def test_tiny_concave_polygon_keeps_interior_cells() -> None:
     )
     inside = 25882078244167306
     for mode in ("center", "overlap"):
-        coverage = px.cover_polygon(vertices, resolution=28, mode=mode)
+        coverage = _cover_as(kind, vertices, resolution=28, mode=mode)
         assert inside in coverage.cells
-        candidates = px.cover_polygon(
-            vertices, resolution=28, mode=mode, candidate_cells=[inside]
+        candidates = _cover_as(
+            kind, vertices, resolution=28, mode=mode, candidate_cells=[inside]
         )
         assert candidates.cells.tolist() == [inside]
 
 
-def test_sharp_vertex_does_not_reach_past_its_tip() -> None:
+@pytest.mark.parametrize("kind", ["polygon", "sweep"])
+def test_sharp_vertex_does_not_reach_past_its_tip(kind: str) -> None:
     resolution = 20
     longitude = 1000.8 * 2 * np.pi / (4 << resolution)
     half_angle, length = 1e-9, 0.01
@@ -722,14 +734,18 @@ def test_sharp_vertex_does_not_reach_past_its_tip() -> None:
     triangle = np.array([tip, base, base * [1, 1, -1]])
 
     centers = px.cell_centers(
-        px.cover_polygon(triangle, resolution=resolution).cells, resolution=resolution
+        _cover_as(kind, triangle, resolution=resolution).cells, resolution=resolution
     )
     assert (np.arctan2(centers[:, 1], centers[:, 0]) <= longitude).all()
 
     near = px.cell_at(tip, resolution=resolution)[0]
     candidates = np.arange(near - 40, near + 40)
-    full = px.cover_polygon(triangle, resolution=resolution, mode="overlap").cells
-    selected = px.cover_polygon(
-        triangle, resolution=resolution, mode="overlap", candidate_cells=candidates
+    full = _cover_as(kind, triangle, resolution=resolution, mode="overlap").cells
+    selected = _cover_as(
+        kind,
+        triangle,
+        resolution=resolution,
+        mode="overlap",
+        candidate_cells=candidates,
     ).cells
     np.testing.assert_array_equal(np.intersect1d(full, candidates), selected)

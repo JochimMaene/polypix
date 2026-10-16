@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import copy
 import math
+import pickle
 
 import numpy as np
 import pytest
@@ -255,3 +257,14 @@ def test_sum_of_the_wrong_length_fails_before_covering() -> None:
         px.cover_sweep(
             edge, edge * [1, 1, -1] + [0, 0, 0.5], resolution=29, reduce=px.Sum([1, 2])
         )
+
+
+def test_sum_stays_read_only_after_copy_and_pickle() -> None:
+    reducer = px.Sum([1.0, 2.0])
+    restored = [copy.copy(reducer), copy.deepcopy(reducer)] + [
+        pickle.loads(pickle.dumps(reducer, protocol=protocol))
+        for protocol in range(pickle.HIGHEST_PROTOCOL + 1)
+    ]
+    for copied in restored:
+        np.testing.assert_array_equal(copied.values, [1.0, 2.0])
+        assert not copied.values.flags.writeable

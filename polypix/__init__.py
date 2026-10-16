@@ -1081,6 +1081,10 @@ class Sum:
         _freeze_array(values)
         object.__setattr__(self, "values", values)
 
+    def __reduce__(self) -> tuple[object, tuple[object, ...]]:
+        """Rebuild through the constructor, so copies stay validated and read-only."""
+        return Sum, (self.values,)
+
 
 CoverageReducer = Count | Sum
 

@@ -5,6 +5,7 @@ use numpy::{
 };
 use pyo3::exceptions::{PyMemoryError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::PyList;
 
 mod error;
 mod geometry;
@@ -12,7 +13,7 @@ mod reduce;
 mod revisit;
 mod ring;
 
-use error::NativeError;
+use error::{NativeError, COVERAGE_OUT_OF_MEMORY};
 use ring::MAX_RESOLUTION;
 
 /// Set in a child process after `fork()`. Rayon's worker threads do not
@@ -175,7 +176,7 @@ fn _prepare_polygon(
 #[pyfunction(signature = (regions, resolution, candidate_cells=None, restrict_output=true, threads=None, overlap=false))]
 fn _cover_prepared_regions<'py>(
     py: Python<'py>,
-    regions: Vec<Vec<Py<PyPreparedPolygon>>>,
+    regions: &Bound<'py, PyList>,
     resolution: u8,
     candidate_cells: Option<PyReadonlyArray1<'py, u64>>,
     restrict_output: bool,
@@ -184,15 +185,38 @@ fn _cover_prepared_regions<'py>(
 ) -> PyResult<PyCoverage<'py>> {
     validate_resolution(resolution)?;
     let candidates = optional_slice(candidate_cells.as_ref(), "candidate_cells")?;
-    let prepared = regions
-        .iter()
-        .map(|region| {
-            region
-                .iter()
-                .map(|polygon| &polygon.get().polygon)
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
+    // Read the nested lists by hand into flat, fallibly reserved buffers:
+    // extracting `Vec<Vec<_>>` would allocate one vector per region and abort
+    // the process if any of those allocations failed.
+    let out_of_memory = |_| PyMemoryError::new_err(COVERAGE_OUT_OF_MEMORY);
+    let mut lengths = Vec::new();
+    lengths
+        .try_reserve_exact(regions.len())
+        .map_err(out_of_memory)?;
+    let mut polygons: Vec<Py<PyPreparedPolygon>> = Vec::new();
+    for region in regions.iter() {
+        let region = region.cast::<PyList>()?;
+        let first = polygons.len();
+        for polygon in region.iter() {
+            polygons.try_reserve(1).map_err(out_of_memory)?;
+            polygons.push(polygon.extract()?);
+        }
+        lengths.push(polygons.len() - first);
+    }
+    let mut flat = Vec::new();
+    flat.try_reserve_exact(polygons.len())
+        .map_err(out_of_memory)?;
+    flat.extend(polygons.iter().map(|polygon| &polygon.get().polygon));
+    let mut prepared = Vec::new();
+    prepared
+        .try_reserve_exact(lengths.len())
+        .map_err(out_of_memory)?;
+    let mut remaining = flat.as_slice();
+    for length in lengths {
+        let (region, rest) = remaining.split_at(length);
+        prepared.push(region);
+        remaining = rest;
+    }
     let coverage = py
         .detach(|| {
             ring::cover_prepared_regions(

@@ -28,18 +28,24 @@ documentation. Internal refactors, tests, and CI changes are omitted.
   modes.
 - Fixed polygons with a very sharp vertex reporting cells past its tip, and
   disagreeing between full scans and `candidate_cells=` in overlap mode.
+- Applied the same concave and sharp-vertex fixes to `cover_sweep()`
+  segments, which used the convex test unconditionally.
+- Fixed caps whose longitude span ends exactly at 2 pi missing the cell at
+  longitude zero, so full scans, `candidate_cells=`, and counts agree.
 - Fixed `mode="overlap"` caps with a radius near pi reporting cells inside
   the excluded region around the antipode, and running slowly there. This
   removes the known limitation listed under 0.5.1.
 - A process forked after a parallel Polypix call no longer deadlocks on its
   next call; forked children run serially.
-- `RevisitStats` arrays stay read-only after `copy.deepcopy()` and pickling.
+- `RevisitStats` arrays and `Sum` values stay read-only after
+  `copy.deepcopy()` and pickling.
 - Error messages for cell IDs at or above 2**63 and for oversized cap counts
   now describe the actual problem.
 - Input-sized native buffers now raise `MemoryError` when an allocation is
   refused instead of aborting the process. This covers sparse `revisit()`,
   unsorted `candidate_cells=`, cap batches, sweep samples, candidate planning,
-  and `Coverage.from_arrays()` validation.
+  `Polygon` and `MultiPolygon` batches, and `Coverage.from_arrays()`
+  validation.
 - A `Sum` with the wrong number of values is rejected before any covering
   work, instead of after it.
 

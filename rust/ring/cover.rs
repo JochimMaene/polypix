@@ -440,7 +440,7 @@ fn cover_prepared_region<P: Borrow<PreparedRegionPolygon>>(
 }
 
 pub(crate) fn cover_prepared_regions(
-    regions: &[Vec<&PreparedRegionPolygon>],
+    regions: &[&[&PreparedRegionPolygon]],
     resolution: u8,
     raw_candidates: Option<&[u64]>,
     restrict_output: bool,
@@ -458,7 +458,7 @@ pub(crate) fn cover_prepared_regions(
         should_test_candidates(
             restrict_output,
             sampled_total(region_count, estimated_cells) as f64,
-            regions.iter().map(Vec::len).sum(),
+            regions.iter().map(|region| region.len()).sum(),
             candidates.len(),
         )
     }) {
@@ -498,7 +498,7 @@ pub(crate) fn cover_prepared_regions(
                 candidates,
                 resolution,
                 threads,
-                |region| Ok::<_, String>(regions[region].as_slice()),
+                |region| Ok::<_, String>(regions[region]),
                 |polygons| region_z_bounds(polygons),
                 |polygons, _cell, point| region_contains(polygons, point),
             )
@@ -524,7 +524,7 @@ pub(crate) fn cover_prepared_regions(
             };
             coverage.offsets.push(0);
             for region in range {
-                cover_prepared_region(&regions[region], resolution, &mut coverage.cells, overlap)?;
+                cover_prepared_region(regions[region], resolution, &mut coverage.cells, overlap)?;
                 coverage.offsets.push(coverage.cells.len() as u64);
             }
             Ok(coverage)
