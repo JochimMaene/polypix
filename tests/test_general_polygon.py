@@ -67,7 +67,7 @@ def planar_contains(points: np.ndarray, queries: np.ndarray) -> np.ndarray:
 
 def all_cell_centers(resolution: int) -> tuple[np.ndarray, np.ndarray]:
     cells = np.arange(px.cell_count(resolution), dtype=np.int64)
-    return cells, px.cell_centers(cells, resolution)
+    return cells, px.cell_centers(cells, resolution=resolution)
 
 
 def test_concave_polygon_matches_an_independent_center_check() -> None:
@@ -81,7 +81,7 @@ def test_concave_polygon_matches_an_independent_center_check() -> None:
     )
 
     expected = cells[inside]
-    actual = px.cover_polygon(boundary, 5).cells
+    actual = px.cover_polygon(boundary, resolution=5).cells
 
     np.testing.assert_array_equal(actual, expected)
 
@@ -96,7 +96,7 @@ def test_detailed_concave_polygon_matches_an_independent_center_check() -> None:
 
     resolution = 5
     cells = np.arange(px.cell_count(resolution), dtype=np.int64)
-    centers = px.cell_centers(cells, resolution)
+    centers = px.cell_centers(cells, resolution=resolution)
     visible = centers[:, 0] > 0.0
     inside = np.zeros(len(cells), dtype=np.bool_)
     inside[visible] = planar_contains(
@@ -111,7 +111,7 @@ def test_detailed_concave_polygon_matches_an_independent_center_check() -> None:
     expected = cells[inside]
 
     np.testing.assert_array_equal(
-        px.cover_polygon(boundary, resolution).cells, expected
+        px.cover_polygon(boundary, resolution=resolution).cells, expected
     )
 
 
@@ -132,13 +132,13 @@ def test_raw_batch_can_mix_convex_and_concave_polygons() -> None:
         [(-10, -10), (10, -10), (10, 10), (2, 10), (2, 0), (-2, 0), (-2, 10), (-10, 10)]
     )
 
-    batch = px.cover_polygon(np.stack((convex, concave)), 6, threads=1)
+    batch = px.cover_polygon(np.stack((convex, concave)), resolution=6, threads=1)
 
     np.testing.assert_array_equal(
-        batch[0], px.cover_polygon(convex, 6, threads=1).cells
+        batch[0], px.cover_polygon(convex, resolution=6, threads=1).cells
     )
     np.testing.assert_array_equal(
-        batch[1], px.cover_polygon(concave, 6, threads=1).cells
+        batch[1], px.cover_polygon(concave, resolution=6, threads=1).cells
     )
 
 
@@ -149,19 +149,19 @@ def test_polygon_holes_and_multipolygon_form_one_deduplicated_region() -> None:
     polygon = px.Polygon(outer, hole)
     region = px.MultiPolygon(polygon, px.Polygon(overlap))
 
-    coverage = px.cover_polygon(region, 6)
+    coverage = px.cover_polygon(region, resolution=6)
     without_hole = np.setdiff1d(
-        px.cover_polygon(outer, 6).cells,
-        px.cover_polygon(hole, 6).cells,
+        px.cover_polygon(outer, resolution=6).cells,
+        px.cover_polygon(hole, resolution=6).cells,
     )
-    expected = np.union1d(without_hole, px.cover_polygon(overlap, 6).cells)
+    expected = np.union1d(without_hole, px.cover_polygon(overlap, resolution=6).cells)
 
     assert len(coverage) == 1
     np.testing.assert_array_equal(coverage.cells, expected)
     assert len(coverage.cells) == len(np.unique(coverage.cells))
     selected = coverage.cells[::3]
     np.testing.assert_array_equal(
-        px.cover_polygon(region, 6, candidate_cells=selected).cells,
+        px.cover_polygon(region, resolution=6, candidate_cells=selected).cells,
         selected,
     )
 
@@ -185,9 +185,11 @@ def test_geo_interface_preserves_holes_multipart_union_and_altitude() -> None:
         px.Polygon(vectors(overlap)),
     )
 
-    coverage = px.cover_polygon(GeoObject(mapping), 6)
+    coverage = px.cover_polygon(GeoObject(mapping), resolution=6)
 
-    np.testing.assert_array_equal(coverage.cells, px.cover_polygon(expected, 6).cells)
+    np.testing.assert_array_equal(
+        coverage.cells, px.cover_polygon(expected, resolution=6).cells
+    )
     np.testing.assert_array_equal(
         px.cover_polygon(geometry=mapping, resolution=6).cells,
         coverage.cells,
@@ -210,17 +212,19 @@ def test_geo_interface_feature_and_batch_keep_one_segment_per_input() -> None:
         "geometry": second_geometry,
     }
 
-    coverage = px.cover_polygon([GeoObject(first), second], 5)
+    coverage = px.cover_polygon([GeoObject(first), second], resolution=5)
 
     assert len(coverage) == 2
     np.testing.assert_array_equal(
         coverage[0],
-        px.cover_polygon(px.Polygon(vectors(first["coordinates"][0])), 5).cells,
+        px.cover_polygon(
+            px.Polygon(vectors(first["coordinates"][0])), resolution=5
+        ).cells,
     )
     np.testing.assert_array_equal(
         coverage[1],
         px.cover_polygon(
-            px.Polygon(vectors(second_geometry["coordinates"][0])), 5
+            px.Polygon(vectors(second_geometry["coordinates"][0])), resolution=5
         ).cells,
     )
 
@@ -234,7 +238,7 @@ def test_geo_interface_feature_and_batch_keep_one_segment_per_input() -> None:
     ],
 )
 def test_empty_geo_interface_is_one_empty_region(mapping: dict[str, object]) -> None:
-    coverage = px.cover_polygon(mapping, 3)
+    coverage = px.cover_polygon(mapping, resolution=3)
     assert len(coverage) == 1
     assert coverage.cells.size == 0
 
@@ -286,12 +290,12 @@ def test_invalid_geo_interface_has_a_clear_error(
     mapping: dict[str, object], message: str
 ) -> None:
     with pytest.raises(ValueError, match=message):
-        px.cover_polygon(mapping, 3)
+        px.cover_polygon(mapping, resolution=3)
 
 
 def test_geo_interface_property_must_be_a_mapping() -> None:
     with pytest.raises(TypeError, match="__geo_interface__ must be a mapping"):
-        px.cover_polygon(GeoObject(None), 3)
+        px.cover_polygon(GeoObject(None), resolution=3)
 
 
 def test_geo_interface_batch_names_native_validation_failure() -> None:
@@ -307,7 +311,7 @@ def test_geo_interface_batch_names_native_validation_failure() -> None:
     with pytest.raises(
         ValueError, match=r"geometry\[1\]\['coordinates'\]: Ring must not cross"
     ):
-        px.cover_polygon([good, crossing, good], 3)
+        px.cover_polygon([good, crossing, good], resolution=3)
 
 
 def test_distant_holes_are_compared_in_the_outer_ring_hemisphere() -> None:
@@ -334,8 +338,8 @@ def test_hemisphere_validation_does_not_depend_on_vertex_density() -> None:
 
     assert len(polygon.outer) == len(boundary)
     np.testing.assert_array_equal(
-        px.cover_polygon(polygon, 5).cells,
-        px.cover_polygon(simplified, 5).cells,
+        px.cover_polygon(polygon, resolution=5).cells,
+        px.cover_polygon(simplified, resolution=5).cells,
     )
 
 
@@ -369,7 +373,7 @@ def test_raw_crossing_ring_reports_the_general_validation_error() -> None:
     crossing = gnomonic_ring([(0.0, 0.0), (2.0, 2.0), (2.0, 0.0), (0.0, 2.0)])
 
     with pytest.raises(ValueError, match="cross or touch itself"):
-        px.cover_polygon(crossing, 6)
+        px.cover_polygon(crossing, resolution=6)
 
 
 @pytest.mark.parametrize("structured_first", [False, True])
@@ -383,7 +387,7 @@ def test_mixed_polygon_representations_have_one_clear_error(
     with pytest.raises(
         TypeError, match="cannot be used in a structured geometry batch"
     ):
-        px.cover_polygon(batch, 3)
+        px.cover_polygon(batch, resolution=3)
 
 
 def test_geo_interface_cannot_mix_with_other_representations() -> None:
@@ -394,13 +398,13 @@ def test_geo_interface_cannot_mix_with_other_representations() -> None:
     }
 
     with pytest.raises(TypeError, match="geo-interface objects with Polygon objects"):
-        px.cover_polygon([GeoObject(mapping), px.Polygon(array)], 3)
+        px.cover_polygon([GeoObject(mapping), px.Polygon(array)], resolution=3)
     with pytest.raises(
         TypeError, match="cannot be used in a structured geometry batch"
     ):
-        px.cover_polygon([mapping, array], 3)
+        px.cover_polygon([mapping, array], resolution=3)
     with pytest.raises(TypeError, match=r"geometry\[1\] cannot be used"):
-        px.cover_polygon([mapping, None], 3)
+        px.cover_polygon([mapping, None], resolution=3)
 
 
 def test_object_array_points_to_the_documented_batch_form() -> None:
@@ -411,11 +415,11 @@ def test_object_array_points_to_the_documented_batch_form() -> None:
     geometries = np.asarray([GeoObject(mapping), GeoObject(mapping)], dtype=object)
 
     with pytest.raises(TypeError, match=r"object-dtype arrays.*list\(geometry\)"):
-        px.cover_polygon(geometries, 3)
+        px.cover_polygon(geometries, resolution=3)
 
 
 def test_empty_object_array_remains_an_empty_batch() -> None:
-    coverage = px.cover_polygon(np.empty(0, dtype=object), 3)
+    coverage = px.cover_polygon(np.empty(0, dtype=object), resolution=3)
 
     assert len(coverage) == 0
     np.testing.assert_array_equal(coverage.offsets, [0])
@@ -424,12 +428,12 @@ def test_empty_object_array_remains_an_empty_batch() -> None:
 @pytest.mark.parametrize("geometry", [None, object()])
 def test_non_array_objects_keep_the_numeric_input_error(geometry: object) -> None:
     with pytest.raises(TypeError, match="geometry must contain real numbers"):
-        px.cover_polygon(geometry, 3)
+        px.cover_polygon(geometry, resolution=3)
 
 
 def test_non_sequence_iterable_points_to_the_sequence_batch_form() -> None:
     with pytest.raises(TypeError, match=r"non-sequence iterables.*list\(geometry\)"):
-        px.cover_polygon(iter(()), 3)
+        px.cover_polygon(iter(()), resolution=3)
 
 
 def test_sequence_subclass_can_expose_geo_interface() -> None:
@@ -443,7 +447,7 @@ def test_sequence_subclass_can_expose_geo_interface() -> None:
         def __geo_interface__(self) -> dict[str, object]:
             return mapping
 
-    coverage = px.cover_polygon([TupleGeo(), TupleGeo()], 3)
+    coverage = px.cover_polygon([TupleGeo(), TupleGeo()], resolution=3)
 
     assert len(coverage) == 2
 
@@ -459,7 +463,7 @@ def test_geo_interface_takes_precedence_over_mapping_subclass() -> None:
         def __geo_interface__(self) -> dict[str, object]:
             return mapping
 
-    coverage = px.cover_polygon(MappingGeo(not_geojson=True), 3)
+    coverage = px.cover_polygon(MappingGeo(not_geojson=True), resolution=3)
 
     assert len(coverage) == 1
 
@@ -470,14 +474,14 @@ def test_region_batch_reducers_count_each_region_once() -> None:
         px.Polygon(vectors([(0, -5), (10, -5), (10, 5), (0, 5)])),
     )
     second = px.Polygon(vectors([(20, 0), (25, 0), (25, 5), (20, 5)]))
-    coverage = px.cover_polygon([first, second], 5)
+    coverage = px.cover_polygon([first, second], resolution=5)
 
     np.testing.assert_array_equal(
-        px.cover_polygon([first, second], 5, reduce=px.Count()),
+        px.cover_polygon([first, second], resolution=5, reduce=px.Count()),
         coverage.reduce(px.Count()),
     )
     np.testing.assert_array_equal(
-        px.cover_polygon([first, second], 5, reduce=px.Sum([2.0, 3.0])),
+        px.cover_polygon([first, second], resolution=5, reduce=px.Sum([2.0, 3.0])),
         coverage.reduce(px.Sum([2.0, 3.0])),
     )
 
@@ -502,13 +506,15 @@ def test_polygon_containers_validate_and_own_their_coordinates() -> None:
 
 def test_polygon_coverage_uses_the_geometry_validated_at_construction() -> None:
     polygon = px.Polygon(vectors([(-10, -10), (10, -10), (10, 10), (-10, 10)]))
-    expected = px.cover_polygon(polygon, 5).cells
+    expected = px.cover_polygon(polygon, resolution=5).cells
 
     polygon.outer.setflags(write=True)
     polygon.outer[:] = vectors([(80, -10), (100, -10), (100, 10), (80, 10)])
     polygon.outer.setflags(write=False)
 
-    np.testing.assert_array_equal(px.cover_polygon(polygon, 5).cells, expected)
+    np.testing.assert_array_equal(
+        px.cover_polygon(polygon, resolution=5).cells, expected
+    )
 
 
 def test_polygon_pickle_rebuilds_its_prepared_geometry() -> None:
@@ -522,13 +528,13 @@ def test_polygon_pickle_rebuilds_its_prepared_geometry() -> None:
     np.testing.assert_array_equal(restored.outer, polygon.outer)
     np.testing.assert_array_equal(restored.holes[0], polygon.holes[0])
     np.testing.assert_array_equal(
-        px.cover_polygon(restored, 5).cells,
-        px.cover_polygon(polygon, 5).cells,
+        px.cover_polygon(restored, resolution=5).cells,
+        px.cover_polygon(polygon, resolution=5).cells,
     )
 
 
 def test_empty_multipolygon_is_one_empty_region() -> None:
-    coverage = px.cover_polygon(px.MultiPolygon(), 3)
+    coverage = px.cover_polygon(px.MultiPolygon(), resolution=3)
     assert len(coverage) == 1
     assert coverage.cells.size == 0
 
@@ -550,8 +556,10 @@ def test_empty_multipolygon_is_one_empty_region() -> None:
 def test_general_scan_bounds_match_testing_every_cell(polygon: px.Polygon) -> None:
     resolution = 5
     every_cell = np.arange(px.cell_count(resolution), dtype=np.int64)
-    scanned = px.cover_polygon(polygon, resolution)
-    tested = px.cover_polygon(polygon, resolution, candidate_cells=every_cell)
+    scanned = px.cover_polygon(polygon, resolution=resolution)
+    tested = px.cover_polygon(
+        polygon, resolution=resolution, candidate_cells=every_cell
+    )
     np.testing.assert_array_equal(scanned.cells, tested.cells)
 
 
@@ -568,7 +576,7 @@ def _equatorial_spike(
     """
     nside = 1 << resolution
     outside_cell = int(6 * nside * nside - 2 * nside + 123456)
-    center = px.cell_centers([outside_cell], resolution)[0]
+    center = px.cell_centers([outside_cell], resolution=resolution)[0]
     longitude = float(np.arctan2(center[1], center[0]))
     step = 2.0 * np.pi / (4 * nside)
     gap = gap_cells * step
@@ -615,8 +623,8 @@ def test_short_edge_boundary_agrees_between_scanning_and_candidates() -> None:
     resolution = 29
     ring, outside_cell, window = _equatorial_spike(resolution, 3, 1e-6)
 
-    scanned = px.cover_polygon(ring, resolution)
-    tested = px.cover_polygon(ring, resolution, candidate_cells=window)
+    scanned = px.cover_polygon(ring, resolution=resolution)
+    tested = px.cover_polygon(ring, resolution=resolution, candidate_cells=window)
 
     assert outside_cell not in scanned.cells
     assert outside_cell not in tested.cells
@@ -646,10 +654,82 @@ def test_short_edge_boundary_agrees_on_both_candidate_planner_choices() -> None:
 
     for candidates in (window, scanning):
         counts = px.cover_polygon(
-            ring, resolution, candidate_cells=candidates, reduce=px.Count()
+            ring, resolution=resolution, candidate_cells=candidates, reduce=px.Count()
         )
-        covered = px.cover_polygon(ring, resolution, candidate_cells=candidates)
+        covered = px.cover_polygon(
+            ring, resolution=resolution, candidate_cells=candidates
+        )
         assert int(np.asarray(counts)[candidates == outside_cell][0]) == 0
         np.testing.assert_array_equal(
             np.sort(candidates[np.asarray(counts) > 0]), np.sort(covered.cells)
         )
+
+
+def _tangent_plane(center: list[float]):
+    def unit(vector: np.ndarray) -> np.ndarray:
+        return vector / np.linalg.norm(vector)
+
+    axis = unit(np.asarray(center, dtype=float))
+    first = unit(np.cross([0.0, 0.0, 1.0], axis))
+    second = np.cross(axis, first)
+    return lambda x, y: unit(axis + x * first + y * second)
+
+
+def test_barely_concave_polygon_keeps_the_cells_in_its_dent() -> None:
+    # The reflex vertex sits 1e-11 rad from its neighbour, as near-duplicate
+    # GIS vertices do, so the convex validator alone would accept the ring.
+    point = _tangent_plane([0.6, 0.3, 0.5])
+    quad = np.array(
+        [point(0, 0), point(1e-11, 0), point(1e-3, -5e-6), point(5e-4, 1e-3)]
+    )
+    hole = np.array([point(4e-4, 5e-4), point(6e-4, 5e-4), point(5e-4, 6e-4)])
+    plain = px.cover_polygon(quad, resolution=18).cells
+    holed = px.cover_polygon(px.Polygon(quad, hole), resolution=18).cells
+    assert np.isin(holed, plain).all()
+
+
+def test_tiny_concave_polygon_keeps_interior_cells() -> None:
+    vertices = np.array(
+        [
+            [-0.2528946054863888, -0.2284496612206952, 0.940135666169534],
+            [-0.2528945914533086, -0.22844966922082713, 0.9401356680004003],
+            [-0.2528945866684893, -0.22844967763114138, 0.94013566724383],
+            [-0.2528945795380308, -0.2284496503820889, 0.9401356757833329],
+        ]
+    )
+    inside = 25882078244167306
+    for mode in ("center", "overlap"):
+        coverage = px.cover_polygon(vertices, resolution=28, mode=mode)
+        assert inside in coverage.cells
+        candidates = px.cover_polygon(
+            vertices, resolution=28, mode=mode, candidate_cells=[inside]
+        )
+        assert candidates.cells.tolist() == [inside]
+
+
+def test_sharp_vertex_does_not_reach_past_its_tip() -> None:
+    resolution = 20
+    longitude = 1000.8 * 2 * np.pi / (4 << resolution)
+    half_angle, length = 1e-9, 0.01
+    tip = np.array([np.cos(longitude), np.sin(longitude), 0.0])
+    base = np.array(
+        [
+            np.cos(longitude - length) * np.cos(length * half_angle),
+            np.sin(longitude - length) * np.cos(length * half_angle),
+            np.sin(length * half_angle),
+        ]
+    )
+    triangle = np.array([tip, base, base * [1, 1, -1]])
+
+    centers = px.cell_centers(
+        px.cover_polygon(triangle, resolution=resolution).cells, resolution=resolution
+    )
+    assert (np.arctan2(centers[:, 1], centers[:, 0]) <= longitude).all()
+
+    near = px.cell_at(tip, resolution=resolution)[0]
+    candidates = np.arange(near - 40, near + 40)
+    full = px.cover_polygon(triangle, resolution=resolution, mode="overlap").cells
+    selected = px.cover_polygon(
+        triangle, resolution=resolution, mode="overlap", candidate_cells=candidates
+    ).cells
+    np.testing.assert_array_equal(np.intersect1d(full, candidates), selected)

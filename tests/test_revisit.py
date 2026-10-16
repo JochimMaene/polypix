@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import pickle
 import re
 
 import numpy as np
@@ -18,11 +20,11 @@ def _expected_stats(qualifying: np.ndarray) -> dict[str, list[int]]:
     """
     expected: dict[str, list[int]] = {
         "cells": [],
-        "run_counts": [],
-        "internal_gap_steps_sum": [],
-        "maximum_internal_gap_steps": [],
-        "first_start": [],
-        "last_stop": [],
+        "visit_counts": [],
+        "gap_steps_total": [],
+        "gap_steps_max": [],
+        "first_bin": [],
+        "stop_bin": [],
     }
     for cell in range(qualifying.shape[1]):
         padded = np.concatenate(([False], qualifying[:, cell], [False]))
@@ -33,13 +35,11 @@ def _expected_stats(qualifying: np.ndarray) -> dict[str, list[int]]:
             continue
         gaps = starts[1:] - stops[:-1]
         expected["cells"].append(cell)
-        expected["run_counts"].append(int(starts.size))
-        expected["internal_gap_steps_sum"].append(int(gaps.sum()))
-        expected["maximum_internal_gap_steps"].append(
-            int(gaps.max()) if gaps.size else 0
-        )
-        expected["first_start"].append(int(starts[0]))
-        expected["last_stop"].append(int(stops[-1]))
+        expected["visit_counts"].append(int(starts.size))
+        expected["gap_steps_total"].append(int(gaps.sum()))
+        expected["gap_steps_max"].append(int(gaps.max()) if gaps.size else 0)
+        expected["first_bin"].append(int(starts[0]))
+        expected["stop_bin"].append(int(stops[-1]))
     return expected
 
 
@@ -58,35 +58,35 @@ def test_revisit_summarizes_complete_ordinal_windows() -> None:
     union = px.revisit([first, second])
     for values in (
         union.cells,
-        union.run_counts,
-        union.internal_gap_steps_sum,
-        union.maximum_internal_gap_steps,
-        union.first_start,
-        union.last_stop,
+        union.visit_counts,
+        union.gap_steps_total,
+        union.gap_steps_max,
+        union.first_bin,
+        union.stop_bin,
     ):
         assert values.dtype == np.int64
         assert not values.flags.writeable
     # Cell 1 is occupied over [0, 3) and [4, 5), so one internal gap of one
     # segment; cell 2 over [1, 4) alone.
     np.testing.assert_array_equal(union.cells, [1, 2])
-    np.testing.assert_array_equal(union.run_counts, [2, 1])
-    np.testing.assert_array_equal(union.internal_gap_steps_sum, [1, 0])
-    np.testing.assert_array_equal(union.maximum_internal_gap_steps, [1, 0])
-    np.testing.assert_array_equal(union.first_start, [0, 1])
-    np.testing.assert_array_equal(union.last_stop, [5, 4])
+    np.testing.assert_array_equal(union.visit_counts, [2, 1])
+    np.testing.assert_array_equal(union.gap_steps_total, [1, 0])
+    np.testing.assert_array_equal(union.gap_steps_max, [1, 0])
+    np.testing.assert_array_equal(union.first_bin, [0, 1])
+    np.testing.assert_array_equal(union.stop_bin, [5, 4])
 
     coincident = px.revisit([first, second], minimum_sources=2)
     np.testing.assert_array_equal(coincident.cells, [1, 2])
-    np.testing.assert_array_equal(coincident.run_counts, [2, 1])
-    np.testing.assert_array_equal(coincident.internal_gap_steps_sum, [2, 0])
-    np.testing.assert_array_equal(coincident.maximum_internal_gap_steps, [2, 0])
-    np.testing.assert_array_equal(coincident.first_start, [1, 2])
-    np.testing.assert_array_equal(coincident.last_stop, [5, 3])
+    np.testing.assert_array_equal(coincident.visit_counts, [2, 1])
+    np.testing.assert_array_equal(coincident.gap_steps_total, [2, 0])
+    np.testing.assert_array_equal(coincident.gap_steps_max, [2, 0])
+    np.testing.assert_array_equal(coincident.first_bin, [1, 2])
+    np.testing.assert_array_equal(coincident.stop_bin, [5, 3])
 
     impossible = px.revisit([first, second], minimum_sources=3)
     np.testing.assert_array_equal(impossible.cells, [])
-    np.testing.assert_array_equal(impossible.run_counts, [])
-    np.testing.assert_array_equal(impossible.first_start, [])
+    np.testing.assert_array_equal(impossible.visit_counts, [])
+    np.testing.assert_array_equal(impossible.first_bin, [])
 
     enormous = px.revisit([first, second], minimum_sources=10**100)
     np.testing.assert_array_equal(enormous.cells, [])
@@ -186,9 +186,9 @@ def test_revisit_accepts_unsorted_hits_and_all_empty_segments() -> None:
     )
     stats = px.revisit(shuffled)
     np.testing.assert_array_equal(stats.cells, [2, 7])
-    np.testing.assert_array_equal(stats.run_counts, [1, 1])
-    np.testing.assert_array_equal(stats.first_start, [0, 0])
-    np.testing.assert_array_equal(stats.last_stop, [2, 2])
+    np.testing.assert_array_equal(stats.visit_counts, [1, 1])
+    np.testing.assert_array_equal(stats.first_bin, [0, 0])
+    np.testing.assert_array_equal(stats.stop_bin, [2, 2])
 
     all_empty = px.Coverage.from_arrays([], [0, 0, 0, 0], resolution=29)
     empty = px.revisit(all_empty)
@@ -209,11 +209,11 @@ def test_revisit_preserves_resolution_29_cell_ids() -> None:
     # Cell 0 is occupied in segment 1 alone; the final cell in segments 0 and
     # 2, so two runs with one internal gap of one segment.
     np.testing.assert_array_equal(stats.cells, [0, final_cell])
-    np.testing.assert_array_equal(stats.run_counts, [1, 2])
-    np.testing.assert_array_equal(stats.first_start, [1, 0])
-    np.testing.assert_array_equal(stats.last_stop, [2, 3])
-    np.testing.assert_array_equal(stats.internal_gap_steps_sum, [0, 1])
-    np.testing.assert_array_equal(stats.maximum_internal_gap_steps, [0, 1])
+    np.testing.assert_array_equal(stats.visit_counts, [1, 2])
+    np.testing.assert_array_equal(stats.first_bin, [1, 0])
+    np.testing.assert_array_equal(stats.stop_bin, [2, 3])
+    np.testing.assert_array_equal(stats.gap_steps_total, [0, 1])
+    np.testing.assert_array_equal(stats.gap_steps_max, [0, 1])
 
 
 @pytest.mark.parametrize(
@@ -244,3 +244,19 @@ def test_native_revisit_rejects_malformed_offsets(
         _revisit_stats([cells], [malformed], 4, 1)
     with pytest.raises(ValueError, match=re.escape(expected)):
         _revisit_stats([cells], [malformed], 4, 1)
+
+
+@pytest.mark.parametrize("protocol", range(pickle.HIGHEST_PROTOCOL + 1))
+def test_revisit_stats_stay_read_only_after_pickle_and_copy(protocol: int) -> None:
+    coverage = px.Coverage.from_arrays(cells=[1, 2, 1], offsets=[0, 2, 3], resolution=1)
+    stats = px.revisit(coverage)
+    for restored in (
+        pickle.loads(pickle.dumps(stats, protocol=protocol)),
+        copy.deepcopy(stats),
+        copy.copy(stats),
+    ):
+        for name in _expected_stats(np.zeros((0, 0), bool)):
+            array = getattr(restored, name)
+            np.testing.assert_array_equal(array, getattr(stats, name))
+            assert array.dtype == np.int64
+            assert not array.flags.writeable

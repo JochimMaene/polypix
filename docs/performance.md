@@ -104,7 +104,9 @@ input preparation shows up in a profile, prepare dense contiguous batches
 upstream.
 
 The native work releases the GIL. Don't change an input array from another
-thread while a call is running.
+thread while a call is running. A running call doesn't respond to Ctrl-C
+until it returns, so check the size of a high-resolution request before
+starting it.
 
 ## Threads
 
@@ -119,3 +121,7 @@ serial = px.cover_polygon(batch, resolution=8, threads=1)
 If your own executor is already running several Polypix calls, use
 `threads=1` inside each call so the workers don't compete with each other.
 Threading doesn't change the cells or their order.
+
+Worker threads don't survive `fork()`. A process forked from one that already
+ran Polypix, such as a `multiprocessing` worker started with the `fork`
+method, runs every call on one thread.

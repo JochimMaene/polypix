@@ -732,7 +732,7 @@ mod tests {
         let offsets = vec![0_u64, 1];
         assert_eq!(
             error_message(&[negative.as_slice()], &[offsets.as_slice()], 6, 1),
-            "sources must contain non-negative integers."
+            "sources must contain non-negative integers below 2**63."
         );
     }
 

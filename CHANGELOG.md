@@ -7,6 +7,36 @@ documentation. Internal refactors, tests, and CI changes are omitted.
 
 ## Unreleased
 
+### Breaking changes
+
+- `resolution` is now keyword-only on `cover_cap()`, `cover_polygon()`,
+  `cover_sweep()`, `cell_at()`, `cell_centers()`, `cell_corners()`, and
+  `cell_neighbors()`. Two adjacent numbers could be swapped without an error.
+- `Sum(values)` now copies and validates its values when it is created, not
+  when it is used.
+- Renamed the `RevisitStats` fields `run_counts`, `internal_gap_steps_sum`,
+  `maximum_internal_gap_steps`, `first_start`, and `last_stop` to
+  `visit_counts`, `gap_steps_total`, `gap_steps_max`, `first_bin`, and
+  `stop_bin`.
+- Renamed the `cells=` argument of `Coverage.reduce()` to `candidate_cells=`,
+  matching the covering functions.
+
+### Fixes
+
+- Fixed polygons with a slightly concave vertex, such as tiny footprints or
+  rings with near-duplicate vertices, losing cells inside the polygon in both
+  modes.
+- Fixed polygons with a very sharp vertex reporting cells past its tip, and
+  disagreeing between full scans and `candidate_cells=` in overlap mode.
+- Fixed `mode="overlap"` caps with a radius near pi reporting cells inside
+  the excluded region around the antipode, and running slowly there. This
+  removes the known limitation listed under 0.5.1.
+- A process forked after a parallel Polypix call no longer deadlocks on its
+  next call; forked children run serially.
+- `RevisitStats` arrays stay read-only after `copy.deepcopy()` and pickling.
+- Error messages for cell IDs at or above 2**63 and for oversized cap counts
+  now describe the actual problem.
+
 ## [0.5.1] — 2026-09-24
 
 ### Fixes

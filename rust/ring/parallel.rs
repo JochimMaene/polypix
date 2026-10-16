@@ -34,7 +34,7 @@ pub(super) fn run_with_parallelism<T: Send>(
     threads: Option<usize>,
     operation: impl FnOnce(bool) -> T + Send,
 ) -> Result<T, String> {
-    if item_count <= 1 || threads == Some(1) || !parallel_worthwhile {
+    if item_count <= 1 || threads == Some(1) || !parallel_worthwhile || crate::forked() {
         return Ok(operation(false));
     }
     let (worker_count, use_global_pool) = match threads {

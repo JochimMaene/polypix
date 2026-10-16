@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import multiprocessing
+import os
 
 import numpy as np
 import pytest
@@ -64,8 +66,8 @@ def test_grid_names_and_cell_count() -> None:
         px.cell_count(30)
 
     cells = np.asarray([0, 7, 31], dtype=np.int64)
-    assert px.cell_centers(cells, 1).shape == (3, 3)
-    assert px.cell_corners(cells, 1).shape == (3, 4, 3)
+    assert px.cell_centers(cells, resolution=1).shape == (3, 3)
+    assert px.cell_corners(cells, resolution=1).shape == (3, 4, 3)
 
 
 @pytest.mark.parametrize("dtype", [np.float64, "<U3"])
@@ -130,3 +132,26 @@ def test_sweep_accepts_an_empty_interval_axis() -> None:
         edge = np.asarray([invalid], dtype=np.float64)
         with pytest.raises(ValueError, match="left_edge_xyz"):
             px.cover_sweep(edge, edge, resolution=2)
+
+
+def test_resolution_is_keyword_only() -> None:
+    # Two adjacent numbers would otherwise swap silently.
+    with pytest.raises(TypeError):
+        px.cover_cap([1.0, 0.0, 0.0], 0.1, 3)  # type: ignore[misc]
+    with pytest.raises(TypeError):
+        px.cell_centers(5, 3)  # type: ignore[misc]
+
+
+def _cover_in_forked_child(threads: int | None) -> int:
+    vectors = np.random.default_rng(0).normal(size=(4000, 3))
+    px.cell_centers(np.arange(1 << 17), resolution=9)
+    return len(px.cover_cap(vectors, 0.05, resolution=9, threads=threads))
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs fork()")
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_forked_child_does_not_deadlock_on_the_parent_pool() -> None:
+    _cover_in_forked_child(None)
+    _cover_in_forked_child(2)
+    with multiprocessing.get_context("fork").Pool(1) as pool:
+        assert pool.map_async(_cover_in_forked_child, [None, 2]).get(timeout=30)

@@ -10,9 +10,10 @@ use std::sync::OnceLock;
 
 use crate::error::NativeResult;
 use crate::geometry::{
-    contains_center, cross, dot, general_polygon_contains, nearly_equal, norm, normalize,
-    polygon_contains, prepare_general_polygon, prepare_polygon, ring_contains, stable_cross,
-    validate_polygon, GeneralPolygon, Polygon, Vec3, CONTAINMENT_EPSILON,
+    contains_center, cross, dot, general_polygon_contains, has_reflex_vertex, has_sharp_vertex,
+    nearly_equal, norm, normalize, polygon_contains, prepare_general_polygon, prepare_polygon,
+    ring_contains, stable_cross, validate_polygon, GeneralPolygon, Polygon, Vec3,
+    CONTAINMENT_EPSILON,
 };
 
 use super::cover::push_coverage_cell;
@@ -401,12 +402,9 @@ impl Cap {
 /// once here instead of once per visited cell. Center mode never locates an
 /// axis and so never builds this.
 ///
-/// The edge tests keep the direct chord radius, which saturates at a diameter
-/// for a radius within roughly 2.1e-8 radians of pi. That errs towards
-/// overlapping, so overlap coverage stays a superset of center coverage, but
-/// from resolution 26 a cell fits inside the sliver the cap should exclude
-/// and is then reported next to the antipode. `docs/api.md` states this
-/// limit; the centre predicate above does not share it.
+/// A cap larger than a hemisphere is tested through its excluded hole around
+/// the antipode, as the centre predicate already does, so its edge tests keep
+/// full precision however close the radius comes to pi.
 pub(super) struct CapOverlap<'cap> {
     cap: &'cap Cap,
     resolution: u8,
@@ -420,7 +418,11 @@ impl<'cap> CapOverlap<'cap> {
             cap,
             resolution,
             axis_cell: normalized_cell_at(cap.axis, resolution),
-            chord_radius: cap.squared_chord_radius.sqrt(),
+            chord_radius: if cap.complement {
+                cap.complement_squared_chord.sqrt()
+            } else {
+                cap.squared_chord_radius.sqrt()
+            },
         }
     }
 
@@ -434,20 +436,38 @@ impl<'cap> CapOverlap<'cap> {
         if self.axis_cell == cell {
             return true;
         }
-        // The whole cell lies within this chord distance of its center.
-        // A more distant cap cannot meet any of its curved boundary edges.
-        let reach = self.chord_radius
-            + CELL_EDGE_DOT_LIPSCHITZ / (1_u64 << self.resolution) as f64
-            + CELL_EDGE_CHORD_GUARD;
-        if squared_chord_distance(cap.axis, point) > reach * reach {
+        // The whole cell lies within this chord distance of its center, so
+        // a cap farther away, or a hole that swallows that whole reach,
+        // cannot meet any of its curved boundary edges.
+        let disk = self.disk();
+        let cell_reach =
+            CELL_EDGE_DOT_LIPSCHITZ / (1_u64 << self.resolution) as f64 + CELL_EDGE_CHORD_GUARD;
+        let squared_chord = squared_chord_distance(disk.axis, point);
+        let unreachable = if disk.complement {
+            let inner = disk.chord_radius - cell_reach;
+            inner > 0.0 && squared_chord < inner * inner
+        } else {
+            let outer = disk.chord_radius + cell_reach;
+            squared_chord > outer * outer
+        };
+        if unreachable {
             return false;
         }
         let boundary = CellBoundary::new(cell, self.resolution);
-        let disk = CapDisk {
-            axis: cap.axis,
-            chord_radius: self.chord_radius,
-        };
         (0..4).any(|edge| cell_edge_within_cap(&boundary, edge, disk))
+    }
+
+    fn disk(&self) -> CapDisk {
+        let axis = self.cap.axis;
+        CapDisk {
+            axis: if self.cap.complement {
+                [-axis[0], -axis[1], -axis[2]]
+            } else {
+                axis
+            },
+            chord_radius: self.chord_radius,
+            complement: self.cap.complement,
+        }
     }
 }
 
@@ -1196,25 +1216,51 @@ fn minor_arcs_intersect(first: MinorArc, second: MinorArc) -> bool {
 /// The one cap an edge is being tested against, held by chord radius so the
 /// test stays a distance comparison. This mirrors `MinorArc`: both name the
 /// target an edge is measured against, and both are cheap to copy.
+///
+/// Past a hemisphere the chord to the axis flattens out near the antipode, so
+/// no Lipschitz bound can separate points there. Such a cap is held as its
+/// excluded hole around the antipode, where the chord is well conditioned,
+/// and `complement` flips every test.
 #[derive(Clone, Copy)]
 struct CapDisk {
     axis: Vec3,
     chord_radius: f64,
+    complement: bool,
 }
 
 impl CapDisk {
-    fn contains(&self, point: Vec3) -> bool {
+    #[inline(always)]
+    fn chord(&self, point: Vec3) -> f64 {
         norm([
             point[0] - self.axis[0],
             point[1] - self.axis[1],
             point[2] - self.axis[2],
-        ]) <= self.chord_radius + CELL_EDGE_CHORD_GUARD
+        ])
+    }
+
+    #[inline(always)]
+    fn contains(&self, point: Vec3) -> bool {
+        self.contains_chord(self.chord(point))
+    }
+
+    #[inline(always)]
+    fn contains_chord(&self, chord: f64) -> bool {
+        if self.complement {
+            chord >= self.chord_radius - CELL_EDGE_CHORD_GUARD
+        } else {
+            chord <= self.chord_radius + CELL_EDGE_CHORD_GUARD
+        }
     }
 }
 
 fn minor_arc_within_cap(arc: MinorArc, cap: CapDisk) -> bool {
     if cap.contains(arc.start) || cap.contains(arc.end) {
         return true;
+    }
+    // Both endpoints lie in the hole, which is smaller than a hemisphere and
+    // so contains the whole minor arc between them.
+    if cap.complement {
+        return false;
     }
     let normal_component = dot(cap.axis, arc.normal);
     let projected = [
@@ -1353,16 +1399,20 @@ fn cell_edge_cap_interval_intersects(
 ) -> Intersection {
     let middle = 0.5 * (start + end);
     let point = boundary.point(edge, middle);
-    let chord = norm([
-        point[0] - cap.axis[0],
-        point[1] - cap.axis[1],
-        point[2] - cap.axis[2],
-    ]);
-    if chord <= cap.chord_radius + CELL_EDGE_CHORD_GUARD {
+    let chord = cap.chord(point);
+    if cap.contains_chord(chord) {
         return Intersection::Yes;
     }
+    // Chord length is 1-Lipschitz in angular distance, so the interval
+    // stays on the midpoint's side when it cannot move the chord past the
+    // radius. For a complement the interval must stay inside the hole.
     let distance_bound = CELL_EDGE_DOT_LIPSCHITZ / boundary.nside as f64 * 0.5 * (end - start);
-    if chord - distance_bound > cap.chord_radius + CELL_EDGE_CHORD_GUARD {
+    let separated = if cap.complement {
+        chord + distance_bound < cap.chord_radius - CELL_EDGE_CHORD_GUARD
+    } else {
+        chord - distance_bound > cap.chord_radius + CELL_EDGE_CHORD_GUARD
+    };
+    if separated {
         return Intersection::No;
     }
     // Converged with the chord still inside its own bound of the radius: the
@@ -1628,9 +1678,20 @@ impl PreparedFootprint {
     }
 
     pub(super) fn from_raw(raw: &[f64]) -> Result<Self, String> {
+        // A convex fast path is only taken when it answers like the exact
+        // path: a tiny concave footprint can slip through the convex
+        // validator and lose the cells in its dent, and a very sharp vertex
+        // lets the convex test reach cells well past its tip.
+        let exact_enough = |vertices: &[Vec3], edge_normals: &[Vec3]| {
+            !has_reflex_vertex(vertices, edge_normals) && !has_sharp_vertex(edge_normals)
+        };
+        let convex_quad =
+            |quad: &Quad| exact_enough(&quad.vertices[..quad.len], &quad.edge_normals[..quad.len]);
         if raw.len() == 12 {
             if let Ok(quad) = prepare_quad(raw, ["vector"; 4], false) {
-                return Ok(Self::Quad(quad));
+                if convex_quad(&quad) {
+                    return Ok(Self::Quad(quad));
+                }
             }
         }
         if raw.len() == 15 {
@@ -1640,7 +1701,9 @@ impl PreparedFootprint {
                 .map_err(|error| format!("vector {error}"))?;
             if nearly_equal(first, last) {
                 if let Ok(quad) = prepare_quad(&raw[..12], ["vector"; 4], false) {
-                    return Ok(Self::Quad(quad));
+                    if convex_quad(&quad) {
+                        return Ok(Self::Quad(quad));
+                    }
                 }
             }
         }
@@ -1649,8 +1712,10 @@ impl PreparedFootprint {
             .map(|value| [value[0], value[1], value[2]])
             .collect::<Vec<_>>();
         match prepare_polygon(&raw_polygon) {
-            Ok(polygon) => Ok(Self::Polygon(polygon)),
-            Err(_) => prepare_general_polygon(&[raw_polygon]).map(Self::General),
+            Ok(polygon) if exact_enough(&polygon.vertices, &polygon.edge_normals) => {
+                Ok(Self::Polygon(polygon))
+            }
+            _ => prepare_general_polygon(&[raw_polygon]).map(Self::General),
         }
     }
 
@@ -1946,11 +2011,9 @@ mod tests {
                 .filter(|&cell| {
                     cap.contains(center(cell, resolution)) || overlap.axis_cell == cell || {
                         let boundary = CellBoundary::new(cell, resolution);
-                        let disk = super::CapDisk {
-                            axis: cap.axis,
-                            chord_radius: overlap.chord_radius,
-                        };
-                        (0..4).any(|edge| super::cell_edge_within_cap(&boundary, edge, disk))
+                        (0..4).any(|edge| {
+                            super::cell_edge_within_cap(&boundary, edge, overlap.disk())
+                        })
                     }
                 })
                 .collect::<Vec<_>>();

@@ -110,14 +110,12 @@ def overflight_gaps(
 ]:
     """Return visited cells, their visit counts, and their gaps in hours."""
     stats = px.revisit(coverages)
-    gap_counts = stats.run_counts - 1
+    gap_counts = stats.visit_counts - 1
     measured = gap_counts > 0
     hours_per_bin = CADENCE_S / 3_600
-    mean_gap_h = (
-        stats.internal_gap_steps_sum[measured] / gap_counts[measured] * hours_per_bin
-    )
-    worst_gap_h = stats.maximum_internal_gap_steps[measured] * hours_per_bin
-    return stats.cells, stats.run_counts, mean_gap_h, worst_gap_h
+    mean_gap_h = stats.gap_steps_total[measured] / gap_counts[measured] * hours_per_bin
+    worst_gap_h = stats.gap_steps_max[measured] * hours_per_bin
+    return stats.cells, stats.visit_counts, mean_gap_h, worst_gap_h
 
 
 # --8<-- [end:eo-reduce]
@@ -142,13 +140,13 @@ def analyze() -> EarthObservationAnalysis:
     coverage_elapsed_s = time.perf_counter() - coverage_started
 
     reduction_started = time.perf_counter()
-    cells, run_counts, measured_mean_h, measured_worst_h = overflight_gaps(coverages)
+    cells, visit_counts, measured_mean_h, measured_worst_h = overflight_gaps(coverages)
     cell_count = px.cell_count(HEALPIX_RESOLUTION)
     visits = np.zeros(cell_count, dtype=np.int64)
-    visits[cells] = run_counts
+    visits[cells] = visit_counts
     mean_gap_h = np.full(cell_count, np.nan, dtype=np.float64)
     worst_gap_h = np.full(cell_count, np.nan, dtype=np.float64)
-    measured_cells = cells[run_counts > 1]
+    measured_cells = cells[visit_counts > 1]
     mean_gap_h[measured_cells] = measured_mean_h
     worst_gap_h[measured_cells] = measured_worst_h
     reduction_elapsed_s = time.perf_counter() - reduction_started

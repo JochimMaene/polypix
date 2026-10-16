@@ -15,6 +15,20 @@ mod ring;
 use error::NativeError;
 use ring::MAX_RESOLUTION;
 
+/// Set in a child process after `fork()`. Rayon's worker threads do not
+/// survive a fork, so a child that reaches for an inherited pool waits forever.
+/// Every parallel entry point checks this flag and runs serially instead.
+static FORKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub(crate) fn forked() -> bool {
+    FORKED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[pyfunction]
+fn _after_fork_in_child() {
+    FORKED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 type PyCoverage<'py> = (
     Bound<'py, numpy::PyArray1<u64>>,
     Bound<'py, numpy::PyArray1<u64>>,
@@ -468,5 +482,6 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_center, module)?)?;
     module.add_function(wrap_pyfunction!(_corner_many, module)?)?;
     module.add_function(wrap_pyfunction!(_neighbors, module)?)?;
+    module.add_function(wrap_pyfunction!(_after_fork_in_child, module)?)?;
     Ok(())
 }

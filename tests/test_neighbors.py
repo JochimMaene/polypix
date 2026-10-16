@@ -35,7 +35,7 @@ def _canonical_neighbors(result: px.Coverage) -> np.ndarray:
 def test_neighbors_match_exhaustive_independent_healpy_signatures() -> None:
     for resolution, expected in HEALPY_NEIGHBOR_SIGNATURES.items():
         cells = np.arange(px.cell_count(resolution), dtype=np.int64)
-        result = px.cell_neighbors(cells, resolution)
+        result = px.cell_neighbors(cells, resolution=resolution)
         actual = hashlib.sha256(_canonical_neighbors(result).tobytes()).hexdigest()
         assert actual == expected
 
@@ -44,7 +44,7 @@ def test_neighbors_match_resolution_29_healpy_signature() -> None:
     resolution = 29
     total = px.cell_count(resolution)
     cells = np.asarray([index * (total - 1) // 256 for index in range(257)])
-    result = px.cell_neighbors(cells, resolution)
+    result = px.cell_neighbors(cells, resolution=resolution)
     actual = hashlib.sha256(_canonical_neighbors(result).tobytes()).hexdigest()
     assert actual == "a42c08906013e3eac12db3b1a0811a8a57adc9559784425a3c713d245155014f"
 

@@ -11,13 +11,13 @@ Batch coverage of circles, polygons, and swept paths on a HEALPix grid.
 
 [![PyPI](https://img.shields.io/pypi/v/polypix.svg)](https://pypi.org/project/polypix/)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-3776AB.svg?logo=python&logoColor=white)](https://pypi.org/project/polypix/)
-[![License](https://img.shields.io/pypi/l/polypix.svg)](LICENSE)
+[![License](https://img.shields.io/pypi/l/polypix.svg)](https://github.com/JochimMaene/polypix/blob/main/LICENSE)
 [![Tests](https://github.com/JochimMaene/polypix/actions/workflows/run-tests.yml/badge.svg)](https://github.com/JochimMaene/polypix/actions/workflows/run-tests.yml)
 [![Docs](https://github.com/JochimMaene/polypix/actions/workflows/docs.yml/badge.svg)](https://github.com/JochimMaene/polypix/actions/workflows/docs.yml)
 [![Benchmarks](https://github.com/JochimMaene/polypix/actions/workflows/codspeed.yml/badge.svg)](https://github.com/JochimMaene/polypix/actions/workflows/codspeed.yml)
 
 [Documentation](https://jochimmaene.github.io/polypix/) |
-[Changelog](CHANGELOG.md) |
+[Changelog](https://github.com/JochimMaene/polypix/blob/main/CHANGELOG.md) |
 [PyPI](https://pypi.org/project/polypix/) |
 [Repository](https://github.com/JochimMaene/polypix) |
 [Issues](https://github.com/JochimMaene/polypix/issues)
@@ -86,6 +86,11 @@ Start with [Getting started](https://jochimmaene.github.io/polypix/guide.html). 
 site also carries the [API reference](https://jochimmaene.github.io/polypix/api.html),
 a [resolution guide](https://jochimmaene.github.io/polypix/resolutions.html), and two
 constellation case studies that run end to end.
+
+## Versioning
+
+Polypix follows [semantic versioning](https://semver.org). The public API is
+everything in `polypix.__all__`.
 
 ## License
 

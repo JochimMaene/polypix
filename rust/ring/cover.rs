@@ -693,11 +693,11 @@ pub(crate) fn cover_caps(
 
 pub(super) fn zeroed_cap_deltas(cell_count: usize) -> NativeResult<Vec<i64>> {
     let length = cell_count.checked_add(1).ok_or_else(|| {
-        NativeError::out_of_memory("Dense cap-overlap result is too large to fit in memory.")
+        NativeError::out_of_memory("Dense cap-count result is too large to fit in memory.")
     })?;
     let mut deltas = Vec::new();
     deltas.try_reserve_exact(length).map_err(|_| {
-        NativeError::out_of_memory("Dense cap-overlap result is too large to fit in memory.")
+        NativeError::out_of_memory("Dense cap-count result is too large to fit in memory.")
     })?;
     deltas.resize(length, 0_i64);
     Ok(deltas)
@@ -751,7 +751,7 @@ pub(crate) fn count_caps_per_cell(
     let mut caps = prepare_caps(centers, radii)?;
     let raw_cells_total = raw_cell_count(resolution);
     let cell_count = usize::try_from(raw_cells_total).map_err(|_| {
-        NativeError::out_of_memory("Dense cap-overlap result is too large to fit in memory.")
+        NativeError::out_of_memory("Dense cap-count result is too large to fit in memory.")
     })?;
     if caps.len() > i64::MAX as usize {
         return Err("Too many caps to represent overlap counts as int64."
@@ -800,7 +800,7 @@ pub(crate) fn count_caps_per_cell(
         let all_direct = tested_caps.iter().all(|cap| cap[3] >= 0.0);
         let mut counts = Vec::new();
         counts.try_reserve_exact(cells.len()).map_err(|_| {
-            NativeError::out_of_memory("Selected cap-overlap result is too large to fit in memory.")
+            NativeError::out_of_memory("Selected cap-count result is too large to fit in memory.")
         })?;
         counts.resize(cells.len(), 0_i64);
         return run_with_parallelism(

@@ -82,5 +82,5 @@ Some rough anchors:
   comfortable, since one `int64` per cell is already 1.5 GiB.
 - Above 13, dense global arrays are out of the question. The high resolutions
   are there for sparse work: pass `candidate_cells=` to restrict coverage to the
-  cells you care about, or `cells=` to query a short list. See
+  cells you care about, or to `Coverage.reduce()` to query a short list. See
   [Performance and memory](performance.md).
