@@ -13,7 +13,7 @@ validation at the boundary rather than a check on every later hit.
 Reloaded coverages are ordinary coverages: this runs :func:`polypix.revisit`
 over them and asserts the statistics match the in-process originals exactly.
 
-It then asks a regional question with ``reduce(..., cells=)``, which answers
+It then asks a regional question with ``reduce(..., candidate_cells=)``, which answers
 about a named set of cells without ever allocating the grid. That matters as
 resolution rises: the array-level equivalent, ``np.bincount(cells,
 minlength=cell_count)[region]``, has to build the whole grid to index a few

@@ -74,8 +74,9 @@ Match the grid to the smallest feature you care about.
 
 Some rough anchors:
 
-- Resolution 6, around 100 km, suits constellation coverage and revisit
-  studies. Both [case studies](index.md#showcases) use it.
+- Resolutions 6 and 7, around 100 km and 50 km, suit constellation coverage
+  and revisit studies. The [case studies](index.md#showcases) use 6 for
+  communications and 7 for Earth observation.
 - Resolutions 8 to 10, from 25 km down to 6 km, suit regional analysis and most
   sensor-footprint work.
 - Resolution 12, around 1.6 km, is about where a dense global map stops being
