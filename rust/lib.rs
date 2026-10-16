@@ -406,7 +406,7 @@ fn _validate_coverage(
     let cells = slice(&cells, "cells")?;
     let offsets = slice(&offsets, "offsets")?;
     py.detach(|| ring::validate_coverage_arrays(cells, offsets, resolution))
-        .map_err(PyValueError::new_err)
+        .map_err(native_error)
 }
 
 #[pyfunction]

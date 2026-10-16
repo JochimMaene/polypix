@@ -36,6 +36,12 @@ documentation. Internal refactors, tests, and CI changes are omitted.
 - `RevisitStats` arrays stay read-only after `copy.deepcopy()` and pickling.
 - Error messages for cell IDs at or above 2**63 and for oversized cap counts
   now describe the actual problem.
+- Input-sized native buffers now raise `MemoryError` when an allocation is
+  refused instead of aborting the process. This covers sparse `revisit()`,
+  unsorted `candidate_cells=`, cap batches, sweep samples, candidate planning,
+  and `Coverage.from_arrays()` validation.
+- A `Sum` with the wrong number of values is rejected before any covering
+  work, instead of after it.
 
 ## [0.5.1] — 2026-09-24
 

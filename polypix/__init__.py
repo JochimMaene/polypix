@@ -1254,6 +1254,7 @@ def cover_polygon(
     candidates, requested = _reduction_plan(candidate_cells, reducer, resolved)
     thread_count = _as_threads(threads)
     if prepared_regions is not None:
+        _check_sum_length(reducer, len(prepared_regions))
         native = _cover_prepared_regions(
             prepared_regions,
             resolved,
@@ -1264,6 +1265,7 @@ def cover_polygon(
         )
     else:
         vertices, ring_offsets = _as_polygons(geometry)
+        _check_sum_length(reducer, len(ring_offsets) - 1)
         native = _cover(
             vertices,
             ring_offsets,
@@ -1418,6 +1420,7 @@ def cover_cap(
     reducer = _as_coverage_reducer(reduce)
     centers = _as_cap_centers(centers_xyz)
     radii = _as_cap_radii(radii_rad, centers.shape[0])
+    _check_sum_length(reducer, centers.shape[0])
     requested_threads = _as_threads(threads)
     candidates, requested = _reduction_plan(candidate_cells, reducer, resolved)
     if isinstance(reducer, Count) and not overlap:
@@ -1494,6 +1497,16 @@ def _reduction_plan(
         return _as_candidates(candidate_cells), None
     requested = _coverage_cells(candidate_cells, resolution, "candidate_cells")
     return requested, requested
+
+
+def _check_sum_length(reducer: CoverageReducer | None, segment_count: int) -> None:
+    """Reject a Sum of the wrong length before the covering work it would waste."""
+    if isinstance(reducer, Sum):
+        values = np.asarray(reducer.values)
+        if values.ndim == 1 and values.size != segment_count:
+            raise ValueError(
+                "values must be a scalar or contain one value per coverage segment."
+            )
 
 
 def _as_segment_values(
@@ -1705,6 +1718,7 @@ def cover_sweep(
         raise ValueError(
             "left_edge_xyz and right_edge_xyz must contain the same number of samples."
         )
+    _check_sum_length(reducer, max(left.shape[0] - 1, 0))
     requested_threads = _as_threads(threads)
     candidates, requested = _reduction_plan(candidate_cells, reducer, resolved)
     coverage = Coverage._from_native(

@@ -163,18 +163,18 @@ pub(super) fn compute_candidate_coverage<T: Send + Sync>(
     z_bounds: impl Fn(&T) -> (f64, f64) + Send + Sync,
     matches: impl Fn(&T, u64, Vec3) -> bool + Send + Sync,
 ) -> NativeResult<Coverage> {
-    let prepare_all = |parallel| {
-        let prepared = if parallel {
-            (0..item_count)
-                .into_par_iter()
-                .map(&prepare)
-                .collect::<Vec<_>>()
-        } else {
-            (0..item_count).map(&prepare).collect::<Vec<_>>()
-        };
+    let prepare_all = |parallel| -> NativeResult<Vec<T>> {
+        let prepared = try_collect_indexed(item_count, parallel, &prepare)?;
         // Resolve errors after the indexed collection so the first invalid
         // footprint is stable across thread counts.
-        prepared.into_iter().collect::<Result<Vec<_>, _>>()
+        let mut footprints = Vec::new();
+        footprints
+            .try_reserve_exact(item_count)
+            .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
+        for footprint in prepared {
+            footprints.push(footprint?);
+        }
+        Ok(footprints)
     };
     let plan_for = |items: &[T], parallel| {
         plan_item_candidates(items, candidates, resolution, parallel, &z_bounds)
@@ -195,13 +195,13 @@ pub(super) fn compute_candidate_coverage<T: Send + Sync>(
     if threads != Some(1) && preparation_work >= CANDIDATE_PARALLEL_MIN_VISITS {
         return run_with_parallelism(item_count, true, threads, |parallel| {
             let footprints = prepare_all(parallel)?;
-            let plan = plan_for(&footprints, parallel);
+            let plan = plan_for(&footprints, parallel)?;
             compute_planned(&footprints, &plan, parallel)
         })?;
     }
 
     let footprints = prepare_all(false)?;
-    let plan = plan_for(&footprints, false);
+    let plan = plan_for(&footprints, false)?;
     run_with_parallelism(
         item_count,
         plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS,
@@ -618,10 +618,9 @@ pub(crate) fn cover_caps(
         if overlap {
             // Bind every cap to the resolution once, rather than relocating
             // each axis cell for every candidate it is tested against.
-            let overlaps = caps
-                .iter()
-                .map(|cap| CapOverlap::new(cap, resolution))
-                .collect::<Vec<_>>();
+            let overlaps = try_collect_indexed(caps.len(), false, |index| {
+                CapOverlap::new(&caps[index], resolution)
+            })?;
             let compute_planned = |plan: &CandidatePlan, parallel| {
                 compute_planned_candidates(
                     caps.len(),
@@ -635,12 +634,12 @@ pub(crate) fn cover_caps(
             let preparation_work = candidate_preparation_work(caps.len(), candidates.len(), 0);
             if threads != Some(1) && preparation_work >= CANDIDATE_PARALLEL_MIN_VISITS {
                 return run_with_parallelism(caps.len(), true, threads, |parallel| {
-                    let plan = plan_for(parallel);
+                    let plan = plan_for(parallel)?;
                     compute_planned(&plan, parallel)
                 })?;
             }
 
-            let plan = plan_for(false);
+            let plan = plan_for(false)?;
             return run_with_parallelism(
                 caps.len(),
                 plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS,
@@ -665,12 +664,12 @@ pub(crate) fn cover_caps(
         let preparation_work = candidate_preparation_work(caps.len(), candidates.len(), 0);
         if threads != Some(1) && preparation_work >= CANDIDATE_PARALLEL_MIN_VISITS {
             return run_with_parallelism(caps.len(), true, threads, |parallel| {
-                let plan = plan_for(parallel);
+                let plan = plan_for(parallel)?;
                 compute_planned(&plan, parallel)
             })?;
         }
 
-        let plan = plan_for(false);
+        let plan = plan_for(false)?;
         return run_with_parallelism(
             caps.len(),
             plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS,
@@ -1043,15 +1042,18 @@ pub(crate) fn cover_sweep(
     debug_assert_eq!(left.len(), right.len());
     let sample_count = left.len() / 3;
     let candidates = candidate_cells(raw_candidates, resolution)?;
-    let normalize_samples = |values: &[f64], name: &str| {
-        values
-            .chunks_exact(3)
-            .enumerate()
-            .map(|(index, value)| {
+    let normalize_samples = |values: &[f64], name: &str| -> NativeResult<Vec<Vec3>> {
+        let mut samples = Vec::new();
+        samples
+            .try_reserve_exact(values.len() / 3)
+            .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
+        for (index, value) in values.chunks_exact(3).enumerate() {
+            samples.push(
                 normalize([value[0], value[1], value[2]])
-                    .map_err(|error| format!("{name}[{index}] {error}"))
-            })
-            .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| format!("{name}[{index}] {error}"))?,
+            );
+        }
+        Ok(samples)
     };
     let normalized_left = normalize_samples(left, "left_edge_xyz")?;
     let normalized_right = normalize_samples(right, "right_edge_xyz")?;

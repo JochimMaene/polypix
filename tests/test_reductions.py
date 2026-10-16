@@ -237,3 +237,21 @@ def test_sum_owns_its_values_and_validates_them_up_front() -> None:
         px.Sum([1.0, np.nan])
     with pytest.raises(ValueError, match="one value per coverage segment"):
         px.Sum([[1.0]])
+
+
+def test_sum_of_the_wrong_length_fails_before_covering() -> None:
+    # Covering this cap at resolution 29 cannot fit in memory, so only an
+    # up-front length check can raise the ValueError here.
+    with pytest.raises(ValueError, match="one value per coverage segment"):
+        px.cover_cap([1.0, 0.0, 0.0], np.pi, resolution=29, reduce=px.Sum([]))
+    with pytest.raises(ValueError, match="one value per coverage segment"):
+        px.cover_polygon(
+            [_xyz(0, 0), _xyz(80, 0), _xyz(40, 80)],
+            resolution=29,
+            reduce=px.Sum([1.0, 2.0]),
+        )
+    edge = np.array([_xyz(0, 0), _xyz(90, 0)])
+    with pytest.raises(ValueError, match="one value per coverage segment"):
+        px.cover_sweep(
+            edge, edge * [1, 1, -1] + [0, 0, 0.5], resolution=29, reduce=px.Sum([1, 2])
+        )

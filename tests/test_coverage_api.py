@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 import multiprocessing
 import os
+import subprocess
+import sys
 
 import numpy as np
 import pytest
@@ -155,3 +157,69 @@ def test_forked_child_does_not_deadlock_on_the_parent_pool() -> None:
     _cover_in_forked_child(2)
     with multiprocessing.get_context("fork").Pool(1) as pool:
         assert pool.map_async(_cover_in_forked_child, [None, 2]).get(timeout=30)
+
+
+_ALLOCATION_SWEEP = """
+import resource, sys
+import numpy as np
+import polypix as px
+
+def address_space():
+    with open("/proc/self/status") as status:
+        for line in status:
+            if line.startswith("VmSize:"):
+                return int(line.split()[1]) * 1024
+
+revisit_input = px.Coverage.from_arrays(
+    cells=np.arange(0, 400_000 * 7919, 7919), offsets=[0, 400_000], resolution=29
+)
+descending = np.arange(px.cell_count(10) - 1, px.cell_count(10) - 400_001, -1)
+directions = np.random.default_rng(0).normal(size=(400_000, 3))
+quads = directions[:, None, :] + np.array(
+    [[0.0, 0.0, 0.0], [1e-3, 0.0, 0.0], [1e-3, 1e-3, 0.0], [0.0, 1e-3, 0.0]]
+)
+unsorted = np.arange(400_000)[::-1].copy()
+calls = [
+    lambda: px.revisit(revisit_input),
+    lambda: px.cover_cap(
+        [1.0, 0.0, 0.0], 0.2, resolution=10, candidate_cells=descending, threads=1
+    ),
+    lambda: px.cover_cap(directions, 1e-3, resolution=0, threads=1),
+    lambda: px.cover_cap(
+        directions, 1e-3, resolution=4, mode="overlap", candidate_cells=[0], threads=1
+    ),
+    lambda: px.cover_polygon(quads, resolution=4, candidate_cells=[0], threads=1),
+    lambda: px.cover_sweep(directions, directions + 1e-3, resolution=0, threads=1),
+    lambda: px.Coverage.from_arrays(unsorted, [0, unsorted.size], resolution=10),
+]
+_, hard = resource.getrlimit(resource.RLIMIT_AS)
+for megabytes in (*range(1, 41), 48, 64, 96, 128):
+    for call in calls:
+        resource.setrlimit(resource.RLIMIT_AS, (address_space() + (megabytes << 20), hard))
+        try:
+            call()
+        except MemoryError:
+            pass
+        finally:
+            resource.setrlimit(resource.RLIMIT_AS, (hard, hard))
+print("survived")
+"""
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="needs RLIMIT_AS and /proc"
+)
+def test_allocation_failures_raise_instead_of_aborting() -> None:
+    # Under an address-space limit an infallible allocation aborts the whole
+    # process; every input-sized buffer must raise MemoryError instead. A fixed
+    # mmap threshold keeps glibc from serving large buffers out of memory it
+    # freed earlier, so each headroom step lands on the allocation it targets.
+    result = subprocess.run(
+        [sys.executable, "-c", _ALLOCATION_SWEEP],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        env={**os.environ, "MALLOC_MMAP_THRESHOLD_": "131072"},
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert result.stdout.strip() == "survived"

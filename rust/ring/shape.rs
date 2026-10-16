@@ -8,7 +8,7 @@ use std::f64::consts::TAU;
 use std::ops::Range;
 use std::sync::OnceLock;
 
-use crate::error::NativeResult;
+use crate::error::{NativeError, NativeResult};
 use crate::geometry::{
     contains_center, cross, dot, general_polygon_contains, has_reflex_vertex, has_sharp_vertex,
     nearly_equal, norm, normalize, polygon_contains, prepare_general_polygon, prepare_polygon,
@@ -471,52 +471,59 @@ impl<'cap> CapOverlap<'cap> {
     }
 }
 
-pub(super) fn prepare_caps(centers: &[f64], radii: &[f64]) -> Result<Vec<Cap>, String> {
+pub(super) fn prepare_caps(centers: &[f64], radii: &[f64]) -> NativeResult<Vec<Cap>> {
     debug_assert!(centers.len().is_multiple_of(3));
     debug_assert_eq!(centers.len() / 3, radii.len());
-    centers
-        .chunks_exact(3)
-        .zip(radii)
-        .enumerate()
-        .map(|(index, (values, &radius))| {
-            let axis = normalize([values[0], values[1], values[2]])
-                .map_err(|error| format!("centers_xyz[{index}] {error}"))?;
-            if !radius.is_finite() || !(0.0..=std::f64::consts::PI).contains(&radius) {
-                return Err(format!(
-                    "radii_rad[{index}] must be finite and between 0 and pi."
-                ));
-            }
-            let effective_radius = (radius + CONTAINMENT_EPSILON).min(std::f64::consts::PI);
-            let (sine_radius, cosine_radius) = effective_radius.sin_cos();
-            let (half_chord, half_complement_chord) = (0.5 * effective_radius).sin_cos();
-            let radial = axis[0].hypot(axis[1]);
-            // A cap reaches a pole exactly when the axis-to-pole dot product
-            // satisfies the same cosine predicate as any other point.
-            let maximum_z = if axis[2] >= cosine_radius {
-                1.0
-            } else {
-                axis[2] * cosine_radius + radial * sine_radius
-            };
-            let minimum_z = if -axis[2] >= cosine_radius {
-                -1.0
-            } else {
-                axis[2] * cosine_radius - radial * sine_radius
-            };
-            Ok(Cap {
-                axis,
-                sine_radius,
-                cosine_radius,
-                squared_chord_radius: 4.0 * half_chord * half_chord,
-                complement_squared_chord: 4.0 * half_complement_chord * half_complement_chord,
-                complement: effective_radius > std::f64::consts::FRAC_PI_2,
-                full_sphere: effective_radius == std::f64::consts::PI,
-                minimum_z: minimum_z.clamp(-1.0, 1.0),
-                maximum_z: maximum_z.clamp(-1.0, 1.0),
-                longitude: axis[1].atan2(axis[0]).rem_euclid(TAU),
-                radial,
-            })
-        })
-        .collect()
+    let mut caps = Vec::new();
+    caps.try_reserve_exact(radii.len())
+        .map_err(|_| NativeError::out_of_memory("Cap batch is too large to fit in memory."))?;
+    let prepared =
+        centers
+            .chunks_exact(3)
+            .zip(radii)
+            .enumerate()
+            .map(|(index, (values, &radius))| {
+                let axis = normalize([values[0], values[1], values[2]])
+                    .map_err(|error| format!("centers_xyz[{index}] {error}"))?;
+                if !radius.is_finite() || !(0.0..=std::f64::consts::PI).contains(&radius) {
+                    return Err(format!(
+                        "radii_rad[{index}] must be finite and between 0 and pi."
+                    ));
+                }
+                let effective_radius = (radius + CONTAINMENT_EPSILON).min(std::f64::consts::PI);
+                let (sine_radius, cosine_radius) = effective_radius.sin_cos();
+                let (half_chord, half_complement_chord) = (0.5 * effective_radius).sin_cos();
+                let radial = axis[0].hypot(axis[1]);
+                // A cap reaches a pole exactly when the axis-to-pole dot product
+                // satisfies the same cosine predicate as any other point.
+                let maximum_z = if axis[2] >= cosine_radius {
+                    1.0
+                } else {
+                    axis[2] * cosine_radius + radial * sine_radius
+                };
+                let minimum_z = if -axis[2] >= cosine_radius {
+                    -1.0
+                } else {
+                    axis[2] * cosine_radius - radial * sine_radius
+                };
+                Ok(Cap {
+                    axis,
+                    sine_radius,
+                    cosine_radius,
+                    squared_chord_radius: 4.0 * half_chord * half_chord,
+                    complement_squared_chord: 4.0 * half_complement_chord * half_complement_chord,
+                    complement: effective_radius > std::f64::consts::FRAC_PI_2,
+                    full_sphere: effective_radius == std::f64::consts::PI,
+                    minimum_z: minimum_z.clamp(-1.0, 1.0),
+                    maximum_z: maximum_z.clamp(-1.0, 1.0),
+                    longitude: axis[1].atan2(axis[0]).rem_euclid(TAU),
+                    radial,
+                })
+            });
+    for cap in prepared {
+        caps.push(cap?);
+    }
+    Ok(caps)
 }
 
 /// Inclusive integer endpoints, widened only at a floating-point tie. Ring

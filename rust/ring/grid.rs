@@ -581,7 +581,7 @@ pub(crate) fn validate_coverage_arrays(
     cells: &[u64],
     offsets: &[u64],
     resolution: u8,
-) -> Result<(), String> {
+) -> NativeResult<()> {
     validate_offsets(offsets, cells.len() as u64, "")?;
     validate_cell_range(cells, resolution, "cells")?;
 
@@ -592,10 +592,11 @@ pub(crate) fn validate_coverage_arrays(
             continue;
         }
         seen.clear();
+        seen.try_reserve(segment.len()).map_err(|_| {
+            NativeError::out_of_memory("Coverage validation is too large to fit in memory.")
+        })?;
         if segment.iter().any(|&cell| !seen.insert(cell)) {
-            return Err(format!(
-                "cells within segment {segment_index} must be unique."
-            ));
+            return Err(format!("cells within segment {segment_index} must be unique.").into());
         }
     }
     Ok(())
