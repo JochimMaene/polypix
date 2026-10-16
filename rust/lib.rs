@@ -73,11 +73,16 @@ fn slice<'a, T: Element, D: Dimension>(
     array: &'a PyReadonlyArray<'_, T, D>,
     name: &str,
 ) -> PyResult<&'a [T]> {
-    array.as_slice().map_err(|_| {
+    let error = || {
         PyValueError::new_err(format!(
             "{name} must be C-contiguous and correctly aligned."
         ))
-    })
+    };
+    // `as_slice` also accepts Fortran order, which the kernels would misread.
+    if !array.is_c_contiguous() {
+        return Err(error());
+    }
+    array.as_slice().map_err(|_| error())
 }
 
 /// Borrow an optional array as a slice.

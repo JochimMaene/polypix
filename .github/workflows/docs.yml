@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/docs.yml"
+      - "CHANGELOG.md"
       - "docs/**"
       - "examples/**"
       - "polypix/**"
@@ -17,6 +18,7 @@ on:
   pull_request:
     paths:
       - ".github/workflows/docs.yml"
+      - "CHANGELOG.md"
       - "docs/**"
       - "examples/**"
       - "polypix/**"

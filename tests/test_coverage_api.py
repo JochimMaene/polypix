@@ -238,3 +238,11 @@ def test_cap_ending_exactly_at_longitude_zero_includes_that_cell() -> None:
     ).cells.tolist() == [4]
     assert px.cover_cap(axis, radius, resolution=0, reduce=px.Count())[4] == 1
     assert 4 in px.cover_cap(axis, radius, resolution=0, mode="overlap").cells
+
+
+def test_native_calls_reject_fortran_order() -> None:
+    # The public functions convert; the native layer must not misread rows.
+    vectors = np.asfortranarray([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    with pytest.raises(ValueError, match="C-contiguous"):
+        px._core._cell_at(vectors, 1)
+    assert px.cell_at(vectors, resolution=1).tolist() == [20, 22]
