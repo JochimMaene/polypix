@@ -1042,7 +1042,6 @@ fn cover_cells_in_bounds<const WHOLE_CELL_MARGIN: bool>(
         // whether a full scan or a candidate test reached it. Overlap scans
         // also reach one whole cell further, since any part of a cell counts.
         let reach = CONTAINMENT_EPSILON / ring.radial;
-        let uncertainty = INDEX_UNCERTAINTY_ULPS * f64::EPSILON * ring.cells as f64;
         let margin = i64::from(WHOLE_CELL_MARGIN);
         let mut ranges = [(0_u64, 0_u64); 4];
         let mut range_count = 0;
@@ -1051,8 +1050,14 @@ fn cover_cells_in_bounds<const WHOLE_CELL_MARGIN: bool>(
             range_count += 1;
         };
         for &(start, end) in longitude_intervals.iter().take(interval_count) {
-            let first = ((start - reach) / step - ring.shift - uncertainty).ceil() as i64 - margin;
-            let last = ((end + reach) / step - ring.shift + uncertainty).floor() as i64 + margin;
+            // `interval_offsets` rounds by truncation, avoiding the libm
+            // `ceil`/`floor` calls that dominate small footprints' scans.
+            let (first, last, _) = interval_offsets(
+                (start - reach) / step - ring.shift,
+                (end + reach) / step - ring.shift,
+                ring.cells,
+            );
+            let (first, last) = (first - margin, last + margin);
             let count = ring.cells as i64;
             if first < 0 {
                 push_range((0, last.min(count - 1).max(0) as u64));
