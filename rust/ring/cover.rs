@@ -166,15 +166,10 @@ pub(super) fn compute_candidate_coverage<T: Send + Sync>(
     let prepare_all = |parallel| -> NativeResult<Vec<T>> {
         let prepared = try_collect_indexed(item_count, parallel, &prepare)?;
         // Resolve errors after the indexed collection so the first invalid
-        // footprint is stable across thread counts.
-        let mut footprints = Vec::new();
-        footprints
-            .try_reserve_exact(item_count)
-            .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
-        for footprint in prepared {
-            footprints.push(footprint?);
-        }
-        Ok(footprints)
+        // footprint is stable across thread counts. Unwrapping the results
+        // collects in place into the buffer reserved above, so it neither
+        // allocates nor touches a second, cold buffer.
+        Ok(prepared.into_iter().collect::<Result<Vec<_>, _>>()?)
     };
     let plan_for = |items: &[T], parallel| {
         plan_item_candidates(items, candidates, resolution, parallel, &z_bounds)
