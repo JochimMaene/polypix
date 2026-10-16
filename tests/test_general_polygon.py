@@ -749,3 +749,30 @@ def test_sharp_vertex_does_not_reach_past_its_tip(kind: str) -> None:
         candidate_cells=candidates,
     ).cells
     np.testing.assert_array_equal(np.intersect1d(full, candidates), selected)
+
+
+def test_polar_boundary_tie_agrees_across_scan_and_candidates() -> None:
+    # Cell 19800's center lies 1.5e-15 rad outside an edge, inside the
+    # containment tolerance. Next to the pole that tolerance spans more
+    # longitude than the scan bounds did, so the full scan skipped the cell
+    # while a candidate test accepted it.
+    resolution, cell = 29, 19800
+    point = px.cell_centers([cell], resolution=resolution)[0]
+    longitude = np.arctan2(point[1], point[0])
+    angles = longitude + np.array([1e-8, 1.0, 1.0, 1e-8])
+    radial = np.array([1e-8, 1e-8, 1e-6, 1e-6])
+    quad = np.column_stack(
+        (radial * np.cos(angles), radial * np.sin(angles), np.sqrt(1 - radial**2))
+    )
+    steps = np.linspace(0, 1, 5, endpoint=False)[:, None]
+    subdivided = np.concatenate(
+        [quad[i] + steps * (quad[(i + 1) % 4] - quad[i]) for i in range(4)]
+    )
+    for mode in ("center", "overlap"):
+        for vertices in (quad, subdivided):
+            full = px.cover_polygon(vertices, resolution=resolution, mode=mode)
+            selected = px.cover_polygon(
+                vertices, resolution=resolution, mode=mode, candidate_cells=[cell]
+            )
+            assert cell in full.cells, mode
+            assert selected.cells.tolist() == [cell], mode

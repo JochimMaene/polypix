@@ -32,6 +32,9 @@ documentation. Internal refactors, tests, and CI changes are omitted.
   segments, which used the convex test unconditionally.
 - Fixed caps whose longitude span ends exactly at 2 pi missing the cell at
   longitude zero, so full scans, `candidate_cells=`, and counts agree.
+- Fixed center coverage near the poles skipping a cell whose center lies
+  within the boundary tolerance, which a `candidate_cells=` query of the same
+  polygon included.
 - Fixed `mode="overlap"` caps with a radius near pi reporting cells inside
   the excluded region around the antipode, and running slowly there. This
   removes the known limitation listed under 0.5.1.

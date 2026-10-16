@@ -985,7 +985,7 @@ fn split_wrapped_interval(start: f64, end: f64, pieces: &mut [(f64, f64); 2]) ->
     1
 }
 
-fn cover_cells_in_bounds<const PAD_LONGITUDE: bool>(
+fn cover_cells_in_bounds<const WHOLE_CELL_MARGIN: bool>(
     minimum_z: f64,
     maximum_z: f64,
     longitude_intervals: [(f64, f64); 2],
@@ -1010,7 +1010,6 @@ fn cover_cells_in_bounds<const PAD_LONGITUDE: bool>(
         let step = scan_ring.step;
         let step_sine = scan_ring.step_sine;
         let step_cosine = scan_ring.step_cosine;
-        let mut next_unscanned = 0;
 
         let mut scan_offsets = |first: u64, last: u64| -> NativeResult<()> {
             let first_longitude = (first as f64 + ring.shift) * step;
@@ -1037,62 +1036,50 @@ fn cover_cells_in_bounds<const PAD_LONGITUDE: bool>(
             Ok(())
         };
 
-        if PAD_LONGITUDE {
-            let mut ranges = [(0_u64, 0_u64); 4];
-            let mut range_count = 0;
-            let mut push_range = |range| {
-                ranges[range_count] = range;
-                range_count += 1;
-            };
-            for &(start, end) in longitude_intervals.iter().take(interval_count) {
-                let first = (start / step - ring.shift).ceil() as i64 - 1;
-                let last = (end / step - ring.shift).floor() as i64 + 1;
-                let count = ring.cells as i64;
-                if first < 0 {
-                    push_range((0, last.min(count - 1).max(0) as u64));
-                    push_range(((first + count).max(0) as u64, ring.cells - 1));
-                } else if last >= count {
-                    push_range((first.min(count - 1) as u64, ring.cells - 1));
-                    push_range((0, (last - count).min(count - 1) as u64));
-                } else if first <= last {
-                    push_range((first as u64, last as u64));
-                }
-            }
-            ranges[..range_count].sort_unstable();
-            let mut merged_count = 0;
-            for index in 0..range_count {
-                let (first, last) = ranges[index];
-                if merged_count > 0 {
-                    let merged_last = &mut ranges[merged_count - 1].1;
-                    if first <= merged_last.saturating_add(1) {
-                        *merged_last = (*merged_last).max(last);
-                        continue;
-                    }
-                }
-                ranges[merged_count] = (first, last);
-                merged_count += 1;
-            }
-            for &(first, last) in &ranges[..merged_count] {
-                scan_offsets(first, last)?;
-            }
-            continue;
-        }
-
+        // Widen each bound by what the containment tolerance spans in
+        // longitude on this ring, which grows towards the poles, plus the
+        // index rounding allowance. An accepted tie then cannot depend on
+        // whether a full scan or a candidate test reached it. Overlap scans
+        // also reach one whole cell further, since any part of a cell counts.
+        let reach = CONTAINMENT_EPSILON / ring.radial;
+        let uncertainty = INDEX_UNCERTAINTY_ULPS * f64::EPSILON * ring.cells as f64;
+        let margin = i64::from(WHOLE_CELL_MARGIN);
+        let mut ranges = [(0_u64, 0_u64); 4];
+        let mut range_count = 0;
+        let mut push_range = |range| {
+            ranges[range_count] = range;
+            range_count += 1;
+        };
         for &(start, end) in longitude_intervals.iter().take(interval_count) {
-            let first_value = start / step - ring.shift;
-            let last_value = end / step - ring.shift;
-            // Conversion to ring-index units magnifies angular rounding with
-            // ring size. Check one neighboring cell only when a bound is
-            // indistinguishable from an integer at that scale.
-            let (first, last, _) = interval_offsets(first_value, last_value, ring.cells);
-            let first = first.max(0).max(next_unscanned) as u64;
-            let last = last.min((ring.cells - 1) as i64);
-            if last < first as i64 {
-                continue;
+            let first = ((start - reach) / step - ring.shift - uncertainty).ceil() as i64 - margin;
+            let last = ((end + reach) / step - ring.shift + uncertainty).floor() as i64 + margin;
+            let count = ring.cells as i64;
+            if first < 0 {
+                push_range((0, last.min(count - 1).max(0) as u64));
+                push_range(((first + count).max(0) as u64, ring.cells - 1));
+            } else if last >= count {
+                push_range((first.min(count - 1) as u64, ring.cells - 1));
+                push_range((0, (last - count).min(count - 1) as u64));
+            } else if first <= last {
+                push_range((first as u64, last as u64));
             }
-            next_unscanned = last.saturating_add(1);
-
-            scan_offsets(first, last as u64)?;
+        }
+        ranges[..range_count].sort_unstable();
+        let mut merged_count = 0;
+        for index in 0..range_count {
+            let (first, last) = ranges[index];
+            if merged_count > 0 {
+                let merged_last = &mut ranges[merged_count - 1].1;
+                if first <= merged_last.saturating_add(1) {
+                    *merged_last = (*merged_last).max(last);
+                    continue;
+                }
+            }
+            ranges[merged_count] = (first, last);
+            merged_count += 1;
+        }
+        for &(first, last) in &ranges[..merged_count] {
+            scan_offsets(first, last)?;
         }
     }
     Ok(())

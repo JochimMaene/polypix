@@ -36,7 +36,7 @@ Issues = "https://github.com/JochimMaene/polypix/issues"
 Changelog = "https://github.com/JochimMaene/polypix/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
-test = ["pytest>=8"]
+test = ["pytest>=9"]
 
 [tool.maturin]
 bindings = "pyo3"
@@ -70,7 +70,7 @@ no-build-isolation = ["polypix"]
 
 [tool.pixi.feature.test.dependencies]
 mypy = ">=1.15"
-pytest = ">=8"
+pytest = ">=9"
 ruff = ">=0.9"
 
 [tool.pixi.feature.bench.dependencies]
