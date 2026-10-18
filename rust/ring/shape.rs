@@ -192,6 +192,15 @@ pub(super) fn cached_scan_rings(resolution: u8) -> Option<&'static [ScanRing]> {
         return None;
     }
     static TABLES: OnceLock<Vec<OnceLock<Vec<ScanRing>>>> = OnceLock::new();
+    if crate::forked() {
+        // Another thread may have been mid-initialization at fork() and
+        // cannot finish in the child, so only read tables already built.
+        return TABLES
+            .get()?
+            .get(resolution as usize)?
+            .get()
+            .map(Vec::as_slice);
+    }
     let tables = TABLES.get_or_init(|| {
         (0..=MAX_CACHED_SCAN_RING_RESOLUTION)
             .map(|_| OnceLock::new())
@@ -272,6 +281,7 @@ fn cover_general_polygon(
         longitude_intervals,
         interval_count,
         resolution,
+        CONTAINMENT_EPSILON,
         |_, x, y, z| general_polygon_contains(polygon, [x, y, z]),
         |cell| push_coverage_cell(cells, cell, 1024),
     )
@@ -343,11 +353,14 @@ impl Cap {
     }
 
     #[inline(always)]
-    pub(super) fn contains_on_ring(&self, ring: &Ring, step: f64, offset: u64) -> bool {
+    pub(super) fn contains_on_ring(&self, ring: &Ring, offset: u64) -> bool {
         if self.full_sphere {
             return true;
         }
-        let longitude = (offset as f64 + ring.shift) * step;
+        // Match `grid::center` operation for operation: a candidate test
+        // places the cell there, and a boundary tie must not depend on
+        // which path asked; a precomputed TAU / cells step rounds differently.
+        let longitude = (offset as f64 + ring.shift) * TAU / ring.cells as f64;
         let (sine, cosine) = longitude.sin_cos();
         self.contains([ring.radial * cosine, ring.radial * sine, ring.z])
     }
@@ -566,10 +579,10 @@ pub(super) fn cap_interval_range(
     // numerically indistinguishable from an integer ring index; ordinary spans
     // avoid two libm calls per crossed ring.
     if ambiguous {
-        while first <= last && !cap.contains_on_ring(ring, step, first as u64) {
+        while first <= last && !cap.contains_on_ring(ring, first as u64) {
             first += 1;
         }
-        while last >= first && !cap.contains_on_ring(ring, step, last as u64) {
+        while last >= first && !cap.contains_on_ring(ring, last as u64) {
             last -= 1;
         }
     }
@@ -718,6 +731,7 @@ pub(super) fn cover_centers(
         bounds.longitude_intervals,
         bounds.interval_count,
         resolution,
+        bounds.tolerance,
         |_, x, y, z| contains(x, y, z),
         visit,
     )
@@ -730,17 +744,31 @@ struct ConvexBounds {
     maximum_z: f64,
     longitude_intervals: [(f64, f64); 2],
     interval_count: usize,
+    /// How far past the polygon the convex predicate can accept a point.
+    tolerance: f64,
 }
 
 impl ConvexBounds {
     fn new(vertices: &[Vec3], edge_normals: &[Vec3]) -> Self {
         let (minimum_z, maximum_z) = polygon_z_bounds(vertices, edge_normals);
         let (longitude_intervals, interval_count) = longitude_bounds(vertices, edge_normals);
+        // Each edge plane accepts points within the tolerance, so past a
+        // corner of interior angle `a` the accepted region reaches
+        // tolerance / sin(a / 2) beyond it, and sin(a / 2) is
+        // sqrt((1 + n1 . n2) / 2) for the corner's inward edge normals.
+        // Very sharp corners take the exact path, which bounds this reach.
+        let narrowest = edge_normals
+            .iter()
+            .zip(edge_normals.iter().cycle().skip(1))
+            .map(|(&previous, &next)| 0.5 * (1.0 + dot(previous, next)))
+            .fold(1.0_f64, f64::min)
+            .max(1e-16);
         Self {
             minimum_z,
             maximum_z,
             longitude_intervals,
             interval_count,
+            tolerance: CONTAINMENT_EPSILON / narrowest.sqrt(),
         }
     }
 }
@@ -773,6 +801,7 @@ fn scan_single_ring(
         bounds.longitude_intervals,
         bounds.interval_count,
         resolution,
+        bounds.tolerance,
         |cell, x, y, z| cell >= ring.start && cell < ring.start + ring.cells && contains(x, y, z),
         visit,
     )
@@ -985,12 +1014,14 @@ fn split_wrapped_interval(start: f64, end: f64, pieces: &mut [(f64, f64); 2]) ->
     1
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cover_cells_in_bounds<const WHOLE_CELL_MARGIN: bool>(
     minimum_z: f64,
     maximum_z: f64,
     longitude_intervals: [(f64, f64); 2],
     interval_count: usize,
     resolution: u8,
+    tolerance: f64,
     contains: impl Fn(u64, f64, f64, f64) -> bool,
     mut visit: impl FnMut(u64) -> NativeResult<()>,
 ) -> NativeResult<()> {
@@ -1041,7 +1072,7 @@ fn cover_cells_in_bounds<const WHOLE_CELL_MARGIN: bool>(
         // index rounding allowance. An accepted tie then cannot depend on
         // whether a full scan or a candidate test reached it. Overlap scans
         // also reach one whole cell further, since any part of a cell counts.
-        let reach = CONTAINMENT_EPSILON / ring.radial;
+        let reach = tolerance / ring.radial;
         let margin = i64::from(WHOLE_CELL_MARGIN);
         let mut ranges = [(0_u64, 0_u64); 4];
         let mut range_count = 0;
@@ -1506,6 +1537,7 @@ fn cover_overlapping_cells(
         longitude_intervals,
         interval_count,
         resolution,
+        CONTAINMENT_EPSILON,
         |cell, x, y, z| overlaps(cell, [x, y, z]),
         visit,
     )
@@ -2376,6 +2408,7 @@ mod tests {
             bounds.longitude_intervals,
             bounds.interval_count,
             resolution,
+            bounds.tolerance,
             |_, x, y, z| contains(x, y, z),
             |cell| {
                 expected.push(cell);

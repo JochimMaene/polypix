@@ -35,6 +35,15 @@ documentation. Internal refactors, tests, and CI changes are omitted.
 - Fixed center coverage near the poles skipping a cell whose center lies
   within the boundary tolerance, which a `candidate_cells=` query of the same
   polygon included.
+- Fixed full scans skipping a boundary-tie cell just past an acute polygon
+  corner that `candidate_cells=` included, and adding collinear vertices
+  changing the result.
+- Fixed cap coverage and cap counts disagreeing on a boundary tie, because
+  they placed cell centers with different rounding.
+- Fixed a forked child hanging when another thread was building the ring
+  cache at the moment of the fork.
+- `timedelta64` arrays are rejected as coordinates and `Sum` values instead
+  of being read as plain numbers.
 - Fixed `mode="overlap"` caps with a radius near pi reporting cells inside
   the excluded region around the antipode, and running slowly there. This
   removes the known limitation listed under 0.5.1.

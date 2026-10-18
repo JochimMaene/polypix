@@ -719,7 +719,9 @@ def _as_float_array(values: object, name: str) -> np.ndarray:
         raise TypeError(f"{name} must contain real numbers, not complex values.")
     if np.issubdtype(array.dtype, np.bool_):
         raise TypeError(f"{name} must contain real numbers, not bool.")
-    if not np.issubdtype(array.dtype, np.number) or array.dtype == np.dtype("O"):
+    # Kinds, not `np.number`: that also admits timedelta64, whose values
+    # depend on the unit and are not coordinates or weights.
+    if array.dtype.kind not in "iuf":
         raise TypeError(f"{name} must contain real numbers.")
     # ``ascontiguousarray`` promotes scalar inputs to shape ``(1,)``. Preserve
     # their rank so scalar cap radii remain distinguishable from length-one

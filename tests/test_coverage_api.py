@@ -246,3 +246,41 @@ def test_native_calls_reject_fortran_order() -> None:
     with pytest.raises(ValueError, match="C-contiguous"):
         px._core._cell_at(vectors, 1)
     assert px.cell_at(vectors, resolution=1).tolist() == [20, 22]
+
+
+_FORK_DURING_CACHE_BUILD = """
+import os, sys, threading, time, warnings
+import numpy as np
+import polypix as px
+
+warnings.simplefilter("ignore", DeprecationWarning)
+quad = np.array([[1.0, 0, 0], [1.0, 0.01, 0], [1.0, 0.01, 0.01], [1.0, 0, 0.01]])
+builder = threading.Thread(target=lambda: px.cover_polygon(quad, resolution=12, threads=1))
+builder.start()
+time.sleep(float(sys.argv[1]))
+pid = os.fork()
+if pid == 0:
+    px.cover_polygon(quad, resolution=12, threads=1)
+    os._exit(0)
+builder.join()
+deadline = time.monotonic() + 10
+while time.monotonic() < deadline:
+    if os.waitpid(pid, os.WNOHANG)[0]:
+        sys.exit(0)
+    time.sleep(0.02)
+os.kill(pid, 9)
+sys.exit("forked child hung")
+"""
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="needs fork()")
+def test_fork_while_another_thread_builds_the_ring_cache() -> None:
+    # The child must not wait on a cache build that cannot finish in it.
+    for delay in ("0", "0.0001", "0.0002", "0.0003", "0.0005"):
+        result = subprocess.run(
+            [sys.executable, "-c", _FORK_DURING_CACHE_BUILD, delay],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr[-500:]

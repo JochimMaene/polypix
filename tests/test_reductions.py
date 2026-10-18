@@ -268,3 +268,23 @@ def test_sum_stays_read_only_after_copy_and_pickle() -> None:
     for copied in restored:
         np.testing.assert_array_equal(copied.values, [1.0, 2.0])
         assert not copied.values.flags.writeable
+
+
+def test_cap_boundary_tie_agrees_between_coverage_and_counts() -> None:
+    axis = [-0.4405864871462171, -0.4952135283084255, -0.748763720224529]
+    radius, resolution, cell = 6.659771988791503e-11, 10, 11002747
+    selected = dict(resolution=resolution, candidate_cells=[cell])
+    included = cell in px.cover_cap(axis, radius, **selected).cells
+    assert px.cover_cap(axis, radius, **selected, reduce=px.Count()).tolist() == [
+        int(included)
+    ]
+    assert (cell in px.cover_cap(axis, radius, resolution=resolution).cells) == included
+    dense = px.cover_cap(axis, radius, resolution=resolution, reduce=px.Count())
+    assert dense[cell] == int(included)
+
+
+def test_time_arrays_are_not_numbers() -> None:
+    with pytest.raises(TypeError, match="real numbers"):
+        px.Sum(np.array([1], dtype="timedelta64[h]"))
+    with pytest.raises(TypeError, match="real numbers"):
+        px.cell_at(np.array([1, 0, 0], dtype="timedelta64[s]"), resolution=0)

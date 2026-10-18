@@ -776,3 +776,41 @@ def test_polar_boundary_tie_agrees_across_scan_and_candidates() -> None:
             )
             assert cell in full.cells, mode
             assert selected.cells.tolist() == [cell], mode
+
+
+def test_acute_tip_tie_agrees_across_scan_candidates_and_subdivision() -> None:
+    # The convex test accepts points within its tolerance of every edge
+    # plane, which past an acute tip reaches tolerance / sin(angle / 2). A cell
+    # center placed just inside that reach must be treated the same by a full
+    # scan, a candidate test, and the same triangle with subdivided edges.
+    def unit(vectors: np.ndarray) -> np.ndarray:
+        return vectors / np.linalg.norm(vectors, axis=-1, keepdims=True)
+
+    resolution, cell, half = 19, 1_234_567_890, 1e-3
+    center = px.cell_centers([cell], resolution=resolution)[0]
+    east = unit(np.cross([0.0, 0.0, 1.0], center))
+    normal = unit(np.cross(center, east))
+    tip = unit(center - 0.5e-14 / np.sin(half) * east)
+    length = 20 * 2.0**-resolution
+    spread = length * np.tan(half) * normal
+    triangle = np.array(
+        [tip, unit(tip - length * east + spread), unit(tip - length * east - spread)]
+    )
+    steps = np.linspace(0, 1, 4, endpoint=False)[:, None]
+    subdivided = unit(
+        np.concatenate(
+            [
+                triangle[i] + steps * (triangle[(i + 1) % 3] - triangle[i])
+                for i in range(3)
+            ]
+        )
+    )
+    answers = {
+        cell in px.cover_polygon(triangle, resolution=resolution).cells,
+        cell in px.cover_polygon(subdivided, resolution=resolution).cells,
+        cell
+        in px.cover_polygon(
+            triangle, resolution=resolution, candidate_cells=[cell]
+        ).cells,
+    }
+    assert len(answers) == 1
