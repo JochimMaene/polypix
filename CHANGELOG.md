@@ -42,6 +42,9 @@ documentation. Internal refactors, tests, and CI changes are omitted.
   they placed cell centers with different rounding.
 - Fixed a forked child hanging when another thread was building the ring
   cache at the moment of the fork.
+- A process that briefly cannot create threads now runs calls serially and
+  goes back to parallel work once it can, instead of raising
+  `PanicException` on every later parallel call.
 - `timedelta64` arrays are rejected as coordinates and `Sum` values instead
   of being read as plain numbers.
 - Fixed `mode="overlap"` caps with a radius near pi reporting cells inside

@@ -246,3 +246,44 @@ def test_native_calls_reject_fortran_order() -> None:
     with pytest.raises(ValueError, match="C-contiguous"):
         px._core._cell_at(vectors, 1)
     assert px.cell_at(vectors, resolution=1).tolist() == [20, 22]
+
+
+_THREAD_SHORTAGE = """
+import resource
+import numpy as np
+import polypix as px
+
+def native_threads():
+    with open("/proc/self/status") as status:
+        for line in status:
+            if line.startswith("Threads:"):
+                return int(line.split()[1])
+
+cells = np.arange(1 << 18)
+# Other libraries, such as NumPy's BLAS, may already run threads of their own.
+baseline = native_threads()
+soft, hard = resource.getrlimit(resource.RLIMIT_NPROC)
+resource.setrlimit(resource.RLIMIT_NPROC, (1, hard))
+during = px.cell_centers(cells, resolution=10)
+assert native_threads() == baseline, "the shortage should force a serial call"
+resource.setrlimit(resource.RLIMIT_NPROC, (soft, hard))
+after = px.cell_centers(cells, resolution=10)
+assert native_threads() > baseline, "parallel calls should recover after the shortage"
+np.testing.assert_array_equal(during, after)
+"""
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux") or (os.cpu_count() or 1) < 2,
+    reason="needs RLIMIT_NPROC, /proc, and several CPUs",
+)
+def test_thread_shortage_falls_back_to_serial_and_recovers() -> None:
+    # Rayon's global pool is built once; if that fails, every later parallel
+    # call panics. Polypix's own pool must fall back and retry instead.
+    result = subprocess.run(
+        [sys.executable, "-c", _THREAD_SHORTAGE],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr[-1000:]

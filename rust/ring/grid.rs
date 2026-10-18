@@ -202,7 +202,7 @@ pub(super) fn normalized_cell_at(direction: Vec3, resolution: u8) -> u64 {
     }
 }
 
-pub(crate) fn cells_at(vectors: &[f64], resolution: u8) -> NativeResult<Vec<u64>> {
+pub(super) fn cells_at(vectors: &[f64], resolution: u8, parallel: bool) -> NativeResult<Vec<u64>> {
     debug_assert!(resolution <= MAX_RESOLUTION);
     debug_assert!(vectors.len().is_multiple_of(3));
     let vector_count = vectors.len() / 3;
@@ -211,7 +211,7 @@ pub(crate) fn cells_at(vectors: &[f64], resolution: u8) -> NativeResult<Vec<u64>
         NativeError::out_of_memory("Cell lookup result is too large to fit in memory.")
     })?;
     cells.resize(vector_count, 0_u64);
-    if vector_count < CELL_AT_PARALLEL_MIN_VECTORS || crate::forked() {
+    if !parallel {
         for (index, (cell, values)) in cells.iter_mut().zip(vectors.chunks_exact(3)).enumerate() {
             let direction = normalize([values[0], values[1], values[2]])
                 .map_err(|error| format!("vectors_xyz[{index}] {error}"))?;
@@ -602,7 +602,7 @@ pub(crate) fn validate_coverage_arrays(
     Ok(())
 }
 
-pub(crate) fn centers(cells: &[u64], resolution: u8) -> NativeResult<Vec<f64>> {
+pub(super) fn centers(cells: &[u64], resolution: u8, parallel: bool) -> NativeResult<Vec<f64>> {
     let output_count = cells.len().checked_mul(3).ok_or_else(|| {
         NativeError::out_of_memory("Center result is too large to fit in memory.")
     })?;
@@ -610,7 +610,7 @@ pub(crate) fn centers(cells: &[u64], resolution: u8) -> NativeResult<Vec<f64>> {
     values
         .try_reserve_exact(output_count)
         .map_err(|_| NativeError::out_of_memory("Center result is too large to fit in memory."))?;
-    if cells.len() < CENTER_PARALLEL_MIN_CELLS || crate::forked() {
+    if !parallel {
         for &cell in cells {
             values.extend(center(cell, resolution));
         }
@@ -624,7 +624,7 @@ pub(crate) fn centers(cells: &[u64], resolution: u8) -> NativeResult<Vec<f64>> {
     Ok(values)
 }
 
-pub(crate) fn corners(cells: &[u64], resolution: u8) -> NativeResult<Vec<f64>> {
+pub(super) fn corners(cells: &[u64], resolution: u8, parallel: bool) -> NativeResult<Vec<f64>> {
     let output_count = cells.len().checked_mul(12).ok_or_else(|| {
         NativeError::out_of_memory("Corner result is too large to fit in memory.")
     })?;
@@ -632,7 +632,7 @@ pub(crate) fn corners(cells: &[u64], resolution: u8) -> NativeResult<Vec<f64>> {
     values
         .try_reserve_exact(output_count)
         .map_err(|_| NativeError::out_of_memory("Corner result is too large to fit in memory."))?;
-    if cells.len() < BOUNDARY_PARALLEL_MIN_CELLS || crate::forked() {
+    if !parallel {
         for &cell in cells {
             for corner in boundary(cell, resolution) {
                 values.extend(corner);
@@ -660,6 +660,15 @@ mod tests {
         ring_start, ring_to_face_xy, validate_cell_range, CELL_AT_PARALLEL_MIN_VECTORS,
         MAX_RESOLUTION,
     };
+
+    /// Choose parallelism by size, as the crate-facing wrapper does.
+    fn cells_at_auto(vectors: &[f64], resolution: u8) -> crate::error::NativeResult<Vec<u64>> {
+        cells_at(
+            vectors,
+            resolution,
+            vectors.len() / 3 >= CELL_AT_PARALLEL_MIN_VECTORS,
+        )
+    }
 
     #[test]
     fn invalid_cell_message_separates_negative_from_out_of_range() {
@@ -709,7 +718,8 @@ mod tests {
             let vectors = (0..cell_count)
                 .flat_map(|cell| center(cell, resolution))
                 .collect::<Vec<_>>();
-            let actual = cells_at(&vectors, resolution).expect("cell centers are valid vectors");
+            let actual =
+                cells_at_auto(&vectors, resolution).expect("cell centers are valid vectors");
             assert_eq!(actual, (0..cell_count).collect::<Vec<_>>());
         }
     }
@@ -780,7 +790,7 @@ mod tests {
         ];
 
         for (resolution, expected) in fixtures {
-            assert_eq!(cells_at(&flat, resolution).unwrap(), expected);
+            assert_eq!(cells_at_auto(&flat, resolution).unwrap(), expected);
         }
     }
 
@@ -806,7 +816,7 @@ mod tests {
             .flat_map(|&cell| center(cell, resolution))
             .collect::<Vec<_>>();
 
-        assert_eq!(cells_at(&vectors, resolution).unwrap(), cells);
+        assert_eq!(cells_at_auto(&vectors, resolution).unwrap(), cells);
     }
 
     #[test]
@@ -822,22 +832,22 @@ mod tests {
             .map(|value| value * 1.0e300)
             .collect::<Vec<_>>();
         assert_eq!(
-            cells_at(&tiny, 12).unwrap(),
-            cells_at(&reference, 12).unwrap()
+            cells_at_auto(&tiny, 12).unwrap(),
+            cells_at_auto(&reference, 12).unwrap()
         );
         assert_eq!(
-            cells_at(&huge, 12).unwrap(),
-            cells_at(&reference, 12).unwrap()
+            cells_at_auto(&huge, 12).unwrap(),
+            cells_at_auto(&reference, 12).unwrap()
         );
 
         assert_eq!(
-            cells_at(&[1.0, 0.0, 0.0, f64::NAN, 0.0, 1.0], 3)
+            cells_at_auto(&[1.0, 0.0, 0.0, f64::NAN, 0.0, 1.0], 3)
                 .unwrap_err()
                 .to_string(),
             "vectors_xyz[1] must contain only finite values."
         );
         assert_eq!(
-            cells_at(&[0.0, 0.0, 0.0], 3).unwrap_err().to_string(),
+            cells_at_auto(&[0.0, 0.0, 0.0], 3).unwrap_err().to_string(),
             "vectors_xyz[0] must not be zero-length."
         );
 
@@ -846,7 +856,7 @@ mod tests {
         parallel[17 * 3] = f64::NAN;
         parallel[(vector_count - 2) * 3..(vector_count - 1) * 3].fill(0.0);
         assert_eq!(
-            cells_at(&parallel, 3).unwrap_err().to_string(),
+            cells_at_auto(&parallel, 3).unwrap_err().to_string(),
             "vectors_xyz[17] must contain only finite values."
         );
     }
@@ -873,7 +883,7 @@ mod tests {
             let cap_cell_count = 2 * nside * (nside - 1);
             let south_transition_start = cap_cell_count + 8 * nside * nside;
             assert_eq!(
-                cells_at(&vectors, resolution).unwrap(),
+                cells_at_auto(&vectors, resolution).unwrap(),
                 [
                     0,
                     0,
@@ -891,7 +901,7 @@ mod tests {
         let north = [-0.4140976024357428, 0.6197408581112958, 0.6666666666666667];
         let south = [north[0], north[1], -north[2]];
         let vectors = [north, south].into_iter().flatten().collect::<Vec<_>>();
-        let cells = cells_at(&vectors, 3).unwrap();
+        let cells = cells_at_auto(&vectors, 3).unwrap();
 
         assert!([93, 122, 123, 155].contains(&cells[0]));
         assert!([603, 634, 635, 665].contains(&cells[1]));

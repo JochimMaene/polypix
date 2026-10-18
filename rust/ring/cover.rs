@@ -13,8 +13,9 @@ use crate::error::{NativeError, NativeResult, COVERAGE_OUT_OF_MEMORY};
 use crate::geometry::{normalize, Vec3};
 
 use super::grid::{
-    center, neighboring_cells, raw_cell_count, ring_of_cell, ring_range, ring_start,
-    validate_cell_range, MAX_RESOLUTION,
+    self, center, neighboring_cells, raw_cell_count, ring_of_cell, ring_range, ring_start,
+    validate_cell_range, BOUNDARY_PARALLEL_MIN_CELLS, CELL_AT_PARALLEL_MIN_VECTORS,
+    CENTER_PARALLEL_MIN_CELLS, MAX_RESOLUTION,
 };
 use super::parallel::run_with_parallelism;
 use super::plan::*;
@@ -28,6 +29,37 @@ pub(crate) struct Coverage {
 // Release measurements on eight workers cross over between 4K and 16K cells;
 // keep the threshold at the first measured batch with a clear parallel win.
 const NEIGHBOR_PARALLEL_MIN_CELLS: usize = 1 << 14;
+
+/// Map directions to cells, in parallel when the batch is large enough.
+pub(crate) fn cells_at(vectors: &[f64], resolution: u8) -> NativeResult<Vec<u64>> {
+    let count = vectors.len() / 3;
+    run_with_parallelism(
+        count,
+        count >= CELL_AT_PARALLEL_MIN_VECTORS,
+        None,
+        |parallel| grid::cells_at(vectors, resolution, parallel),
+    )?
+}
+
+/// Decode cell centers, in parallel when the batch is large enough.
+pub(crate) fn centers(cells: &[u64], resolution: u8) -> NativeResult<Vec<f64>> {
+    run_with_parallelism(
+        cells.len(),
+        cells.len() >= CENTER_PARALLEL_MIN_CELLS,
+        None,
+        |parallel| grid::centers(cells, resolution, parallel),
+    )?
+}
+
+/// Decode cell corners, in parallel when the batch is large enough.
+pub(crate) fn corners(cells: &[u64], resolution: u8) -> NativeResult<Vec<f64>> {
+    run_with_parallelism(
+        cells.len(),
+        cells.len() >= BOUNDARY_PARALLEL_MIN_CELLS,
+        None,
+        |parallel| grid::corners(cells, resolution, parallel),
+    )?
+}
 
 pub(crate) fn cell_neighbors(cells: &[u64], resolution: u8) -> NativeResult<Coverage> {
     validate_cell_range(cells, resolution, "cells")?;

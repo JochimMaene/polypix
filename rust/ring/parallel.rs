@@ -28,6 +28,20 @@ pub(super) fn explicit_pool(worker_count: usize) -> Result<Arc<rayon::ThreadPool
     Ok(pool)
 }
 
+/// The pool behind automatic parallelism. Rayon's own global pool is built
+/// once per process: if that build fails, for example while the process is
+/// out of threads, every later call panics. This pool is built on first use
+/// instead, and a failed build is retried on the next call while that call
+/// runs serially.
+fn automatic_pool() -> Option<Arc<rayon::ThreadPool>> {
+    static POOL: Mutex<Option<Arc<rayon::ThreadPool>>> = Mutex::new(None);
+    let mut pool = POOL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if pool.is_none() {
+        *pool = rayon::ThreadPoolBuilder::new().build().ok().map(Arc::new);
+    }
+    pool.clone()
+}
+
 pub(super) fn run_with_parallelism<T: Send>(
     item_count: usize,
     parallel_worthwhile: bool,
@@ -37,23 +51,29 @@ pub(super) fn run_with_parallelism<T: Send>(
     if item_count <= 1 || threads == Some(1) || !parallel_worthwhile || crate::forked() {
         return Ok(operation(false));
     }
-    let (worker_count, use_global_pool) = match threads {
+    let automatic = automatic_pool();
+    let (worker_count, use_automatic_pool) = match threads {
         Some(requested) => {
             let available = std::thread::available_parallelism()
                 .map(|count| count.get())
                 .unwrap_or(1);
             let workers = requested.min(available);
-            let use_global = requested >= available && rayon::current_num_threads() <= workers;
-            (workers, use_global)
+            let use_automatic = requested >= available
+                && automatic
+                    .as_ref()
+                    .is_some_and(|pool| pool.current_num_threads() <= workers);
+            (workers, use_automatic)
         }
-        None => (rayon::current_num_threads().min(item_count), true),
+        None => match &automatic {
+            Some(pool) => (pool.current_num_threads().min(item_count), true),
+            None => return Ok(operation(false)),
+        },
     };
     if worker_count <= 1 {
         return Ok(operation(false));
     }
-    if use_global_pool {
-        Ok(operation(true))
-    } else {
-        Ok(explicit_pool(worker_count)?.install(|| operation(true)))
+    match automatic {
+        Some(pool) if use_automatic_pool => Ok(pool.install(|| operation(true))),
+        _ => Ok(explicit_pool(worker_count)?.install(|| operation(true))),
     }
 }

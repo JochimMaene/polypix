@@ -1973,7 +1973,7 @@ mod tests {
     }
 
     fn cell_corner_quad(cell: u64, resolution: u8) -> Vec<[f64; 3]> {
-        let raw = crate::ring::grid::corners(&[cell], resolution).unwrap();
+        let raw = crate::ring::grid::corners(&[cell], resolution, false).unwrap();
         (0..4)
             .map(|index| [raw[3 * index], raw[3 * index + 1], raw[3 * index + 2]])
             .collect()
