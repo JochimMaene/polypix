@@ -288,3 +288,16 @@ def test_time_arrays_are_not_numbers() -> None:
         px.Sum(np.array([1], dtype="timedelta64[h]"))
     with pytest.raises(TypeError, match="real numbers"):
         px.cell_at(np.array([1, 0, 0], dtype="timedelta64[s]"), resolution=0)
+
+
+def test_polar_cap_ring_tie_agrees_between_coverage_and_counts() -> None:
+    # Around a polar axis a whole ring is in or out at once; at the boundary
+    # each cell must be decided as a candidate query decides it.
+    axis, radius, resolution, cell = [0.0, 0.0, 1.0], 0.7305737448965426, 4, 411
+    selected = dict(resolution=resolution, candidate_cells=[cell])
+    included = cell in px.cover_cap(axis, radius, **selected).cells
+    assert (cell in px.cover_cap(axis, radius, resolution=resolution).cells) == included
+    dense = px.cover_cap(axis, radius, resolution=resolution, reduce=px.Count())
+    assert dense[cell] == int(included)
+    counts = px.cover_cap(axis, radius, **selected, reduce=px.Count())
+    assert counts.tolist() == [int(included)]

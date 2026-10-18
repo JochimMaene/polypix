@@ -39,7 +39,8 @@ documentation. Internal refactors, tests, and CI changes are omitted.
   corner that `candidate_cells=` included, and adding collinear vertices
   changing the result.
 - Fixed cap coverage and cap counts disagreeing on a boundary tie, because
-  they placed cell centers with different rounding.
+  they placed cell centers with different rounding, including whole rings
+  around a polar cap axis.
 - Fixed a forked child hanging when another thread was building the ring
   cache at the moment of the fork.
 - A process that briefly cannot create threads now runs calls serially, with
@@ -63,8 +64,8 @@ documentation. Internal refactors, tests, and CI changes are omitted.
 - Input-sized native buffers now raise `MemoryError` when an allocation is
   refused instead of aborting the process. This covers sparse `revisit()`,
   unsorted `candidate_cells=`, cap batches, sweep samples, candidate planning,
-  `Polygon` and `MultiPolygon` batches, `Coverage.from_arrays()`
-  validation, and the per-resolution ring cache.
+  `Polygon` and `MultiPolygon` batches, multi-source `revisit()` inputs,
+  `Coverage.from_arrays()` validation, and the per-resolution ring cache.
 - A `Sum` with the wrong number of values is rejected before any covering
   work, instead of after it.
 

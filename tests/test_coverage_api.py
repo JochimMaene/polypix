@@ -195,6 +195,7 @@ unsorted = np.arange(400_000)[::-1].copy()
 calls = [
     lambda: px.cover_cap([0.0, 0.0, 1.0], 1e-3, resolution=12, threads=1),
     lambda: px.revisit(revisit_input),
+    lambda: px.revisit([px.Coverage.from_arrays([], [0, 0], resolution=6)] * 10_771),
     lambda: px.cover_cap(
         [1.0, 0.0, 0.0], 0.2, resolution=10, candidate_cells=descending, threads=1
     ),

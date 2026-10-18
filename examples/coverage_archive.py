@@ -93,11 +93,15 @@ def store(coverages: list[px.Coverage], path: Path) -> None:
     store just as readily.
     """
     # --8<-- [start:archive-store]
+    # One archive holds one resolution; cell IDs mean nothing without it.
+    resolutions = {coverage.resolution for coverage in coverages}
+    if len(resolutions) != 1:
+        raise ValueError("an archive holds coverages of a single resolution")
     arrays: dict[str, npt.NDArray[np.int64]] = {}
     for satellite, coverage in enumerate(coverages):
         arrays[f"cells_{satellite}"] = coverage.cells
         arrays[f"offsets_{satellite}"] = coverage.offsets
-    np.savez_compressed(path, resolution=HEALPIX_RESOLUTION, **arrays)
+    np.savez_compressed(path, resolution=resolutions.pop(), **arrays)
     # --8<-- [end:archive-store]
 
 

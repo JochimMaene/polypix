@@ -604,6 +604,24 @@ pub(super) fn visit_cap_ranges(cap: &Cap, resolution: u8, mut visit: impl FnMut(
     visit_cap_ranges_in_rings(cap, resolution, first_ring, last_ring, visit);
 }
 
+/// Visit the runs of a ring's cells whose centers the cap contains.
+fn visit_ring_cells_in_cap(cap: &Cap, ring: &Ring, visit: &mut impl FnMut(Range<u64>)) {
+    let mut run_start = None;
+    for offset in 0..ring.cells {
+        match (cap.contains_on_ring(ring, offset), run_start) {
+            (true, None) => run_start = Some(offset),
+            (false, Some(start)) => {
+                visit(ring.start + start..ring.start + offset);
+                run_start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(start) = run_start {
+        visit(ring.start + start..ring.start + ring.cells);
+    }
+}
+
 pub(super) fn visit_cap_ranges_in_rings(
     cap: &Cap,
     resolution: u8,
@@ -649,20 +667,28 @@ pub(super) fn visit_cap_ranges_in_rings(
             let available = cap.squared_chord_radius - minimum_squared_distance;
             (available, longitude_amplitude - available)
         };
-        if longitude_amplitude == 0.0 {
-            if available >= 0.0 {
+        let numerical_guard = 64.0
+            * f64::EPSILON
+            * (1.0 + cap.squared_chord_radius + minimum_squared_distance + longitude_amplitude);
+        // A whole ring is in or out at once when the cap axis is a pole, or
+        // when the ring lies entirely inside. Within the guard of either
+        // boundary, test each cell as a candidate query would, so restricting
+        // a query cannot change a tie.
+        let whole_ring = if longitude_amplitude == 0.0 {
+            Some(available)
+        } else if deficit <= 0.0 {
+            Some(-deficit)
+        } else {
+            None
+        };
+        if let Some(margin) = whole_ring {
+            if margin.abs() <= numerical_guard {
+                visit_ring_cells_in_cap(cap, ring, &mut visit);
+            } else if margin > 0.0 {
                 visit(ring.start..ring.start + ring.cells);
             }
             continue;
         }
-
-        if deficit <= 0.0 {
-            visit(ring.start..ring.start + ring.cells);
-            continue;
-        }
-        let numerical_guard = 64.0
-            * f64::EPSILON
-            * (1.0 + cap.squared_chord_radius + minimum_squared_distance + longitude_amplitude);
         if available < -numerical_guard {
             continue;
         }

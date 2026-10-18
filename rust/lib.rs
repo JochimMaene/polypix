@@ -105,12 +105,38 @@ fn optional_slice<'a, T: Element>(
     array.map(|values| slice(values, name)).transpose()
 }
 
+const SOURCES_OUT_OF_MEMORY: &str = "Revisit sources are too large to fit in memory.";
+
+/// Read a per-source list of arrays by hand into a fallibly reserved
+/// buffer: extracting `Vec<_>` would abort the process if it ran out of
+/// memory, while this raises `MemoryError`.
+fn source_arrays<'py>(list: &Bound<'py, PyList>) -> PyResult<Vec<PyReadonlyArray1<'py, u64>>> {
+    let mut arrays = Vec::new();
+    arrays
+        .try_reserve_exact(list.len())
+        .map_err(|_| PyMemoryError::new_err(SOURCES_OUT_OF_MEMORY))?;
+    for item in list.iter() {
+        arrays
+            .try_reserve(1)
+            .map_err(|_| PyMemoryError::new_err(SOURCES_OUT_OF_MEMORY))?;
+        arrays.push(item.extract()?);
+    }
+    Ok(arrays)
+}
+
 /// Borrow each array in a per-source list as a slice.
 fn slices<'a, T: Element>(
     arrays: &'a [PyReadonlyArray1<'_, T>],
     name: &str,
 ) -> PyResult<Vec<&'a [T]>> {
-    arrays.iter().map(|array| slice(array, name)).collect()
+    let mut slices = Vec::new();
+    slices
+        .try_reserve_exact(arrays.len())
+        .map_err(|_| PyMemoryError::new_err(SOURCES_OUT_OF_MEMORY))?;
+    for array in arrays {
+        slices.push(slice(array, name)?);
+    }
+    Ok(slices)
 }
 
 #[pyfunction(signature = (vertices_xyz, offsets, resolution, candidate_cells=None, restrict_output=true, threads=None, overlap=false))]
@@ -354,12 +380,14 @@ fn _sum_coverage_per_cell<'py>(
 #[pyfunction(signature = (cell_arrays, offset_arrays, resolution, minimum_sources))]
 fn _revisit_stats<'py>(
     py: Python<'py>,
-    cell_arrays: Vec<PyReadonlyArray1<'py, u64>>,
-    offset_arrays: Vec<PyReadonlyArray1<'py, u64>>,
+    cell_arrays: &Bound<'py, PyList>,
+    offset_arrays: &Bound<'py, PyList>,
     resolution: u8,
     minimum_sources: usize,
 ) -> PyResult<PyRevisitStats<'py>> {
     validate_resolution(resolution)?;
+    let cell_arrays = source_arrays(cell_arrays)?;
+    let offset_arrays = source_arrays(offset_arrays)?;
     let cells = slices(&cell_arrays, "Coverage cells")?;
     let offsets = slices(&offset_arrays, "Coverage offsets")?;
     let stats = py
