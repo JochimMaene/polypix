@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import multiprocessing
 import os
+import platform
 import subprocess
 import sys
 
@@ -136,12 +137,24 @@ def test_sweep_accepts_an_empty_interval_axis() -> None:
             px.cover_sweep(edge, edge, resolution=2)
 
 
-def test_resolution_is_keyword_only() -> None:
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda: px.cover_cap([1.0, 0.0, 0.0], 0.1, 3),
+        lambda: px.cover_polygon([[1.0, 0, 0], [0, 1.0, 0], [0, 0, 1.0]], 3),
+        lambda: px.cover_sweep(
+            [[1.0, 0, 0], [0, 1.0, 0]], [[1.0, 0, 0.1], [0, 1.0, 0.1]], 3
+        ),
+        lambda: px.cell_at([1.0, 0.0, 0.0], 3),
+        lambda: px.cell_centers(5, 3),
+        lambda: px.cell_corners(5, 3),
+        lambda: px.cell_neighbors(5, 3),
+    ],
+)
+def test_resolution_is_keyword_only(call) -> None:  # type: ignore[no-untyped-def]
     # Two adjacent numbers would otherwise swap silently.
-    with pytest.raises(TypeError):
-        px.cover_cap([1.0, 0.0, 0.0], 0.1, 3)  # type: ignore[misc]
-    with pytest.raises(TypeError):
-        px.cell_centers(5, 3)  # type: ignore[misc]
+    with pytest.raises(TypeError, match="positional"):
+        call()
 
 
 def _cover_in_forked_child(threads: int | None) -> int:
@@ -180,6 +193,7 @@ quads = directions[:, None, :] + np.array(
 )
 unsorted = np.arange(400_000)[::-1].copy()
 calls = [
+    lambda: px.cover_cap([0.0, 0.0, 1.0], 1e-3, resolution=12, threads=1),
     lambda: px.revisit(revisit_input),
     lambda: px.cover_cap(
         [1.0, 0.0, 0.0], 0.2, resolution=10, candidate_cells=descending, threads=1
@@ -196,7 +210,7 @@ calls = [
     ),
 ]
 _, hard = resource.getrlimit(resource.RLIMIT_AS)
-for megabytes in (*range(1, 41), 48, 64, 96, 128):
+for megabytes in (*range(0, 41), 48, 64, 96, 128):
     for call in calls:
         resource.setrlimit(resource.RLIMIT_AS, (address_space() + (megabytes << 20), hard))
         try:
@@ -210,7 +224,8 @@ print("survived")
 
 
 @pytest.mark.skipif(
-    not sys.platform.startswith("linux"), reason="needs RLIMIT_AS and /proc"
+    not sys.platform.startswith("linux") or platform.libc_ver()[0] != "glibc",
+    reason="needs RLIMIT_AS, /proc, and glibc's mmap threshold",
 )
 def test_allocation_failures_raise_instead_of_aborting() -> None:
     # Under an address-space limit an infallible allocation aborts the whole
@@ -265,6 +280,10 @@ baseline = native_threads()
 soft, hard = resource.getrlimit(resource.RLIMIT_NPROC)
 resource.setrlimit(resource.RLIMIT_NPROC, (1, hard))
 during = px.cell_centers(cells, resolution=10)
+explicit = px.cell_neighbors(cells[:1000], resolution=10)
+caps = px.cover_cap(
+    np.random.default_rng(0).normal(size=(4000, 3)), 0.05, resolution=9, threads=4
+)
 assert native_threads() == baseline, "the shortage should force a serial call"
 resource.setrlimit(resource.RLIMIT_NPROC, (soft, hard))
 after = px.cell_centers(cells, resolution=10)
@@ -274,8 +293,10 @@ np.testing.assert_array_equal(during, after)
 
 
 @pytest.mark.skipif(
-    not sys.platform.startswith("linux") or (os.cpu_count() or 1) < 2,
-    reason="needs RLIMIT_NPROC, /proc, and several CPUs",
+    not sys.platform.startswith("linux")
+    or (os.cpu_count() or 1) < 2
+    or os.geteuid() == 0,
+    reason="needs RLIMIT_NPROC, which root ignores, /proc, and several CPUs",
 )
 def test_thread_shortage_falls_back_to_serial_and_recovers() -> None:
     # Rayon's global pool is built once; if that fails, every later parallel
@@ -287,3 +308,30 @@ def test_thread_shortage_falls_back_to_serial_and_recovers() -> None:
         timeout=120,
     )
     assert result.returncode == 0, result.stderr[-1000:]
+
+
+_FRESH_FORK = """
+import os, sys, warnings
+import numpy as np
+import polypix as px
+
+warnings.simplefilter("ignore", DeprecationWarning)
+pid = os.fork()
+if pid == 0:
+    before = len(os.listdir("/proc/self/task"))
+    px.cell_centers(np.arange(1 << 20), resolution=10)
+    os._exit(0 if len(os.listdir("/proc/self/task")) > before else 1)
+sys.exit(os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]))
+"""
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux") or (os.cpu_count() or 1) < 2,
+    reason="needs fork, /proc, and several CPUs",
+)
+def test_child_forked_before_any_pool_still_runs_in_parallel() -> None:
+    # Only pools that existed at fork() are unusable in the child.
+    result = subprocess.run(
+        [sys.executable, "-c", _FRESH_FORK], capture_output=True, timeout=120
+    )
+    assert result.returncode == 0, result.stderr[-500:]

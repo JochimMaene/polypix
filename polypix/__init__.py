@@ -1047,6 +1047,17 @@ class Sum:
     ----------
     values : float or array_like of float
         One finite value shared by every segment, or one value per segment.
+        The reducer keeps a read-only ``float64`` copy, so later edits to
+        the array you passed do not change it.
+
+    Raises
+    ------
+    TypeError
+        If ``values`` is not real-valued.
+    ValueError
+        If ``values`` has more than one dimension or a non-finite value.
+        A length that does not match the segments is reported by the call
+        that uses the reducer, before any covering work.
 
     Notes
     -----
@@ -1521,10 +1532,7 @@ def _as_segment_values(
 ) -> npt.NDArray[np.float64]:
     array = _as_float_array(values, "values")
     if array.ndim == 0:
-        value = float(array.item())
-        if not np.isfinite(value):
-            raise ValueError("values must contain only finite values.")
-        return np.full(segment_count, value, dtype=np.float64)
+        return np.full(segment_count, float(array.item()), dtype=np.float64)
     if array.ndim != 1 or array.size != segment_count:
         raise ValueError(
             "values must be a scalar or contain one value per coverage segment."
@@ -1548,8 +1556,6 @@ def _reduce_coverage(
         )
     segment_values = _as_segment_values(reducer.values, len(coverage))
     if requested is not None and requested.size == 0:
-        if np.any(~np.isfinite(segment_values)):
-            raise ValueError("values must contain only finite values.")
         return np.empty(0, dtype=np.float64)
     return _sum_coverage_per_cell(
         _trusted_uint64(coverage.cells),

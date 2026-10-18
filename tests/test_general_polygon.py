@@ -814,3 +814,22 @@ def test_acute_tip_tie_agrees_across_scan_candidates_and_subdivision() -> None:
         ).cells,
     }
     assert len(answers) == 1
+
+
+def test_sliver_sweep_segment_is_rejected_like_the_polygon() -> None:
+    # A segment 5e-15 rad wide used to fall back to the convex test, whose
+    # tolerance then reached most of the way around the equator.
+    def at(longitude: float, latitude: float) -> list[float]:
+        return [
+            np.cos(latitude) * np.cos(longitude),
+            np.cos(latitude) * np.sin(longitude),
+            np.sin(latitude),
+        ]
+
+    left = np.array([at(-0.5, 0.0), at(0.0, 5e-15)])
+    right = np.array([at(0.5, 0.0), at(0.25, 5e-15)])
+    quad = np.array([left[0], right[0], right[1], left[1]])
+    with pytest.raises(ValueError):
+        px.cover_polygon(quad, resolution=8)
+    with pytest.raises(ValueError, match="sweep segment 0"):
+        px.cover_sweep(left, right, resolution=8)

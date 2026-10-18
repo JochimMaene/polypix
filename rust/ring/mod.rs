@@ -33,6 +33,7 @@ pub(crate) use grid::{
     invalid_cell_message, raw_cell_count, validate_cell_range, validate_coverage_arrays,
     validate_offsets, MAX_RESOLUTION,
 };
+pub(crate) use parallel::pools_touched;
 
 /// Test input two layers need: `plan` prices a cap batch, `cover` answers one.
 #[cfg(test)]

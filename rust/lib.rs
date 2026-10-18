@@ -6,6 +6,7 @@ use numpy::{
 use pyo3::exceptions::{PyMemoryError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyList;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 mod error;
 mod geometry;
@@ -16,18 +17,29 @@ mod ring;
 use error::{NativeError, COVERAGE_OUT_OF_MEMORY};
 use ring::MAX_RESOLUTION;
 
-/// Set in a child process after `fork()`. Rayon's worker threads do not
-/// survive a fork, so a child that reaches for an inherited pool waits forever.
-/// Every parallel entry point checks this flag and runs serially instead.
-static FORKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Set in a child process after `fork()`. Process-global state another
+/// thread was building at the fork, such as the ring cache, cannot finish in
+/// the child, so the child only reads what was complete.
+static FORKED: AtomicBool = AtomicBool::new(false);
+/// Set in a forked child whose parent had touched a worker pool. Rayon's
+/// threads do not survive a fork, so that child runs every call serially;
+/// a child forked before any pool existed builds its own as usual.
+static POOLS_UNUSABLE: AtomicBool = AtomicBool::new(false);
 
 pub(crate) fn forked() -> bool {
-    FORKED.load(std::sync::atomic::Ordering::Relaxed)
+    FORKED.load(Ordering::Relaxed)
+}
+
+pub(crate) fn pools_unusable() -> bool {
+    POOLS_UNUSABLE.load(Ordering::Relaxed)
 }
 
 #[pyfunction]
 fn _after_fork_in_child() {
-    FORKED.store(true, std::sync::atomic::Ordering::Relaxed);
+    FORKED.store(true, Ordering::Relaxed);
+    if ring::pools_touched() {
+        POOLS_UNUSABLE.store(true, Ordering::Relaxed);
+    }
 }
 
 type PyCoverage<'py> = (

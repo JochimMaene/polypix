@@ -195,30 +195,25 @@ pub(super) fn quad_contains(quad: &Quad, x: f64, y: f64, z: f64) -> bool {
 }
 
 pub(super) fn cached_scan_rings(resolution: u8) -> Option<&'static [ScanRing]> {
-    if resolution > MAX_CACHED_SCAN_RING_RESOLUTION {
+    const TABLE_COUNT: usize = MAX_CACHED_SCAN_RING_RESOLUTION as usize + 1;
+    static TABLES: [OnceLock<Vec<ScanRing>>; TABLE_COUNT] =
+        [const { OnceLock::new() }; TABLE_COUNT];
+    let table = TABLES.get(resolution as usize)?;
+    if let Some(rings) = table.get() {
+        return Some(rings);
+    }
+    // Another thread may have been building this table at fork(), and that
+    // build cannot finish in the child, so a child only reads finished ones.
+    if crate::forked() {
         return None;
     }
-    static TABLES: OnceLock<Vec<OnceLock<Vec<ScanRing>>>> = OnceLock::new();
-    if crate::forked() {
-        // Another thread may have been mid-initialization at fork() and
-        // cannot finish in the child, so only read tables already built.
-        return TABLES
-            .get()?
-            .get(resolution as usize)?
-            .get()
-            .map(Vec::as_slice);
-    }
-    let tables = TABLES.get_or_init(|| {
-        (0..=MAX_CACHED_SCAN_RING_RESOLUTION)
-            .map(|_| OnceLock::new())
-            .collect()
-    });
-    Some(tables[resolution as usize].get_or_init(|| {
-        let nside = 1_u64 << resolution;
-        (1..4 * nside)
-            .map(|ring_index| ScanRing::new(ring_info(nside, ring_index)))
-            .collect()
-    }))
+    // Callers fall back to computing rings on the fly, so a table that does
+    // not fit in memory costs speed rather than aborting the process.
+    let nside = 1_u64 << resolution;
+    let mut rings = Vec::new();
+    rings.try_reserve_exact((4 * nside - 1) as usize).ok()?;
+    rings.extend((1..4 * nside).map(|ring_index| ScanRing::new(ring_info(nside, ring_index))));
+    Some(table.get_or_init(|| rings))
 }
 
 pub(super) fn polygon_z_bounds(vertices: &[Vec3], edge_normals: &[Vec3]) -> (f64, f64) {
@@ -770,8 +765,8 @@ fn ring_offset_contains(
     offset: u64,
     contains: impl Fn(f64, f64, f64) -> bool,
 ) -> bool {
-    let step = TAU / ring.cells as f64;
-    let longitude = (offset as f64 + ring.shift) * step;
+    // Same operations as `grid::center`, so a candidate test agrees on ties.
+    let longitude = (offset as f64 + ring.shift) * TAU / ring.cells as f64;
     let (sine, cosine) = longitude.sin_cos();
     contains(ring.radial * cosine, ring.radial * sine, ring.z)
 }
@@ -1818,10 +1813,9 @@ pub(super) fn prepare_sweep_footprint(
     if convex_path_is_exact(vertices, &quad.edge_normals[..quad.len]) {
         return Ok(PreparedFootprint::Quad(quad));
     }
-    // A segment the general path cannot prepare keeps the convex answer it
-    // always had, rather than becoming a new error.
-    Ok(prepare_general_polygon(&[vertices.to_vec()])
-        .map_or(PreparedFootprint::Quad(quad), PreparedFootprint::General))
+    prepare_general_polygon(&[vertices.to_vec()])
+        .map(PreparedFootprint::General)
+        .map_err(|error| format!("sweep segment {index}: {error}"))
 }
 
 #[cfg(test)]

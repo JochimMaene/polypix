@@ -122,6 +122,7 @@ If your own executor is already running several Polypix calls, use
 `threads=1` inside each call so the workers don't compete with each other.
 Threading doesn't change the cells or their order.
 
-Worker threads don't survive `fork()`. A process forked from one that already
-ran Polypix, such as a `multiprocessing` worker started with the `fork`
-method, runs every call on one thread.
+Worker threads don't survive `fork()`. A process forked after Polypix started
+its worker threads, such as a `multiprocessing` worker started with the `fork`
+method from a parent that already ran parallel calls, runs every call on one
+thread. A process forked before that starts its own threads as usual.

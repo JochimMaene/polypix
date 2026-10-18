@@ -38,7 +38,7 @@ pub(crate) fn cells_at(vectors: &[f64], resolution: u8) -> NativeResult<Vec<u64>
         count >= CELL_AT_PARALLEL_MIN_VECTORS,
         None,
         |parallel| grid::cells_at(vectors, resolution, parallel),
-    )?
+    )
 }
 
 /// Decode cell centers, in parallel when the batch is large enough.
@@ -48,7 +48,7 @@ pub(crate) fn centers(cells: &[u64], resolution: u8) -> NativeResult<Vec<f64>> {
         cells.len() >= CENTER_PARALLEL_MIN_CELLS,
         None,
         |parallel| grid::centers(cells, resolution, parallel),
-    )?
+    )
 }
 
 /// Decode cell corners, in parallel when the batch is large enough.
@@ -58,7 +58,7 @@ pub(crate) fn corners(cells: &[u64], resolution: u8) -> NativeResult<Vec<f64>> {
         cells.len() >= BOUNDARY_PARALLEL_MIN_CELLS,
         None,
         |parallel| grid::corners(cells, resolution, parallel),
-    )?
+    )
 }
 
 pub(crate) fn cell_neighbors(cells: &[u64], resolution: u8) -> NativeResult<Coverage> {
@@ -183,7 +183,7 @@ pub(super) fn dispatch_coverage(
     // result returned by the selected execution context.
     run_with_parallelism(item_count, parallel_worthwhile, threads, |parallel| {
         compute_coverage_chunks(item_count, parallel, chunk)
-    })?
+    })
 }
 
 pub(super) fn compute_candidate_coverage<T: Send + Sync>(
@@ -224,7 +224,7 @@ pub(super) fn compute_candidate_coverage<T: Send + Sync>(
             let footprints = prepare_all(parallel)?;
             let plan = plan_for(&footprints, parallel)?;
             compute_planned(&footprints, &plan, parallel)
-        })?;
+        });
     }
 
     let footprints = prepare_all(false)?;
@@ -234,7 +234,7 @@ pub(super) fn compute_candidate_coverage<T: Send + Sync>(
         plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS,
         threads,
         |parallel| compute_planned(&footprints, &plan, parallel),
-    )?
+    )
 }
 
 pub(super) fn compute_mixed_chunk(
@@ -663,7 +663,7 @@ pub(crate) fn cover_caps(
                 return run_with_parallelism(caps.len(), true, threads, |parallel| {
                     let plan = plan_for(parallel)?;
                     compute_planned(&plan, parallel)
-                })?;
+                });
             }
 
             let plan = plan_for(false)?;
@@ -672,7 +672,7 @@ pub(crate) fn cover_caps(
                 plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS,
                 threads,
                 |parallel| compute_planned(&plan, parallel),
-            )?;
+            );
         }
         let compute_planned = |plan: &CandidatePlan, parallel| {
             compute_planned_candidates(
@@ -693,7 +693,7 @@ pub(crate) fn cover_caps(
             return run_with_parallelism(caps.len(), true, threads, |parallel| {
                 let plan = plan_for(parallel)?;
                 compute_planned(&plan, parallel)
-            })?;
+            });
         }
 
         let plan = plan_for(false)?;
@@ -702,7 +702,7 @@ pub(crate) fn cover_caps(
             plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS,
             threads,
             |parallel| compute_planned(&plan, parallel),
-        )?;
+        );
     }
 
     let parallel_work = caps.iter().fold(
@@ -829,7 +829,7 @@ pub(crate) fn count_caps_per_cell(
             NativeError::out_of_memory("Selected cap-count result is too large to fit in memory.")
         })?;
         counts.resize(cells.len(), 0_i64);
-        return run_with_parallelism(
+        return Ok(Some(run_with_parallelism(
             cells.len(),
             work >= CANDIDATE_PARALLEL_MIN_VISITS,
             threads,
@@ -862,9 +862,7 @@ pub(crate) fn count_caps_per_cell(
                 }
                 counts
             },
-        )
-        .map(Some)
-        .map_err(NativeError::from);
+        )));
     }
     if caps.is_empty() {
         let mut counts = zeroed_cap_deltas(cell_count)?;
@@ -887,7 +885,7 @@ pub(crate) fn count_caps_per_cell(
             1
         };
         count_caps_chunked(&caps, resolution, cell_count, worker_count).map(Some)
-    })?
+    })
 }
 
 /// Count only the bounded RING span containing a selection, without cell hits.
