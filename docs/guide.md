@@ -11,7 +11,7 @@ need to build from source.
 
 ## Directions in, cell IDs out
 
-Numeric inputs are Cartesian directions shaped like `(..., 3)`. They don't have
+Numeric inputs are Cartesian directions shaped like `(3,)` or `(N, 3)`. They don't have
 to be unit length; Polypix ignores their magnitude. The coordinate frame is
 also yours to choose. Polypix doesn't attach a frame or transform coordinates.
 
@@ -249,13 +249,13 @@ duplicates are preserved. Without candidates, a reducer returns a dense grid:
 
 ```{doctest}
 >>> requested = np.array([7, 2, 7])
->>> px.cover_cap([1, 0, 0], np.pi, 0, candidate_cells=requested).cells.tolist()
+>>> px.cover_cap([1, 0, 0], np.pi, resolution=0, candidate_cells=requested).cells.tolist()
 [2, 7]
 >>> px.cover_cap(
-...     [1, 0, 0], np.pi, 0, candidate_cells=requested, reduce=px.Count()
+...     [1, 0, 0], np.pi, resolution=0, candidate_cells=requested, reduce=px.Count()
 ... ).tolist()
 [1, 1, 1]
->>> px.cover_cap([1, 0, 0], np.pi, 0, reduce=px.Count()).shape
+>>> px.cover_cap([1, 0, 0], np.pi, resolution=0, reduce=px.Count()).shape
 (12,)
 ```
 
@@ -270,15 +270,15 @@ each cell was occupied:
 ```{doctest}
 >>> stats = px.revisit(swath_coverage)
 >>> cadence_minutes = 1.0
->>> gap_count = stats.run_counts - 1
+>>> gap_count = stats.visit_counts - 1
 >>> mean_internal_gap_minutes = np.full(gap_count.shape, np.nan)
 >>> measured = gap_count > 0
 >>> mean_internal_gap_minutes[measured] = (
-...     stats.internal_gap_steps_sum[measured] / gap_count[measured]
+...     stats.gap_steps_total[measured] / gap_count[measured]
 ... ) * cadence_minutes
 ```
 
-The bins are ordinal. Map `stats.first_start`, `stats.last_stop`, and the gap
+The bins are ordinal. Map `stats.first_bin`, `stats.stop_bin`, and the gap
 fields to your own timestamps. Matching segment indices must describe matching
 time boundaries; Polypix has no clock to check that for you. Multiplying step
 counts by a cadence, as above, is valid only for uniformly spaced bins.

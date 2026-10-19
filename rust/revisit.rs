@@ -448,7 +448,11 @@ pub(crate) fn revisit_stats(
             }
         }
     }
-    let mut observed: Vec<(u64, StatsState)> = states.into_iter().collect();
+    let mut observed: Vec<(u64, StatsState)> = Vec::new();
+    observed
+        .try_reserve_exact(states.len())
+        .map_err(|_| stats_out_of_memory_error())?;
+    observed.extend(states);
     observed.sort_unstable_by_key(|(cell, _)| *cell);
     let mut out = stats_with_capacity(observed.len())?;
     for (cell, state) in &observed {
@@ -732,7 +736,7 @@ mod tests {
         let offsets = vec![0_u64, 1];
         assert_eq!(
             error_message(&[negative.as_slice()], &[offsets.as_slice()], 6, 1),
-            "sources must contain non-negative integers."
+            "sources must contain non-negative integers below 2**63."
         );
     }
 
@@ -741,10 +745,14 @@ mod tests {
         // `revisit_stats` trusts its sources because every one is a
         // `Coverage`, which rejects duplicate and out-of-range cells when it
         // is built.
-        let duplicate = ring::validate_coverage_arrays(&[1, 1], &[0, 2], 0).unwrap_err();
+        let duplicate = ring::validate_coverage_arrays(&[1, 1], &[0, 2], 0)
+            .unwrap_err()
+            .to_string();
         assert!(duplicate.contains("must be unique"), "{duplicate}");
 
-        let out_of_range = ring::validate_coverage_arrays(&[12], &[0, 1], 0).unwrap_err();
+        let out_of_range = ring::validate_coverage_arrays(&[12], &[0, 1], 0)
+            .unwrap_err()
+            .to_string();
         assert!(
             out_of_range.contains("valid RING indices"),
             "{out_of_range}"

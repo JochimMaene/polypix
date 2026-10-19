@@ -13,8 +13,9 @@ use crate::error::{NativeError, NativeResult, COVERAGE_OUT_OF_MEMORY};
 use crate::geometry::{normalize, Vec3};
 
 use super::grid::{
-    center, neighboring_cells, raw_cell_count, ring_of_cell, ring_range, ring_start,
-    validate_cell_range, MAX_RESOLUTION,
+    self, center, neighboring_cells, raw_cell_count, ring_of_cell, ring_range, ring_start,
+    validate_cell_range, BOUNDARY_PARALLEL_MIN_CELLS, CELL_AT_PARALLEL_MIN_VECTORS,
+    CENTER_PARALLEL_MIN_CELLS, MAX_RESOLUTION,
 };
 use super::parallel::run_with_parallelism;
 use super::plan::*;
@@ -28,6 +29,37 @@ pub(crate) struct Coverage {
 // Release measurements on eight workers cross over between 4K and 16K cells;
 // keep the threshold at the first measured batch with a clear parallel win.
 const NEIGHBOR_PARALLEL_MIN_CELLS: usize = 1 << 14;
+
+/// Map directions to cells, in parallel when the batch is large enough.
+pub(crate) fn cells_at(vectors: &[f64], resolution: u8) -> NativeResult<Vec<u64>> {
+    let count = vectors.len() / 3;
+    run_with_parallelism(
+        count,
+        count >= CELL_AT_PARALLEL_MIN_VECTORS,
+        None,
+        |parallel| grid::cells_at(vectors, resolution, parallel),
+    )
+}
+
+/// Decode cell centers, in parallel when the batch is large enough.
+pub(crate) fn centers(cells: &[u64], resolution: u8) -> NativeResult<Vec<f64>> {
+    run_with_parallelism(
+        cells.len(),
+        cells.len() >= CENTER_PARALLEL_MIN_CELLS,
+        None,
+        |parallel| grid::centers(cells, resolution, parallel),
+    )
+}
+
+/// Decode cell corners, in parallel when the batch is large enough.
+pub(crate) fn corners(cells: &[u64], resolution: u8) -> NativeResult<Vec<f64>> {
+    run_with_parallelism(
+        cells.len(),
+        cells.len() >= BOUNDARY_PARALLEL_MIN_CELLS,
+        None,
+        |parallel| grid::corners(cells, resolution, parallel),
+    )
+}
 
 pub(crate) fn cell_neighbors(cells: &[u64], resolution: u8) -> NativeResult<Coverage> {
     validate_cell_range(cells, resolution, "cells")?;
@@ -151,7 +183,7 @@ pub(super) fn dispatch_coverage(
     // result returned by the selected execution context.
     run_with_parallelism(item_count, parallel_worthwhile, threads, |parallel| {
         compute_coverage_chunks(item_count, parallel, chunk)
-    })?
+    })
 }
 
 pub(super) fn compute_candidate_coverage<T: Send + Sync>(
@@ -163,18 +195,13 @@ pub(super) fn compute_candidate_coverage<T: Send + Sync>(
     z_bounds: impl Fn(&T) -> (f64, f64) + Send + Sync,
     matches: impl Fn(&T, u64, Vec3) -> bool + Send + Sync,
 ) -> NativeResult<Coverage> {
-    let prepare_all = |parallel| {
-        let prepared = if parallel {
-            (0..item_count)
-                .into_par_iter()
-                .map(&prepare)
-                .collect::<Vec<_>>()
-        } else {
-            (0..item_count).map(&prepare).collect::<Vec<_>>()
-        };
+    let prepare_all = |parallel| -> NativeResult<Vec<T>> {
+        let prepared = try_collect_indexed(item_count, parallel, &prepare)?;
         // Resolve errors after the indexed collection so the first invalid
-        // footprint is stable across thread counts.
-        prepared.into_iter().collect::<Result<Vec<_>, _>>()
+        // footprint is stable across thread counts. Unwrapping the results
+        // collects in place into the buffer reserved above, so it neither
+        // allocates nor touches a second, cold buffer.
+        Ok(prepared.into_iter().collect::<Result<Vec<_>, _>>()?)
     };
     let plan_for = |items: &[T], parallel| {
         plan_item_candidates(items, candidates, resolution, parallel, &z_bounds)
@@ -195,19 +222,19 @@ pub(super) fn compute_candidate_coverage<T: Send + Sync>(
     if threads != Some(1) && preparation_work >= CANDIDATE_PARALLEL_MIN_VISITS {
         return run_with_parallelism(item_count, true, threads, |parallel| {
             let footprints = prepare_all(parallel)?;
-            let plan = plan_for(&footprints, parallel);
+            let plan = plan_for(&footprints, parallel)?;
             compute_planned(&footprints, &plan, parallel)
-        })?;
+        });
     }
 
     let footprints = prepare_all(false)?;
-    let plan = plan_for(&footprints, false);
+    let plan = plan_for(&footprints, false)?;
     run_with_parallelism(
         item_count,
         plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS,
         threads,
         |parallel| compute_planned(&footprints, &plan, parallel),
-    )?
+    )
 }
 
 pub(super) fn compute_mixed_chunk(
@@ -445,7 +472,7 @@ fn cover_prepared_region<P: Borrow<PreparedRegionPolygon>>(
 }
 
 pub(crate) fn cover_prepared_regions(
-    regions: &[Vec<&PreparedRegionPolygon>],
+    regions: &[&[&PreparedRegionPolygon]],
     resolution: u8,
     raw_candidates: Option<&[u64]>,
     restrict_output: bool,
@@ -463,7 +490,7 @@ pub(crate) fn cover_prepared_regions(
         should_test_candidates(
             restrict_output,
             sampled_total(region_count, estimated_cells) as f64,
-            regions.iter().map(Vec::len).sum(),
+            regions.iter().map(|region| region.len()).sum(),
             candidates.len(),
         )
     }) {
@@ -503,7 +530,7 @@ pub(crate) fn cover_prepared_regions(
                 candidates,
                 resolution,
                 threads,
-                |region| Ok::<_, String>(regions[region].as_slice()),
+                |region| Ok::<_, String>(regions[region]),
                 |polygons| region_z_bounds(polygons),
                 |polygons, _cell, point| region_contains(polygons, point),
             )
@@ -529,7 +556,7 @@ pub(crate) fn cover_prepared_regions(
             };
             coverage.offsets.push(0);
             for region in range {
-                cover_prepared_region(&regions[region], resolution, &mut coverage.cells, overlap)?;
+                cover_prepared_region(regions[region], resolution, &mut coverage.cells, overlap)?;
                 coverage.offsets.push(coverage.cells.len() as u64);
             }
             Ok(coverage)
@@ -618,10 +645,9 @@ pub(crate) fn cover_caps(
         if overlap {
             // Bind every cap to the resolution once, rather than relocating
             // each axis cell for every candidate it is tested against.
-            let overlaps = caps
-                .iter()
-                .map(|cap| CapOverlap::new(cap, resolution))
-                .collect::<Vec<_>>();
+            let overlaps = try_collect_indexed(caps.len(), false, |index| {
+                CapOverlap::new(&caps[index], resolution)
+            })?;
             let compute_planned = |plan: &CandidatePlan, parallel| {
                 compute_planned_candidates(
                     caps.len(),
@@ -635,18 +661,18 @@ pub(crate) fn cover_caps(
             let preparation_work = candidate_preparation_work(caps.len(), candidates.len(), 0);
             if threads != Some(1) && preparation_work >= CANDIDATE_PARALLEL_MIN_VISITS {
                 return run_with_parallelism(caps.len(), true, threads, |parallel| {
-                    let plan = plan_for(parallel);
+                    let plan = plan_for(parallel)?;
                     compute_planned(&plan, parallel)
-                })?;
+                });
             }
 
-            let plan = plan_for(false);
+            let plan = plan_for(false)?;
             return run_with_parallelism(
                 caps.len(),
                 plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS,
                 threads,
                 |parallel| compute_planned(&plan, parallel),
-            )?;
+            );
         }
         let compute_planned = |plan: &CandidatePlan, parallel| {
             compute_planned_candidates(
@@ -665,18 +691,18 @@ pub(crate) fn cover_caps(
         let preparation_work = candidate_preparation_work(caps.len(), candidates.len(), 0);
         if threads != Some(1) && preparation_work >= CANDIDATE_PARALLEL_MIN_VISITS {
             return run_with_parallelism(caps.len(), true, threads, |parallel| {
-                let plan = plan_for(parallel);
+                let plan = plan_for(parallel)?;
                 compute_planned(&plan, parallel)
-            })?;
+            });
         }
 
-        let plan = plan_for(false);
+        let plan = plan_for(false)?;
         return run_with_parallelism(
             caps.len(),
             plan.total_visits >= CANDIDATE_PARALLEL_MIN_VISITS,
             threads,
             |parallel| compute_planned(&plan, parallel),
-        )?;
+        );
     }
 
     let parallel_work = caps.iter().fold(
@@ -693,11 +719,11 @@ pub(crate) fn cover_caps(
 
 pub(super) fn zeroed_cap_deltas(cell_count: usize) -> NativeResult<Vec<i64>> {
     let length = cell_count.checked_add(1).ok_or_else(|| {
-        NativeError::out_of_memory("Dense cap-overlap result is too large to fit in memory.")
+        NativeError::out_of_memory("Dense cap-count result is too large to fit in memory.")
     })?;
     let mut deltas = Vec::new();
     deltas.try_reserve_exact(length).map_err(|_| {
-        NativeError::out_of_memory("Dense cap-overlap result is too large to fit in memory.")
+        NativeError::out_of_memory("Dense cap-count result is too large to fit in memory.")
     })?;
     deltas.resize(length, 0_i64);
     Ok(deltas)
@@ -751,7 +777,7 @@ pub(crate) fn count_caps_per_cell(
     let mut caps = prepare_caps(centers, radii)?;
     let raw_cells_total = raw_cell_count(resolution);
     let cell_count = usize::try_from(raw_cells_total).map_err(|_| {
-        NativeError::out_of_memory("Dense cap-overlap result is too large to fit in memory.")
+        NativeError::out_of_memory("Dense cap-count result is too large to fit in memory.")
     })?;
     if caps.len() > i64::MAX as usize {
         return Err("Too many caps to represent overlap counts as int64."
@@ -800,10 +826,10 @@ pub(crate) fn count_caps_per_cell(
         let all_direct = tested_caps.iter().all(|cap| cap[3] >= 0.0);
         let mut counts = Vec::new();
         counts.try_reserve_exact(cells.len()).map_err(|_| {
-            NativeError::out_of_memory("Selected cap-overlap result is too large to fit in memory.")
+            NativeError::out_of_memory("Selected cap-count result is too large to fit in memory.")
         })?;
         counts.resize(cells.len(), 0_i64);
-        return run_with_parallelism(
+        return Ok(Some(run_with_parallelism(
             cells.len(),
             work >= CANDIDATE_PARALLEL_MIN_VISITS,
             threads,
@@ -836,9 +862,7 @@ pub(crate) fn count_caps_per_cell(
                 }
                 counts
             },
-        )
-        .map(Some)
-        .map_err(NativeError::from);
+        )));
     }
     if caps.is_empty() {
         let mut counts = zeroed_cap_deltas(cell_count)?;
@@ -861,7 +885,7 @@ pub(crate) fn count_caps_per_cell(
             1
         };
         count_caps_chunked(&caps, resolution, cell_count, worker_count).map(Some)
-    })?
+    })
 }
 
 /// Count only the bounded RING span containing a selection, without cell hits.
@@ -1043,15 +1067,18 @@ pub(crate) fn cover_sweep(
     debug_assert_eq!(left.len(), right.len());
     let sample_count = left.len() / 3;
     let candidates = candidate_cells(raw_candidates, resolution)?;
-    let normalize_samples = |values: &[f64], name: &str| {
-        values
-            .chunks_exact(3)
-            .enumerate()
-            .map(|(index, value)| {
+    let normalize_samples = |values: &[f64], name: &str| -> NativeResult<Vec<Vec3>> {
+        let mut samples = Vec::new();
+        samples
+            .try_reserve_exact(values.len() / 3)
+            .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
+        for (index, value) in values.chunks_exact(3).enumerate() {
+            samples.push(
                 normalize([value[0], value[1], value[2]])
-                    .map_err(|error| format!("{name}[{index}] {error}"))
-            })
-            .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| format!("{name}[{index}] {error}"))?,
+            );
+        }
+        Ok(samples)
     };
     let normalized_left = normalize_samples(left, "left_edge_xyz")?;
     let normalized_right = normalize_samples(right, "right_edge_xyz")?;

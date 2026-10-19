@@ -171,6 +171,38 @@ pub(crate) fn validate_polygon(
     Ok(())
 }
 
+/// Whether a turn bends the wrong way by more than the containment tolerance.
+/// The convex validator's triple-product guard is absolute and shrinks with
+/// edge length, so on a footprint below about 1e-6 radians, or next to a
+/// near-duplicate vertex, a real reflex turn can pass it. A unit edge normal
+/// measures the dent as an angle, which does not shrink with the edges. Only
+/// the vertex after each edge needs testing: the validator has already
+/// rejected anything that is not convex to within its own guard, and what it
+/// misses is this local dent.
+pub(crate) fn has_reflex_vertex(vertices: &[Vec3], edge_normals: &[Vec3]) -> bool {
+    edge_normals
+        .iter()
+        .zip(vertices.iter().cycle().skip(2))
+        .any(|(&normal, &vertex)| dot(normal, vertex) < -CONTAINMENT_EPSILON)
+}
+
+/// Whether the convex test would reach far past a vertex. It accepts points
+/// within `CONTAINMENT_EPSILON` of every edge plane, which past a vertex of
+/// interior angle `a` reaches about `CONTAINMENT_EPSILON / sin(a)` beyond the
+/// tip. Below this sine that exceeds 1e-10 radians; the general path checks
+/// the edge span instead and has no such reach.
+const SHARP_VERTEX_SINE: f64 = 1.0e-4;
+
+pub(crate) fn has_sharp_vertex(edge_normals: &[Vec3]) -> bool {
+    edge_normals
+        .iter()
+        .zip(edge_normals.iter().cycle().skip(1))
+        .any(|(&previous, &next)| {
+            let sine = cross(previous, next);
+            dot(previous, next) < 0.0 && dot(sine, sine) < SHARP_VERTEX_SINE * SHARP_VERTEX_SINE
+        })
+}
+
 pub(crate) fn prepare_polygon(raw_vertices: &[[f64; 3]]) -> Result<Polygon, String> {
     if raw_vertices.len() < 3 {
         return Err("Each polygon needs at least three vertices.".to_owned());

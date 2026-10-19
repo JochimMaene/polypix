@@ -305,7 +305,7 @@ class RingGeometryTests(unittest.TestCase):
         for resolution, expected, vectors in fixtures:
             with self.subTest(resolution=resolution):
                 np.testing.assert_array_equal(
-                    px.cell_at(vectors * 7.5, resolution),
+                    px.cell_at(vectors * 7.5, resolution=resolution),
                     expected,
                 )
 
@@ -343,13 +343,13 @@ class RingGeometryTests(unittest.TestCase):
         for resolution, (cells, centers, corners) in HEALPY_EXACT_FIXTURES.items():
             with self.subTest(resolution=resolution):
                 np.testing.assert_allclose(
-                    px.cell_centers(cells, resolution),
+                    px.cell_centers(cells, resolution=resolution),
                     centers,
                     rtol=0.0,
                     atol=4e-15,
                 )
                 np.testing.assert_allclose(
-                    px.cell_corners(cells, resolution),
+                    px.cell_corners(cells, resolution=resolution),
                     corners,
                     rtol=0.0,
                     atol=4e-15,
@@ -367,13 +367,13 @@ class RingGeometryTests(unittest.TestCase):
             )
 
             np.testing.assert_allclose(
-                _geometry_signature(px.cell_centers(cells, resolution)),
+                _geometry_signature(px.cell_centers(cells, resolution=resolution)),
                 center_signature,
                 rtol=0.0,
                 atol=1e-15,
             )
             np.testing.assert_allclose(
-                _geometry_signature(px.cell_corners(cells, resolution)),
+                _geometry_signature(px.cell_corners(cells, resolution=resolution)),
                 corner_signature,
                 rtol=0.0,
                 atol=1e-15,
@@ -383,8 +383,8 @@ class RingGeometryTests(unittest.TestCase):
         for resolution in range(7):
             cell_count = 12 * 4**resolution
             cells = np.arange(cell_count, dtype=np.uint64)
-            centers = px.cell_centers(cells, resolution)
-            corners = px.cell_corners(cells, resolution)
+            centers = px.cell_centers(cells, resolution=resolution)
+            corners = px.cell_corners(cells, resolution=resolution)
 
             np.testing.assert_allclose(
                 np.linalg.norm(corners, axis=2),

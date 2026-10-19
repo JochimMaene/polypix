@@ -5,6 +5,8 @@ use numpy::{
 };
 use pyo3::exceptions::{PyMemoryError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::PyList;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 mod error;
 mod geometry;
@@ -12,8 +14,33 @@ mod reduce;
 mod revisit;
 mod ring;
 
-use error::NativeError;
+use error::{NativeError, COVERAGE_OUT_OF_MEMORY};
 use ring::MAX_RESOLUTION;
+
+/// Set in a child process after `fork()`. Process-global state another
+/// thread was building at the fork, such as the ring cache, cannot finish in
+/// the child, so the child only reads what was complete.
+static FORKED: AtomicBool = AtomicBool::new(false);
+/// Set in a forked child whose parent had touched a worker pool. Rayon's
+/// threads do not survive a fork, so that child runs every call serially;
+/// a child forked before any pool existed builds its own as usual.
+static POOLS_UNUSABLE: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn forked() -> bool {
+    FORKED.load(Ordering::Relaxed)
+}
+
+pub(crate) fn pools_unusable() -> bool {
+    POOLS_UNUSABLE.load(Ordering::Relaxed)
+}
+
+#[pyfunction]
+fn _after_fork_in_child() {
+    FORKED.store(true, Ordering::Relaxed);
+    if ring::pools_touched() {
+        POOLS_UNUSABLE.store(true, Ordering::Relaxed);
+    }
+}
 
 type PyCoverage<'py> = (
     Bound<'py, numpy::PyArray1<u64>>,
@@ -58,11 +85,16 @@ fn slice<'a, T: Element, D: Dimension>(
     array: &'a PyReadonlyArray<'_, T, D>,
     name: &str,
 ) -> PyResult<&'a [T]> {
-    array.as_slice().map_err(|_| {
+    let error = || {
         PyValueError::new_err(format!(
             "{name} must be C-contiguous and correctly aligned."
         ))
-    })
+    };
+    // `as_slice` also accepts Fortran order, which the kernels would misread.
+    if !array.is_c_contiguous() {
+        return Err(error());
+    }
+    array.as_slice().map_err(|_| error())
 }
 
 /// Borrow an optional array as a slice.
@@ -73,12 +105,38 @@ fn optional_slice<'a, T: Element>(
     array.map(|values| slice(values, name)).transpose()
 }
 
+const SOURCES_OUT_OF_MEMORY: &str = "Revisit sources are too large to fit in memory.";
+
+/// Read a per-source list of arrays by hand into a fallibly reserved
+/// buffer: extracting `Vec<_>` would abort the process if it ran out of
+/// memory, while this raises `MemoryError`.
+fn source_arrays<'py>(list: &Bound<'py, PyList>) -> PyResult<Vec<PyReadonlyArray1<'py, u64>>> {
+    let mut arrays = Vec::new();
+    arrays
+        .try_reserve_exact(list.len())
+        .map_err(|_| PyMemoryError::new_err(SOURCES_OUT_OF_MEMORY))?;
+    for item in list.iter() {
+        arrays
+            .try_reserve(1)
+            .map_err(|_| PyMemoryError::new_err(SOURCES_OUT_OF_MEMORY))?;
+        arrays.push(item.extract()?);
+    }
+    Ok(arrays)
+}
+
 /// Borrow each array in a per-source list as a slice.
 fn slices<'a, T: Element>(
     arrays: &'a [PyReadonlyArray1<'_, T>],
     name: &str,
 ) -> PyResult<Vec<&'a [T]>> {
-    arrays.iter().map(|array| slice(array, name)).collect()
+    let mut slices = Vec::new();
+    slices
+        .try_reserve_exact(arrays.len())
+        .map_err(|_| PyMemoryError::new_err(SOURCES_OUT_OF_MEMORY))?;
+    for array in arrays {
+        slices.push(slice(array, name)?);
+    }
+    Ok(slices)
 }
 
 #[pyfunction(signature = (vertices_xyz, offsets, resolution, candidate_cells=None, restrict_output=true, threads=None, overlap=false))]
@@ -161,7 +219,7 @@ fn _prepare_polygon(
 #[pyfunction(signature = (regions, resolution, candidate_cells=None, restrict_output=true, threads=None, overlap=false))]
 fn _cover_prepared_regions<'py>(
     py: Python<'py>,
-    regions: Vec<Vec<Py<PyPreparedPolygon>>>,
+    regions: &Bound<'py, PyList>,
     resolution: u8,
     candidate_cells: Option<PyReadonlyArray1<'py, u64>>,
     restrict_output: bool,
@@ -170,15 +228,38 @@ fn _cover_prepared_regions<'py>(
 ) -> PyResult<PyCoverage<'py>> {
     validate_resolution(resolution)?;
     let candidates = optional_slice(candidate_cells.as_ref(), "candidate_cells")?;
-    let prepared = regions
-        .iter()
-        .map(|region| {
-            region
-                .iter()
-                .map(|polygon| &polygon.get().polygon)
-                .collect::<Vec<_>>()
-        })
-        .collect::<Vec<_>>();
+    // Read the nested lists by hand into flat, fallibly reserved buffers:
+    // extracting `Vec<Vec<_>>` would allocate one vector per region and abort
+    // the process if any of those allocations failed.
+    let out_of_memory = |_| PyMemoryError::new_err(COVERAGE_OUT_OF_MEMORY);
+    let mut lengths = Vec::new();
+    lengths
+        .try_reserve_exact(regions.len())
+        .map_err(out_of_memory)?;
+    let mut polygons: Vec<Py<PyPreparedPolygon>> = Vec::new();
+    for region in regions.iter() {
+        let region = region.cast::<PyList>()?;
+        let first = polygons.len();
+        for polygon in region.iter() {
+            polygons.try_reserve(1).map_err(out_of_memory)?;
+            polygons.push(polygon.extract()?);
+        }
+        lengths.push(polygons.len() - first);
+    }
+    let mut flat = Vec::new();
+    flat.try_reserve_exact(polygons.len())
+        .map_err(out_of_memory)?;
+    flat.extend(polygons.iter().map(|polygon| &polygon.get().polygon));
+    let mut prepared = Vec::new();
+    prepared
+        .try_reserve_exact(lengths.len())
+        .map_err(out_of_memory)?;
+    let mut remaining = flat.as_slice();
+    for length in lengths {
+        let (region, rest) = remaining.split_at(length);
+        prepared.push(region);
+        remaining = rest;
+    }
     let coverage = py
         .detach(|| {
             ring::cover_prepared_regions(
@@ -299,12 +380,14 @@ fn _sum_coverage_per_cell<'py>(
 #[pyfunction(signature = (cell_arrays, offset_arrays, resolution, minimum_sources))]
 fn _revisit_stats<'py>(
     py: Python<'py>,
-    cell_arrays: Vec<PyReadonlyArray1<'py, u64>>,
-    offset_arrays: Vec<PyReadonlyArray1<'py, u64>>,
+    cell_arrays: &Bound<'py, PyList>,
+    offset_arrays: &Bound<'py, PyList>,
     resolution: u8,
     minimum_sources: usize,
 ) -> PyResult<PyRevisitStats<'py>> {
     validate_resolution(resolution)?;
+    let cell_arrays = source_arrays(cell_arrays)?;
+    let offset_arrays = source_arrays(offset_arrays)?;
     let cells = slices(&cell_arrays, "Coverage cells")?;
     let offsets = slices(&offset_arrays, "Coverage offsets")?;
     let stats = py
@@ -392,7 +475,7 @@ fn _validate_coverage(
     let cells = slice(&cells, "cells")?;
     let offsets = slice(&offsets, "offsets")?;
     py.detach(|| ring::validate_coverage_arrays(cells, offsets, resolution))
-        .map_err(PyValueError::new_err)
+        .map_err(native_error)
 }
 
 #[pyfunction]
@@ -468,5 +551,6 @@ fn _core(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(_center, module)?)?;
     module.add_function(wrap_pyfunction!(_corner_many, module)?)?;
     module.add_function(wrap_pyfunction!(_neighbors, module)?)?;
+    module.add_function(wrap_pyfunction!(_after_fork_in_child, module)?)?;
     Ok(())
 }

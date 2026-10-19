@@ -8,11 +8,12 @@ use std::f64::consts::TAU;
 use std::ops::Range;
 use std::sync::OnceLock;
 
-use crate::error::NativeResult;
+use crate::error::{NativeError, NativeResult};
 use crate::geometry::{
-    contains_center, cross, dot, general_polygon_contains, nearly_equal, norm, normalize,
-    polygon_contains, prepare_general_polygon, prepare_polygon, ring_contains, stable_cross,
-    validate_polygon, GeneralPolygon, Polygon, Vec3, CONTAINMENT_EPSILON,
+    contains_center, cross, dot, general_polygon_contains, has_reflex_vertex, has_sharp_vertex,
+    nearly_equal, norm, normalize, polygon_contains, prepare_general_polygon, prepare_polygon,
+    ring_contains, stable_cross, validate_polygon, GeneralPolygon, Polygon, Vec3,
+    CONTAINMENT_EPSILON,
 };
 
 use super::cover::push_coverage_cell;
@@ -28,6 +29,13 @@ pub(super) const MAX_CACHED_SCAN_RING_RESOLUTION: u8 = 12;
 pub(super) const INDEX_UNCERTAINTY_ULPS: f64 = 128.0;
 
 pub(super) const LONGITUDE_BOUNDS_EPSILON: f64 = 1.0e-14;
+/// How far past a footprint a containment test can accept a point, which
+/// scan bounds must reach so full scans and candidate tests agree on ties.
+/// Edge planes accept points within `CONTAINMENT_EPSILON`, which past a corner
+/// of interior angle `a` reaches CONTAINMENT_EPSILON / sin(a / 2). Corners
+/// sharper than about 1e-4 radians take the exact path, which caps that at
+/// 2e4 times the tolerance, about a tenth of a cell at resolution 29.
+pub(super) const SCAN_TOLERANCE: f64 = 2.0e4 * CONTAINMENT_EPSILON;
 
 pub(super) struct ScanRing {
     pub(super) ring: Ring,
@@ -187,21 +195,25 @@ pub(super) fn quad_contains(quad: &Quad, x: f64, y: f64, z: f64) -> bool {
 }
 
 pub(super) fn cached_scan_rings(resolution: u8) -> Option<&'static [ScanRing]> {
-    if resolution > MAX_CACHED_SCAN_RING_RESOLUTION {
+    const TABLE_COUNT: usize = MAX_CACHED_SCAN_RING_RESOLUTION as usize + 1;
+    static TABLES: [OnceLock<Vec<ScanRing>>; TABLE_COUNT] =
+        [const { OnceLock::new() }; TABLE_COUNT];
+    let table = TABLES.get(resolution as usize)?;
+    if let Some(rings) = table.get() {
+        return Some(rings);
+    }
+    // Another thread may have been building this table at fork(), and that
+    // build cannot finish in the child, so a child only reads finished ones.
+    if crate::forked() {
         return None;
     }
-    static TABLES: OnceLock<Vec<OnceLock<Vec<ScanRing>>>> = OnceLock::new();
-    let tables = TABLES.get_or_init(|| {
-        (0..=MAX_CACHED_SCAN_RING_RESOLUTION)
-            .map(|_| OnceLock::new())
-            .collect()
-    });
-    Some(tables[resolution as usize].get_or_init(|| {
-        let nside = 1_u64 << resolution;
-        (1..4 * nside)
-            .map(|ring_index| ScanRing::new(ring_info(nside, ring_index)))
-            .collect()
-    }))
+    // Callers fall back to computing rings on the fly, so a table that does
+    // not fit in memory costs speed rather than aborting the process.
+    let nside = 1_u64 << resolution;
+    let mut rings = Vec::new();
+    rings.try_reserve_exact((4 * nside - 1) as usize).ok()?;
+    rings.extend((1..4 * nside).map(|ring_index| ScanRing::new(ring_info(nside, ring_index))));
+    Some(table.get_or_init(|| rings))
 }
 
 pub(super) fn polygon_z_bounds(vertices: &[Vec3], edge_normals: &[Vec3]) -> (f64, f64) {
@@ -342,11 +354,14 @@ impl Cap {
     }
 
     #[inline(always)]
-    pub(super) fn contains_on_ring(&self, ring: &Ring, step: f64, offset: u64) -> bool {
+    pub(super) fn contains_on_ring(&self, ring: &Ring, offset: u64) -> bool {
         if self.full_sphere {
             return true;
         }
-        let longitude = (offset as f64 + ring.shift) * step;
+        // Match `grid::center` operation for operation: a candidate test
+        // places the cell there, and a boundary tie must not depend on
+        // which path asked; a precomputed TAU / cells step rounds differently.
+        let longitude = (offset as f64 + ring.shift) * TAU / ring.cells as f64;
         let (sine, cosine) = longitude.sin_cos();
         self.contains([ring.radial * cosine, ring.radial * sine, ring.z])
     }
@@ -358,9 +373,10 @@ impl Cap {
         let half_width = (self.sine_radius / self.radial).clamp(0.0, 1.0).asin();
         let start = self.longitude - half_width;
         let end = self.longitude + half_width;
+        // An inclusive end exactly at 2pi is longitude zero, so it wraps too.
         if start < 0.0 {
             ([(0.0, end), (start + TAU, TAU)], 2)
-        } else if end > TAU {
+        } else if end >= TAU {
             ([(0.0, end - TAU), (start, TAU)], 2)
         } else {
             ([(start, end), (0.0, 0.0)], 1)
@@ -401,12 +417,9 @@ impl Cap {
 /// once here instead of once per visited cell. Center mode never locates an
 /// axis and so never builds this.
 ///
-/// The edge tests keep the direct chord radius, which saturates at a diameter
-/// for a radius within roughly 2.1e-8 radians of pi. That errs towards
-/// overlapping, so overlap coverage stays a superset of center coverage, but
-/// from resolution 26 a cell fits inside the sliver the cap should exclude
-/// and is then reported next to the antipode. `docs/api.md` states this
-/// limit; the centre predicate above does not share it.
+/// A cap larger than a hemisphere is tested through its excluded hole around
+/// the antipode, as the centre predicate already does, so its edge tests keep
+/// full precision however close the radius comes to pi.
 pub(super) struct CapOverlap<'cap> {
     cap: &'cap Cap,
     resolution: u8,
@@ -420,7 +433,11 @@ impl<'cap> CapOverlap<'cap> {
             cap,
             resolution,
             axis_cell: normalized_cell_at(cap.axis, resolution),
-            chord_radius: cap.squared_chord_radius.sqrt(),
+            chord_radius: if cap.complement {
+                cap.complement_squared_chord.sqrt()
+            } else {
+                cap.squared_chord_radius.sqrt()
+            },
         }
     }
 
@@ -434,69 +451,94 @@ impl<'cap> CapOverlap<'cap> {
         if self.axis_cell == cell {
             return true;
         }
-        // The whole cell lies within this chord distance of its center.
-        // A more distant cap cannot meet any of its curved boundary edges.
-        let reach = self.chord_radius
-            + CELL_EDGE_DOT_LIPSCHITZ / (1_u64 << self.resolution) as f64
-            + CELL_EDGE_CHORD_GUARD;
-        if squared_chord_distance(cap.axis, point) > reach * reach {
+        // The whole cell lies within this chord distance of its center, so
+        // a cap farther away, or a hole that swallows that whole reach,
+        // cannot meet any of its curved boundary edges.
+        let disk = self.disk();
+        let cell_reach =
+            CELL_EDGE_DOT_LIPSCHITZ / (1_u64 << self.resolution) as f64 + CELL_EDGE_CHORD_GUARD;
+        let squared_chord = squared_chord_distance(disk.axis, point);
+        let unreachable = if disk.complement {
+            let inner = disk.chord_radius - cell_reach;
+            inner > 0.0 && squared_chord < inner * inner
+        } else {
+            let outer = disk.chord_radius + cell_reach;
+            squared_chord > outer * outer
+        };
+        if unreachable {
             return false;
         }
         let boundary = CellBoundary::new(cell, self.resolution);
-        let disk = CapDisk {
-            axis: cap.axis,
-            chord_radius: self.chord_radius,
-        };
         (0..4).any(|edge| cell_edge_within_cap(&boundary, edge, disk))
+    }
+
+    fn disk(&self) -> CapDisk {
+        let axis = self.cap.axis;
+        CapDisk {
+            axis: if self.cap.complement {
+                [-axis[0], -axis[1], -axis[2]]
+            } else {
+                axis
+            },
+            chord_radius: self.chord_radius,
+            complement: self.cap.complement,
+        }
     }
 }
 
-pub(super) fn prepare_caps(centers: &[f64], radii: &[f64]) -> Result<Vec<Cap>, String> {
+pub(super) fn prepare_caps(centers: &[f64], radii: &[f64]) -> NativeResult<Vec<Cap>> {
     debug_assert!(centers.len().is_multiple_of(3));
     debug_assert_eq!(centers.len() / 3, radii.len());
-    centers
-        .chunks_exact(3)
-        .zip(radii)
-        .enumerate()
-        .map(|(index, (values, &radius))| {
-            let axis = normalize([values[0], values[1], values[2]])
-                .map_err(|error| format!("centers_xyz[{index}] {error}"))?;
-            if !radius.is_finite() || !(0.0..=std::f64::consts::PI).contains(&radius) {
-                return Err(format!(
-                    "radii_rad[{index}] must be finite and between 0 and pi."
-                ));
-            }
-            let effective_radius = (radius + CONTAINMENT_EPSILON).min(std::f64::consts::PI);
-            let (sine_radius, cosine_radius) = effective_radius.sin_cos();
-            let (half_chord, half_complement_chord) = (0.5 * effective_radius).sin_cos();
-            let radial = axis[0].hypot(axis[1]);
-            // A cap reaches a pole exactly when the axis-to-pole dot product
-            // satisfies the same cosine predicate as any other point.
-            let maximum_z = if axis[2] >= cosine_radius {
-                1.0
-            } else {
-                axis[2] * cosine_radius + radial * sine_radius
-            };
-            let minimum_z = if -axis[2] >= cosine_radius {
-                -1.0
-            } else {
-                axis[2] * cosine_radius - radial * sine_radius
-            };
-            Ok(Cap {
-                axis,
-                sine_radius,
-                cosine_radius,
-                squared_chord_radius: 4.0 * half_chord * half_chord,
-                complement_squared_chord: 4.0 * half_complement_chord * half_complement_chord,
-                complement: effective_radius > std::f64::consts::FRAC_PI_2,
-                full_sphere: effective_radius == std::f64::consts::PI,
-                minimum_z: minimum_z.clamp(-1.0, 1.0),
-                maximum_z: maximum_z.clamp(-1.0, 1.0),
-                longitude: axis[1].atan2(axis[0]).rem_euclid(TAU),
-                radial,
-            })
-        })
-        .collect()
+    let mut caps = Vec::new();
+    caps.try_reserve_exact(radii.len())
+        .map_err(|_| NativeError::out_of_memory("Cap batch is too large to fit in memory."))?;
+    let prepared =
+        centers
+            .chunks_exact(3)
+            .zip(radii)
+            .enumerate()
+            .map(|(index, (values, &radius))| {
+                let axis = normalize([values[0], values[1], values[2]])
+                    .map_err(|error| format!("centers_xyz[{index}] {error}"))?;
+                if !radius.is_finite() || !(0.0..=std::f64::consts::PI).contains(&radius) {
+                    return Err(format!(
+                        "radii_rad[{index}] must be finite and between 0 and pi."
+                    ));
+                }
+                let effective_radius = (radius + CONTAINMENT_EPSILON).min(std::f64::consts::PI);
+                let (sine_radius, cosine_radius) = effective_radius.sin_cos();
+                let (half_chord, half_complement_chord) = (0.5 * effective_radius).sin_cos();
+                let radial = axis[0].hypot(axis[1]);
+                // A cap reaches a pole exactly when the axis-to-pole dot product
+                // satisfies the same cosine predicate as any other point.
+                let maximum_z = if axis[2] >= cosine_radius {
+                    1.0
+                } else {
+                    axis[2] * cosine_radius + radial * sine_radius
+                };
+                let minimum_z = if -axis[2] >= cosine_radius {
+                    -1.0
+                } else {
+                    axis[2] * cosine_radius - radial * sine_radius
+                };
+                Ok(Cap {
+                    axis,
+                    sine_radius,
+                    cosine_radius,
+                    squared_chord_radius: 4.0 * half_chord * half_chord,
+                    complement_squared_chord: 4.0 * half_complement_chord * half_complement_chord,
+                    complement: effective_radius > std::f64::consts::FRAC_PI_2,
+                    full_sphere: effective_radius == std::f64::consts::PI,
+                    minimum_z: minimum_z.clamp(-1.0, 1.0),
+                    maximum_z: maximum_z.clamp(-1.0, 1.0),
+                    longitude: axis[1].atan2(axis[0]).rem_euclid(TAU),
+                    radial,
+                })
+            });
+    for cap in prepared {
+        caps.push(cap?);
+    }
+    Ok(caps)
 }
 
 /// Inclusive integer endpoints, widened only at a floating-point tie. Ring
@@ -538,10 +580,10 @@ pub(super) fn cap_interval_range(
     // numerically indistinguishable from an integer ring index; ordinary spans
     // avoid two libm calls per crossed ring.
     if ambiguous {
-        while first <= last && !cap.contains_on_ring(ring, step, first as u64) {
+        while first <= last && !cap.contains_on_ring(ring, first as u64) {
             first += 1;
         }
-        while last >= first && !cap.contains_on_ring(ring, step, last as u64) {
+        while last >= first && !cap.contains_on_ring(ring, last as u64) {
             last -= 1;
         }
     }
@@ -560,6 +602,24 @@ pub(super) fn visit_cap_ranges(cap: &Cap, resolution: u8, mut visit: impl FnMut(
     }
     let (first_ring, last_ring) = ring_range(nside, cap.minimum_z, cap.maximum_z);
     visit_cap_ranges_in_rings(cap, resolution, first_ring, last_ring, visit);
+}
+
+/// Visit the runs of a ring's cells whose centers the cap contains.
+fn visit_ring_cells_in_cap(cap: &Cap, ring: &Ring, visit: &mut impl FnMut(Range<u64>)) {
+    let mut run_start = None;
+    for offset in 0..ring.cells {
+        match (cap.contains_on_ring(ring, offset), run_start) {
+            (true, None) => run_start = Some(offset),
+            (false, Some(start)) => {
+                visit(ring.start + start..ring.start + offset);
+                run_start = None;
+            }
+            _ => {}
+        }
+    }
+    if let Some(start) = run_start {
+        visit(ring.start + start..ring.start + ring.cells);
+    }
 }
 
 pub(super) fn visit_cap_ranges_in_rings(
@@ -607,20 +667,28 @@ pub(super) fn visit_cap_ranges_in_rings(
             let available = cap.squared_chord_radius - minimum_squared_distance;
             (available, longitude_amplitude - available)
         };
-        if longitude_amplitude == 0.0 {
-            if available >= 0.0 {
+        let numerical_guard = 64.0
+            * f64::EPSILON
+            * (1.0 + cap.squared_chord_radius + minimum_squared_distance + longitude_amplitude);
+        // A whole ring is in or out at once when the cap axis is a pole, or
+        // when the ring lies entirely inside. Within the guard of either
+        // boundary, test each cell as a candidate query would, so restricting
+        // a query cannot change a tie.
+        let whole_ring = if longitude_amplitude == 0.0 {
+            Some(available)
+        } else if deficit <= 0.0 {
+            Some(-deficit)
+        } else {
+            None
+        };
+        if let Some(margin) = whole_ring {
+            if margin.abs() <= numerical_guard {
+                visit_ring_cells_in_cap(cap, ring, &mut visit);
+            } else if margin > 0.0 {
                 visit(ring.start..ring.start + ring.cells);
             }
             continue;
         }
-
-        if deficit <= 0.0 {
-            visit(ring.start..ring.start + ring.cells);
-            continue;
-        }
-        let numerical_guard = 64.0
-            * f64::EPSILON
-            * (1.0 + cap.squared_chord_radius + minimum_squared_distance + longitude_amplitude);
         if available < -numerical_guard {
             continue;
         }
@@ -636,14 +704,15 @@ pub(super) fn visit_cap_ranges_in_rings(
         };
         let start = cap.longitude - half_width;
         let end = cap.longitude + half_width;
+        // An inclusive end exactly at 2pi is longitude zero, so it wraps too.
         let intervals = if start < 0.0 {
             [(0.0, end), (start + TAU, TAU)]
-        } else if end > TAU {
+        } else if end >= TAU {
             [(0.0, end - TAU), (start, TAU)]
         } else {
             [(start, end), (0.0, 0.0)]
         };
-        let interval_count = if start < 0.0 || end > TAU { 2 } else { 1 };
+        let interval_count = if start < 0.0 || end >= TAU { 2 } else { 1 };
         let step = scan_ring.step;
         let mut next_unscanned = 0;
         for &(interval_start, interval_end) in intervals.iter().take(interval_count) {
@@ -722,8 +791,8 @@ fn ring_offset_contains(
     offset: u64,
     contains: impl Fn(f64, f64, f64) -> bool,
 ) -> bool {
-    let step = TAU / ring.cells as f64;
-    let longitude = (offset as f64 + ring.shift) * step;
+    // Same operations as `grid::center`, so a candidate test agrees on ties.
+    let longitude = (offset as f64 + ring.shift) * TAU / ring.cells as f64;
     let (sine, cosine) = longitude.sin_cos();
     contains(ring.radial * cosine, ring.radial * sine, ring.z)
 }
@@ -956,7 +1025,7 @@ fn split_wrapped_interval(start: f64, end: f64, pieces: &mut [(f64, f64); 2]) ->
     1
 }
 
-fn cover_cells_in_bounds<const PAD_LONGITUDE: bool>(
+fn cover_cells_in_bounds<const WHOLE_CELL_MARGIN: bool>(
     minimum_z: f64,
     maximum_z: f64,
     longitude_intervals: [(f64, f64); 2],
@@ -981,7 +1050,6 @@ fn cover_cells_in_bounds<const PAD_LONGITUDE: bool>(
         let step = scan_ring.step;
         let step_sine = scan_ring.step_sine;
         let step_cosine = scan_ring.step_cosine;
-        let mut next_unscanned = 0;
 
         let mut scan_offsets = |first: u64, last: u64| -> NativeResult<()> {
             let first_longitude = (first as f64 + ring.shift) * step;
@@ -1008,62 +1076,55 @@ fn cover_cells_in_bounds<const PAD_LONGITUDE: bool>(
             Ok(())
         };
 
-        if PAD_LONGITUDE {
-            let mut ranges = [(0_u64, 0_u64); 4];
-            let mut range_count = 0;
-            let mut push_range = |range| {
-                ranges[range_count] = range;
-                range_count += 1;
-            };
-            for &(start, end) in longitude_intervals.iter().take(interval_count) {
-                let first = (start / step - ring.shift).ceil() as i64 - 1;
-                let last = (end / step - ring.shift).floor() as i64 + 1;
-                let count = ring.cells as i64;
-                if first < 0 {
-                    push_range((0, last.min(count - 1).max(0) as u64));
-                    push_range(((first + count).max(0) as u64, ring.cells - 1));
-                } else if last >= count {
-                    push_range((first.min(count - 1) as u64, ring.cells - 1));
-                    push_range((0, (last - count).min(count - 1) as u64));
-                } else if first <= last {
-                    push_range((first as u64, last as u64));
-                }
-            }
-            ranges[..range_count].sort_unstable();
-            let mut merged_count = 0;
-            for index in 0..range_count {
-                let (first, last) = ranges[index];
-                if merged_count > 0 {
-                    let merged_last = &mut ranges[merged_count - 1].1;
-                    if first <= merged_last.saturating_add(1) {
-                        *merged_last = (*merged_last).max(last);
-                        continue;
-                    }
-                }
-                ranges[merged_count] = (first, last);
-                merged_count += 1;
-            }
-            for &(first, last) in &ranges[..merged_count] {
-                scan_offsets(first, last)?;
-            }
-            continue;
-        }
-
+        // Widen each bound by what the containment tolerance spans in
+        // longitude on this ring, which grows towards the poles, plus the
+        // index rounding allowance. An accepted tie then cannot depend on
+        // whether a full scan or a candidate test reached it. Overlap scans
+        // also reach one whole cell further, since any part of a cell counts.
+        let reach = SCAN_TOLERANCE / ring.radial;
+        let margin = i64::from(WHOLE_CELL_MARGIN);
+        let mut ranges = [(0_u64, 0_u64); 4];
+        let mut range_count = 0;
+        let mut push_range = |range| {
+            ranges[range_count] = range;
+            range_count += 1;
+        };
         for &(start, end) in longitude_intervals.iter().take(interval_count) {
-            let first_value = start / step - ring.shift;
-            let last_value = end / step - ring.shift;
-            // Conversion to ring-index units magnifies angular rounding with
-            // ring size. Check one neighboring cell only when a bound is
-            // indistinguishable from an integer at that scale.
-            let (first, last, _) = interval_offsets(first_value, last_value, ring.cells);
-            let first = first.max(0).max(next_unscanned) as u64;
-            let last = last.min((ring.cells - 1) as i64);
-            if last < first as i64 {
-                continue;
+            // `interval_offsets` rounds by truncation, avoiding the libm
+            // `ceil`/`floor` calls that dominate small footprints' scans.
+            let (first, last, _) = interval_offsets(
+                (start - reach) / step - ring.shift,
+                (end + reach) / step - ring.shift,
+                ring.cells,
+            );
+            let (first, last) = (first - margin, last + margin);
+            let count = ring.cells as i64;
+            if first < 0 {
+                push_range((0, last.min(count - 1).max(0) as u64));
+                push_range(((first + count).max(0) as u64, ring.cells - 1));
+            } else if last >= count {
+                push_range((first.min(count - 1) as u64, ring.cells - 1));
+                push_range((0, (last - count).min(count - 1) as u64));
+            } else if first <= last {
+                push_range((first as u64, last as u64));
             }
-            next_unscanned = last.saturating_add(1);
-
-            scan_offsets(first, last as u64)?;
+        }
+        ranges[..range_count].sort_unstable();
+        let mut merged_count = 0;
+        for index in 0..range_count {
+            let (first, last) = ranges[index];
+            if merged_count > 0 {
+                let merged_last = &mut ranges[merged_count - 1].1;
+                if first <= merged_last.saturating_add(1) {
+                    *merged_last = (*merged_last).max(last);
+                    continue;
+                }
+            }
+            ranges[merged_count] = (first, last);
+            merged_count += 1;
+        }
+        for &(first, last) in &ranges[..merged_count] {
+            scan_offsets(first, last)?;
         }
     }
     Ok(())
@@ -1196,25 +1257,51 @@ fn minor_arcs_intersect(first: MinorArc, second: MinorArc) -> bool {
 /// The one cap an edge is being tested against, held by chord radius so the
 /// test stays a distance comparison. This mirrors `MinorArc`: both name the
 /// target an edge is measured against, and both are cheap to copy.
+///
+/// Past a hemisphere the chord to the axis flattens out near the antipode, so
+/// no Lipschitz bound can separate points there. Such a cap is held as its
+/// excluded hole around the antipode, where the chord is well conditioned,
+/// and `complement` flips every test.
 #[derive(Clone, Copy)]
 struct CapDisk {
     axis: Vec3,
     chord_radius: f64,
+    complement: bool,
 }
 
 impl CapDisk {
-    fn contains(&self, point: Vec3) -> bool {
+    #[inline(always)]
+    fn chord(&self, point: Vec3) -> f64 {
         norm([
             point[0] - self.axis[0],
             point[1] - self.axis[1],
             point[2] - self.axis[2],
-        ]) <= self.chord_radius + CELL_EDGE_CHORD_GUARD
+        ])
+    }
+
+    #[inline(always)]
+    fn contains(&self, point: Vec3) -> bool {
+        self.contains_chord(self.chord(point))
+    }
+
+    #[inline(always)]
+    fn contains_chord(&self, chord: f64) -> bool {
+        if self.complement {
+            chord >= self.chord_radius - CELL_EDGE_CHORD_GUARD
+        } else {
+            chord <= self.chord_radius + CELL_EDGE_CHORD_GUARD
+        }
     }
 }
 
 fn minor_arc_within_cap(arc: MinorArc, cap: CapDisk) -> bool {
     if cap.contains(arc.start) || cap.contains(arc.end) {
         return true;
+    }
+    // Both endpoints lie in the hole, which is smaller than a hemisphere and
+    // so contains the whole minor arc between them.
+    if cap.complement {
+        return false;
     }
     let normal_component = dot(cap.axis, arc.normal);
     let projected = [
@@ -1353,16 +1440,20 @@ fn cell_edge_cap_interval_intersects(
 ) -> Intersection {
     let middle = 0.5 * (start + end);
     let point = boundary.point(edge, middle);
-    let chord = norm([
-        point[0] - cap.axis[0],
-        point[1] - cap.axis[1],
-        point[2] - cap.axis[2],
-    ]);
-    if chord <= cap.chord_radius + CELL_EDGE_CHORD_GUARD {
+    let chord = cap.chord(point);
+    if cap.contains_chord(chord) {
         return Intersection::Yes;
     }
+    // Chord length is 1-Lipschitz in angular distance, so the interval
+    // stays on the midpoint's side when it cannot move the chord past the
+    // radius. For a complement the interval must stay inside the hole.
     let distance_bound = CELL_EDGE_DOT_LIPSCHITZ / boundary.nside as f64 * 0.5 * (end - start);
-    if chord - distance_bound > cap.chord_radius + CELL_EDGE_CHORD_GUARD {
+    let separated = if cap.complement {
+        chord + distance_bound < cap.chord_radius - CELL_EDGE_CHORD_GUARD
+    } else {
+        chord - distance_bound > cap.chord_radius + CELL_EDGE_CHORD_GUARD
+    };
+    if separated {
         return Intersection::No;
     }
     // Converged with the chord still inside its own bound of the radius: the
@@ -1628,9 +1719,14 @@ impl PreparedFootprint {
     }
 
     pub(super) fn from_raw(raw: &[f64]) -> Result<Self, String> {
+        let convex_quad = |quad: &Quad| {
+            convex_path_is_exact(&quad.vertices[..quad.len], &quad.edge_normals[..quad.len])
+        };
         if raw.len() == 12 {
             if let Ok(quad) = prepare_quad(raw, ["vector"; 4], false) {
-                return Ok(Self::Quad(quad));
+                if convex_quad(&quad) {
+                    return Ok(Self::Quad(quad));
+                }
             }
         }
         if raw.len() == 15 {
@@ -1640,7 +1736,9 @@ impl PreparedFootprint {
                 .map_err(|error| format!("vector {error}"))?;
             if nearly_equal(first, last) {
                 if let Ok(quad) = prepare_quad(&raw[..12], ["vector"; 4], false) {
-                    return Ok(Self::Quad(quad));
+                    if convex_quad(&quad) {
+                        return Ok(Self::Quad(quad));
+                    }
                 }
             }
         }
@@ -1649,8 +1747,10 @@ impl PreparedFootprint {
             .map(|value| [value[0], value[1], value[2]])
             .collect::<Vec<_>>();
         match prepare_polygon(&raw_polygon) {
-            Ok(polygon) => Ok(Self::Polygon(polygon)),
-            Err(_) => prepare_general_polygon(&[raw_polygon]).map(Self::General),
+            Ok(polygon) if convex_path_is_exact(&polygon.vertices, &polygon.edge_normals) => {
+                Ok(Self::Polygon(polygon))
+            }
+            _ => prepare_general_polygon(&[raw_polygon]).map(Self::General),
         }
     }
 
@@ -1717,17 +1817,31 @@ pub(super) fn sweep_quad(left: &[f64], right: &[f64], index: usize) -> [f64; 12]
     ]
 }
 
+/// A convex fast path is only taken when it answers like the exact path: a
+/// tiny concave footprint can slip through the convex validator and lose the
+/// cells in its dent, and a very sharp vertex lets the convex test reach cells
+/// well past its tip.
+fn convex_path_is_exact(vertices: &[Vec3], edge_normals: &[Vec3]) -> bool {
+    !has_reflex_vertex(vertices, edge_normals) && !has_sharp_vertex(edge_normals)
+}
+
 pub(super) fn prepare_sweep_footprint(
     left: &[Vec3],
     right: &[Vec3],
     index: usize,
 ) -> Result<PreparedFootprint, String> {
-    prepare_normalized_quad(
+    let quad = prepare_normalized_quad(
         [left[index], right[index], right[index + 1], left[index + 1]],
         true,
     )
-    .map(PreparedFootprint::Quad)
-    .map_err(|error| format!("sweep segment {index}: {error}"))
+    .map_err(|error| format!("sweep segment {index}: {error}"))?;
+    let vertices = &quad.vertices[..quad.len];
+    if convex_path_is_exact(vertices, &quad.edge_normals[..quad.len]) {
+        return Ok(PreparedFootprint::Quad(quad));
+    }
+    prepare_general_polygon(&[vertices.to_vec()])
+        .map(PreparedFootprint::General)
+        .map_err(|error| format!("sweep segment {index}: {error}"))
 }
 
 #[cfg(test)]
@@ -1879,7 +1993,7 @@ mod tests {
     }
 
     fn cell_corner_quad(cell: u64, resolution: u8) -> Vec<[f64; 3]> {
-        let raw = crate::ring::grid::corners(&[cell], resolution).unwrap();
+        let raw = crate::ring::grid::corners(&[cell], resolution, false).unwrap();
         (0..4)
             .map(|index| [raw[3 * index], raw[3 * index + 1], raw[3 * index + 2]])
             .collect()
@@ -1946,11 +2060,9 @@ mod tests {
                 .filter(|&cell| {
                     cap.contains(center(cell, resolution)) || overlap.axis_cell == cell || {
                         let boundary = CellBoundary::new(cell, resolution);
-                        let disk = super::CapDisk {
-                            axis: cap.axis,
-                            chord_radius: overlap.chord_radius,
-                        };
-                        (0..4).any(|edge| super::cell_edge_within_cap(&boundary, edge, disk))
+                        (0..4).any(|edge| {
+                            super::cell_edge_within_cap(&boundary, edge, overlap.disk())
+                        })
                     }
                 })
                 .collect::<Vec<_>>();

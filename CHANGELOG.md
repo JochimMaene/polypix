@@ -7,6 +7,77 @@ documentation. Internal refactors, tests, and CI changes are omitted.
 
 ## Unreleased
 
+### Breaking changes
+
+- `resolution` is now keyword-only on `cover_cap()`, `cover_polygon()`,
+  `cover_sweep()`, `cell_at()`, `cell_centers()`, `cell_corners()`, and
+  `cell_neighbors()`. Two adjacent numbers could be swapped without an error.
+- `Sum(values)` now copies its values into a read-only `float64` array and
+  validates them when it is created, not when it is used.
+- Renamed the `RevisitStats` fields `run_counts`, `internal_gap_steps_sum`,
+  `maximum_internal_gap_steps`, `first_start`, and `last_stop` to
+  `visit_counts`, `gap_steps_total`, `gap_steps_max`, `first_bin`, and
+  `stop_bin`.
+- Renamed the `cells=` argument of `Coverage.reduce()` to `candidate_cells=`,
+  matching the covering functions.
+
+### Fixes
+
+- Fixed polygons with a slightly concave vertex, such as tiny footprints or
+  rings with near-duplicate vertices, losing cells inside the polygon in both
+  modes.
+- Fixed polygons with a very sharp vertex reporting cells past its tip, and
+  disagreeing between full scans and `candidate_cells=` in overlap mode.
+- Applied the same concave and sharp-vertex fixes to `cover_sweep()`
+  segments, which used the convex test unconditionally.
+- Fixed caps whose longitude span ends exactly at 2 pi missing the cell at
+  longitude zero, so full scans, `candidate_cells=`, and counts agree.
+- Fixed center coverage near the poles skipping a cell whose center lies
+  within the boundary tolerance, which a `candidate_cells=` query of the same
+  polygon included.
+- Fixed full scans skipping a boundary-tie cell just past an acute polygon
+  corner that `candidate_cells=` included, and adding collinear vertices
+  changing the result.
+- Fixed cap coverage and cap counts disagreeing on a boundary tie, because
+  they placed cell centers with different rounding, including whole rings
+  around a polar cap axis.
+- Fixed a forked child hanging when another thread was building the ring
+  cache at the moment of the fork.
+- A process that briefly cannot create threads now runs calls serially, with
+  or without `threads=`, and goes back to parallel work once it can, instead
+  of raising `PanicException` on every later parallel call.
+- Sweep segments too thin to prepare now raise `ValueError`, as the same
+  quad does in `cover_polygon()`, instead of being covered by a convex test
+  that reached far past them.
+- `timedelta64` arrays are rejected as coordinates and `Sum` values instead
+  of being read as plain numbers.
+- Fixed `mode="overlap"` caps with a radius near pi reporting cells inside
+  the excluded region around the antipode, and running slowly there. This
+  removes the known limitation listed under 0.5.1.
+- A process forked after Polypix started worker threads no longer deadlocks
+  on its next call; such a child runs serially, and a child forked before
+  that starts its own threads.
+- `RevisitStats` arrays and `Sum` values stay read-only after
+  `copy.deepcopy()` and pickling.
+- Error messages for cell IDs at or above 2**63 and for oversized cap counts
+  now describe the actual problem.
+- Input-sized native buffers now raise `MemoryError` when an allocation is
+  refused instead of aborting the process. This covers sparse `revisit()`,
+  unsorted `candidate_cells=`, cap batches, sweep samples, candidate planning,
+  `Polygon` and `MultiPolygon` batches, multi-source `revisit()` inputs,
+  `Coverage.from_arrays()` validation, and the per-resolution ring cache.
+- A `Sum` with the wrong number of values is rejected before any covering
+  work, instead of after it.
+
+### Performance
+
+- Sped up overlap coverage by ruling out distant cells and footprint edges
+  before testing curved cell edges.
+- Sped up selected-cell cap counts over compact cell ranges, and center-mode
+  cap counts generally.
+- `threads=N` below the CPU count no longer also starts the automatic
+  worker pool.
+
 ## [0.5.1] — 2026-09-24
 
 ### Fixes

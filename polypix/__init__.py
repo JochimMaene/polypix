@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import operator
+import os
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal, Never, Protocol, SupportsIndex, cast, overload
@@ -13,6 +14,7 @@ import numpy.typing as npt
 from ._core import (
     _MAX_RESOLUTION,
     __version__,
+    _after_fork_in_child,
     _cell_at,
     _center,
     _corner_many,
@@ -28,6 +30,11 @@ from ._core import (
     _sum_coverage_per_cell,
     _validate_coverage,
 )
+
+if hasattr(os, "register_at_fork"):
+    # Native worker threads do not survive fork(); a child would deadlock on
+    # the inherited pool, so it runs every call serially instead.
+    os.register_at_fork(after_in_child=_after_fork_in_child)
 
 _GEOMETRY_SHAPE_ERROR = (
     "geometry must have shape (vertices, 3), "
@@ -345,7 +352,7 @@ class Coverage:
         self,
         reducer: CoverageReducer,
         *,
-        cells: CellsLike | None = None,
+        candidate_cells: CellsLike | None = None,
     ) -> npt.NDArray[np.int64] | npt.NDArray[np.float64]:
         """Accumulate this coverage with a :class:`Count` or :class:`Sum`.
 
@@ -357,15 +364,15 @@ class Coverage:
         ----------
         reducer : Count or Sum
             The accumulation to perform.
-        cells : int or array_like of int, optional
-            RING indices to report. This plays the part ``candidate_cells``
-            plays on a covering call: leave it out for a dense array indexed
-            by cell ID, or name cells to get one value per requested ID.
+        candidate_cells : int or array_like of int, optional
+            RING indices to report, as on a covering call: leave it out for
+            a dense array indexed by cell ID, or name cells to get one value
+            per requested ID.
 
         Returns
         -------
         ndarray
-            With ``cells=None``, a dense array of length
+            With ``candidate_cells=None``, a dense array of length
             ``cell_count(resolution)`` indexed by RING cell ID. Otherwise
             one value per requested ID, in query order and including
             duplicates. :class:`Count` returns ``int64`` and :class:`Sum`
@@ -375,7 +382,7 @@ class Coverage:
         ------
         TypeError
             If ``reducer`` is not a :class:`Count` or :class:`Sum`, or
-            ``cells`` is not an integer array.
+            ``candidate_cells`` is not an integer array.
         ValueError
             If a requested cell falls outside the grid, or a
             :class:`Sum` carries the wrong number of values.
@@ -388,7 +395,7 @@ class Coverage:
         internally, and large ones through a hash table, so memory follows
         what you asked for instead of the resolution.
 
-        Without ``cells``, the array-level equivalent is a one-liner::
+        Without ``candidate_cells``, the array-level equivalent is a one-liner::
 
             np.bincount(coverage.cells, minlength=px.cell_count(resolution))
 
@@ -401,9 +408,21 @@ class Coverage:
         if not isinstance(reducer, (Count, Sum)):
             raise TypeError("reducer must be a Count or Sum reducer.")
         requested = (
-            None if cells is None else _coverage_cells(cells, self.resolution, "cells")
+            None
+            if candidate_cells is None
+            else _coverage_cells(candidate_cells, self.resolution, "candidate_cells")
         )
         return _reduce_coverage(self, reducer, requested)
+
+
+_REVISIT_FIELDS = (
+    "cells",
+    "visit_counts",
+    "gap_steps_total",
+    "gap_steps_max",
+    "first_bin",
+    "stop_bin",
+)
 
 
 @dataclass(frozen=True, eq=False, init=False, slots=True)
@@ -421,32 +440,32 @@ class RevisitStats:
     cells : ndarray
         Ascending ``int64`` RING indices of the cells that were covered at
         least once.
-    run_counts : ndarray
+    visit_counts : ndarray
         ``int64`` number of separate visits per cell, at least one.
-    internal_gap_steps_sum : ndarray
+    gap_steps_total : ndarray
         ``int64`` total length of the gaps between visits, in segments.
         Zero for a cell visited once.
-    maximum_internal_gap_steps : ndarray
+    gap_steps_max : ndarray
         ``int64`` longest single gap between two visits, in segments. Zero
         for a cell visited once.
-    first_start : ndarray
+    first_bin : ndarray
         ``int64`` segment index at which the cell was first covered.
-    last_stop : ndarray
+    stop_bin : ndarray
         ``int64`` segment index just after the cell was last covered.
 
     Notes
     -----
     All six arrays need the same single pass over the segment axis, and
     none of them can be recovered from the others afterwards.
-    ``maximum_internal_gap_steps`` is the clearest case: an individual gap
+    ``gap_steps_max`` is the clearest case: an individual gap
     exists only in the moment one visit closes and the next opens, so
     computing it later would mean materializing every visit.
 
     Only complete gaps between two visits are counted. What happens at the
     ends of the timeline is a policy choice, so we report the window
     instead of choosing for you: the trailing gap is
-    ``segment_count - last_stop`` against the segment count you passed in,
-    and the number of internal gaps per cell is ``run_counts - 1``.
+    ``segment_count - stop_bin`` against the segment count you passed in,
+    and the number of internal gaps per cell is ``visit_counts - 1``.
 
     Anything this result does not carry is either one NumPy expression away
     or already in your hands, since the resolution, segment count,
@@ -456,11 +475,11 @@ class RevisitStats:
     """
 
     cells: npt.NDArray[np.int64]
-    run_counts: npt.NDArray[np.int64]
-    internal_gap_steps_sum: npt.NDArray[np.int64]
-    maximum_internal_gap_steps: npt.NDArray[np.int64]
-    first_start: npt.NDArray[np.int64]
-    last_stop: npt.NDArray[np.int64]
+    visit_counts: npt.NDArray[np.int64]
+    gap_steps_total: npt.NDArray[np.int64]
+    gap_steps_max: npt.NDArray[np.int64]
+    first_bin: npt.NDArray[np.int64]
+    stop_bin: npt.NDArray[np.int64]
 
     def __init__(self, *_args: Never, **_kwargs: Never) -> None:
         raise TypeError("RevisitStats values are constructed by Polypix.")
@@ -471,17 +490,23 @@ class RevisitStats:
         arrays: tuple[npt.NDArray[np.uint64], ...],
     ) -> RevisitStats:
         result = object.__new__(cls)
-        names = (
-            "cells",
-            "run_counts",
-            "internal_gap_steps_sum",
-            "maximum_internal_gap_steps",
-            "first_start",
-            "last_stop",
-        )
-        for name, array in zip(names, arrays, strict=True):
+        for name, array in zip(_REVISIT_FIELDS, arrays, strict=True):
             object.__setattr__(result, name, _signed_view(array))
         return result
+
+    @classmethod
+    def _from_pickle(cls, *arrays: npt.NDArray[np.int64]) -> RevisitStats:
+        result = object.__new__(cls)
+        for name, array in zip(_REVISIT_FIELDS, arrays, strict=True):
+            owned = np.array(array, dtype=np.int64, copy=True)
+            _freeze_array(owned)
+            object.__setattr__(result, name, owned)
+        return result
+
+    def __reduce__(self) -> tuple[object, tuple[object, ...]]:
+        """Rebuild with read-only arrays on unpickle or copy."""
+        arrays = tuple(getattr(self, name) for name in _REVISIT_FIELDS)
+        return RevisitStats._from_pickle, arrays
 
     def __len__(self) -> int:
         """Return the number of cells having at least one qualifying run."""
@@ -694,7 +719,9 @@ def _as_float_array(values: object, name: str) -> np.ndarray:
         raise TypeError(f"{name} must contain real numbers, not complex values.")
     if np.issubdtype(array.dtype, np.bool_):
         raise TypeError(f"{name} must contain real numbers, not bool.")
-    if not np.issubdtype(array.dtype, np.number) or array.dtype == np.dtype("O"):
+    # Kinds, not `np.number`: that also admits timedelta64, whose values
+    # depend on the unit and are not coordinates or weights.
+    if array.dtype.kind not in "iuf":
         raise TypeError(f"{name} must contain real numbers.")
     # ``ascontiguousarray`` promotes scalar inputs to shape ``(1,)``. Preserve
     # their rank so scalar cap radii remain distinguishable from length-one
@@ -994,8 +1021,8 @@ class Count:
     Pass an instance as ``reduce=Count()`` to a covering function, or to
     :meth:`Coverage.reduce`. The reducer names the accumulation and nothing
     else: which cells are reported is decided by the operation being
-    reduced, through ``candidate_cells`` when covering or ``cells`` when
-    reducing a stored coverage.
+    reduced, through ``candidate_cells`` on the covering call or on
+    :meth:`Coverage.reduce`.
 
     Examples
     --------
@@ -1020,6 +1047,17 @@ class Sum:
     ----------
     values : float or array_like of float
         One finite value shared by every segment, or one value per segment.
+        The reducer keeps a read-only ``float64`` copy, so later edits to
+        the array you passed do not change it.
+
+    Raises
+    ------
+    TypeError
+        If ``values`` is not real-valued.
+    ValueError
+        If ``values`` has more than one dimension or a non-finite value.
+        A length that does not match the segments is reported by the call
+        that uses the reducer, before any covering work.
 
     Notes
     -----
@@ -1043,6 +1081,23 @@ class Sum:
 
     values: ValuesLike
 
+    def __post_init__(self) -> None:
+        # Own a read-only copy, so later edits to the caller's buffer cannot
+        # change what this reducer adds, and bad values fail here, not on use.
+        values = np.array(_as_float_array(self.values, "values"), copy=True)
+        if values.ndim > 1:
+            raise ValueError(
+                "values must be a scalar or contain one value per coverage segment."
+            )
+        if not np.all(np.isfinite(values)):
+            raise ValueError("values must contain only finite values.")
+        _freeze_array(values)
+        object.__setattr__(self, "values", values)
+
+    def __reduce__(self) -> tuple[object, tuple[object, ...]]:
+        """Rebuild through the constructor, so copies stay validated and read-only."""
+        return Sum, (self.values,)
+
 
 CoverageReducer = Count | Sum
 
@@ -1050,8 +1105,8 @@ CoverageReducer = Count | Sum
 @overload
 def cover_polygon(
     geometry: RegionLike,
-    resolution: int,
     *,
+    resolution: int,
     mode: CoverageMode = "center",
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
@@ -1062,8 +1117,8 @@ def cover_polygon(
 @overload
 def cover_polygon(
     geometry: RegionLike,
-    resolution: int,
     *,
+    resolution: int,
     mode: CoverageMode = "center",
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
@@ -1074,8 +1129,8 @@ def cover_polygon(
 @overload
 def cover_polygon(
     geometry: RegionLike,
-    resolution: int,
     *,
+    resolution: int,
     mode: CoverageMode = "center",
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
@@ -1085,8 +1140,8 @@ def cover_polygon(
 
 def cover_polygon(
     geometry: RegionLike,
-    resolution: int,
     *,
+    resolution: int,
     mode: CoverageMode = "center",
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
@@ -1216,6 +1271,7 @@ def cover_polygon(
     candidates, requested = _reduction_plan(candidate_cells, reducer, resolved)
     thread_count = _as_threads(threads)
     if prepared_regions is not None:
+        _check_sum_length(reducer, len(prepared_regions))
         native = _cover_prepared_regions(
             prepared_regions,
             resolved,
@@ -1226,6 +1282,7 @@ def cover_polygon(
         )
     else:
         vertices, ring_offsets = _as_polygons(geometry)
+        _check_sum_length(reducer, len(ring_offsets) - 1)
         native = _cover(
             vertices,
             ring_offsets,
@@ -1245,8 +1302,8 @@ def cover_polygon(
 def cover_cap(
     centers_xyz: VectorsLike,
     radii_rad: ValuesLike,
-    resolution: int,
     *,
+    resolution: int,
     mode: CoverageMode = "center",
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
@@ -1258,8 +1315,8 @@ def cover_cap(
 def cover_cap(
     centers_xyz: VectorsLike,
     radii_rad: ValuesLike,
-    resolution: int,
     *,
+    resolution: int,
     mode: CoverageMode = "center",
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
@@ -1271,8 +1328,8 @@ def cover_cap(
 def cover_cap(
     centers_xyz: VectorsLike,
     radii_rad: ValuesLike,
-    resolution: int,
     *,
+    resolution: int,
     mode: CoverageMode = "center",
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
@@ -1283,8 +1340,8 @@ def cover_cap(
 def cover_cap(
     centers_xyz: VectorsLike,
     radii_rad: ValuesLike,
-    resolution: int,
     *,
+    resolution: int,
     mode: CoverageMode = "center",
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
@@ -1352,12 +1409,6 @@ def cover_cap(
     whose true curved area touches the cap, so even a point cap returns the
     cell containing that point.
 
-    A radius within roughly 2.1e-8 radians of pi reads as a full sphere under
-    ``mode="overlap"``, so from resolution 26 that mode reports cells around
-    the antipode which the cap excludes. ``mode="center"`` avoids this loss
-    of precision by measuring from the antipode, while retaining the usual
-    containment tolerance.
-
     Counting center-selected caps is the one place where fusing the reduction
     into the geometry kernel currently wins by a wide margin, because the cap kernel
     accumulates private RING spans and never allocates the cap-cell pairs
@@ -1386,6 +1437,7 @@ def cover_cap(
     reducer = _as_coverage_reducer(reduce)
     centers = _as_cap_centers(centers_xyz)
     radii = _as_cap_radii(radii_rad, centers.shape[0])
+    _check_sum_length(reducer, centers.shape[0])
     requested_threads = _as_threads(threads)
     candidates, requested = _reduction_plan(candidate_cells, reducer, resolved)
     if isinstance(reducer, Count) and not overlap:
@@ -1431,7 +1483,9 @@ def _coverage_cells(
         largest = int(cells.max())
         if largest >= cell_count(resolution):
             if largest >= 1 << 63:
-                raise ValueError(f"{name} must contain non-negative integers.")
+                raise ValueError(
+                    f"{name} must contain non-negative integers below 2**63."
+                )
             raise ValueError(
                 f"{name} must contain valid RING indices at resolution {resolution}."
             )
@@ -1462,16 +1516,23 @@ def _reduction_plan(
     return requested, requested
 
 
+def _check_sum_length(reducer: CoverageReducer | None, segment_count: int) -> None:
+    """Reject a Sum of the wrong length before the covering work it would waste."""
+    if isinstance(reducer, Sum):
+        values = np.asarray(reducer.values)
+        if values.ndim == 1 and values.size != segment_count:
+            raise ValueError(
+                "values must be a scalar or contain one value per coverage segment."
+            )
+
+
 def _as_segment_values(
     values: object,
     segment_count: int,
 ) -> npt.NDArray[np.float64]:
     array = _as_float_array(values, "values")
     if array.ndim == 0:
-        value = float(array.item())
-        if not np.isfinite(value):
-            raise ValueError("values must contain only finite values.")
-        return np.full(segment_count, value, dtype=np.float64)
+        return np.full(segment_count, float(array.item()), dtype=np.float64)
     if array.ndim != 1 or array.size != segment_count:
         raise ValueError(
             "values must be a scalar or contain one value per coverage segment."
@@ -1495,8 +1556,6 @@ def _reduce_coverage(
         )
     segment_values = _as_segment_values(reducer.values, len(coverage))
     if requested is not None and requested.size == 0:
-        if np.any(~np.isfinite(segment_values)):
-            raise ValueError("values must contain only finite values.")
         return np.empty(0, dtype=np.float64)
     return _sum_coverage_per_cell(
         _trusted_uint64(coverage.cells),
@@ -1525,8 +1584,8 @@ def _as_coverage_mode(mode: object) -> bool:
 def cover_sweep(
     left_edge_xyz: EdgesLike,
     right_edge_xyz: EdgesLike,
-    resolution: int,
     *,
+    resolution: int,
     mode: CoverageMode = "center",
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
@@ -1538,8 +1597,8 @@ def cover_sweep(
 def cover_sweep(
     left_edge_xyz: EdgesLike,
     right_edge_xyz: EdgesLike,
-    resolution: int,
     *,
+    resolution: int,
     mode: CoverageMode = "center",
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
@@ -1551,8 +1610,8 @@ def cover_sweep(
 def cover_sweep(
     left_edge_xyz: EdgesLike,
     right_edge_xyz: EdgesLike,
-    resolution: int,
     *,
+    resolution: int,
     mode: CoverageMode = "center",
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
@@ -1563,8 +1622,8 @@ def cover_sweep(
 def cover_sweep(
     left_edge_xyz: EdgesLike,
     right_edge_xyz: EdgesLike,
-    resolution: int,
     *,
+    resolution: int,
     mode: CoverageMode = "center",
     candidate_cells: CellsLike | None = None,
     threads: int | None = None,
@@ -1671,6 +1730,7 @@ def cover_sweep(
         raise ValueError(
             "left_edge_xyz and right_edge_xyz must contain the same number of samples."
         )
+    _check_sum_length(reducer, max(left.shape[0] - 1, 0))
     requested_threads = _as_threads(threads)
     candidates, requested = _reduction_plan(candidate_cells, reducer, resolved)
     coverage = Coverage._from_native(
@@ -1784,7 +1844,7 @@ def revisit(
     the analysis at a discontinuity, or insert a deliberately empty
     separator bin, so that a visit cannot bridge one.
 
-    Bins are ordinal, so map ``first_start`` and ``last_stop`` through your
+    Bins are ordinal, so map ``first_bin`` and ``stop_bin`` through your
     own array of time edges afterwards, and choose there whether revisit
     means end-to-start, start-to-start, or something cyclic.
 
@@ -1811,9 +1871,9 @@ def revisit(
     ...     cells=[5, 5, 5], offsets=[0, 1, 1, 2, 3], resolution=0
     ... )
     >>> stats = px.revisit(timeline)
-    >>> stats.cells, stats.run_counts, stats.maximum_internal_gap_steps
+    >>> stats.cells, stats.visit_counts, stats.gap_steps_max
     (array([5]), array([2]), array([1]))
-    >>> stats.first_start, stats.last_stop
+    >>> stats.first_bin, stats.stop_bin
     (array([0]), array([4]))
     """
     cells, offsets, resolution, threshold, count = _prepared_timelines(
@@ -1826,6 +1886,7 @@ def revisit(
 
 def cell_centers(
     cells: CellsLike,
+    *,
     resolution: int,
 ) -> npt.NDArray[np.float64]:
     """Return the center direction of each HEALPix cell.
@@ -1871,6 +1932,7 @@ def cell_centers(
 
 def cell_at(
     vectors_xyz: VectorsLike,
+    *,
     resolution: int,
 ) -> npt.NDArray[np.int64]:
     """Return the HEALPix cell that each direction falls in.
@@ -1920,8 +1982,8 @@ def cell_at(
     --------
     >>> import numpy as np
     >>> import polypix as px
-    >>> cells = px.cell_at(np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]), 4)
-    >>> px.cell_at(px.cell_centers(cells, 4), 4)
+    >>> cells = px.cell_at(np.array([[1.0, 0.0, 0.0], [0.0, 0.0, 1.0]]), resolution=4)
+    >>> px.cell_at(px.cell_centers(cells, resolution=4), resolution=4)
     array([1504,    0])
     """
     resolved = _as_resolution(resolution)
@@ -1935,6 +1997,7 @@ def cell_at(
 
 def cell_corners(
     cells: CellsLike,
+    *,
     resolution: int,
 ) -> npt.NDArray[np.float64]:
     """Return the four corner directions of each HEALPix cell.
@@ -1974,6 +2037,7 @@ def cell_corners(
 
 def cell_neighbors(
     cells: CellsLike,
+    *,
     resolution: int,
 ) -> Coverage:
     """Return the topological neighbors of each HEALPix cell.

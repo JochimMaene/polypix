@@ -177,15 +177,9 @@ A whole-world longitude/latitude bounding box is not a spherical polygon:
 Footprints below roughly 1e-8 radians across may be rejected. Where that starts depends on how the vertices are laid out, and at the same scale concavity becomes indistinguishable from a collinear edge.
 
 Coverage resolves floating-point boundary ties toward inclusion in both modes.
-
-A cap radius within roughly 2.1e-8 radians of pi is a full sphere as far as
-`mode="overlap"` can tell, because the chord it measures cells against cannot
-separate that radius from a diameter. From resolution 26, where a cell is
-smaller than that, overlap coverage therefore reports cells around the
-antipode that the cap excludes. The default `mode="center"` does not share
-this loss of precision: it measures such a cap from its antipode and retains
-the usual containment tolerance. Subtract the complement yourself, or use
-`mode="center"`, when a near-complete cap has to exclude its antipode by area.
+Full scans, `candidate_cells=`, and fused counts agree on every cell, except
+that a cell center within about 1e-15 radians of the tolerance edge itself
+can be classified differently by paths that place it with different rounding.
 
 Validation compares vertex pairs and tests every edge against every vertex, so
 its cost grows with the square of the vertex count. Hand a densely sampled
