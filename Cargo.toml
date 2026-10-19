@@ -1,6 +1,6 @@
 [package]
 name = "polypix"
-version = "0.5.1"
+version = "1.0.0-rc.1"
 edition = "2021"
 rust-version = "1.87"
 description = "Fast batch HEALPix rasterization and occupancy reduction for spherical regions."
