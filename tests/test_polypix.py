@@ -1158,9 +1158,10 @@ class PolypixTests(unittest.TestCase):
         }
 
         for name, polygon in invalid_polygons.items():
-            with self.subTest(name=name):
-                with self.assertRaises(ValueError):
-                    px.cover_polygon(vectors(polygon), resolution=1)
+            for mode in ("center", "overlap"):
+                with self.subTest(name=name, mode=mode):
+                    with self.assertRaises(ValueError):
+                        px.cover_polygon(vectors(polygon), resolution=1, mode=mode)
 
     def test_batch_geometry_errors_name_the_offending_polygon(self) -> None:
         valid = vectors([(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0)])
