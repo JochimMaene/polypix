@@ -7,10 +7,11 @@ documentation. Internal refactors, tests, and CI changes are omitted.
 
 ## Unreleased
 
-## [1.0.0-rc.1] — 2026-10-19
+## [1.0.0] — 2026-11-04
 
-First release candidate for 1.0. From 1.0 on, Polypix follows semantic
-versioning, and the public API is everything in `polypix.__all__`.
+First stable release, unchanged since 1.0.0-rc.1. From 1.0 on, Polypix
+follows semantic versioning, and the public API is everything in
+`polypix.__all__`.
 
 ### Breaking changes
 
@@ -247,8 +248,8 @@ available under their original license terms.
 - Returned packed HEALPix NESTED cell IDs with center and boundary helpers.
 - Published Python 3.12 wheels for Linux and macOS.
 
-[Unreleased]: https://github.com/JochimMaene/polypix/compare/v1.0.0-rc.1...HEAD
-[1.0.0-rc.1]: https://github.com/JochimMaene/polypix/compare/v0.5.1...v1.0.0-rc.1
+[Unreleased]: https://github.com/JochimMaene/polypix/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/JochimMaene/polypix/compare/v0.5.1...v1.0.0
 [0.5.1]: https://github.com/JochimMaene/polypix/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/JochimMaene/polypix/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/JochimMaene/polypix/compare/v0.3.0...v0.4.0
