@@ -127,8 +127,7 @@ its worker threads, such as a `multiprocessing` worker started with the `fork`
 method from a parent that already ran parallel calls, runs every call on one
 thread. A process forked before that starts its own threads as usual.
 
-## Competitor workflows
+## Compared with other libraries
 
-The [benchmark results](benchmarks.md) compare visibility counts and accumulated
-observation coverage with healpy, HPGeom, MOCPy, H3, and S2. The page includes
-throughput charts, accuracy comparisons, methodology, and reproduction commands.
+The [benchmarks](benchmarks.md) put Polypix next to healpy, HPGeom, MOCPy, H3,
+and S2.

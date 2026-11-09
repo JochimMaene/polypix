@@ -1,106 +1,93 @@
-# Reproducible coverage comparisons
+# Comparing Polypix with other libraries
 
-Run from the repository root on Linux or macOS, in a separate environment:
+`competitors.py` runs Polypix next to healpy, HPGeom, MOCPy, H3, and S2 on the
+same shapes, and `plot_comparisons.py` turns the results into the charts on the
+[benchmarks page](../docs/benchmarks.md).
 
-```sh
-python -m venv .venv-competitors
-.venv-competitors/bin/python -m pip install -r benchmarks/competitors-requirements.txt
-.venv-competitors/bin/python -m pip install --no-deps .
-PYTHONPATH=. .venv-competitors/bin/python benchmarks/competitors.py --output competitor-results.json
-.venv-competitors/bin/python -m pip freeze > competitor-environment.txt
-```
+## Running it
 
-Keep the JSON, environment freeze, and source commit together. Python package
-availability varies by platform; the recorded versions were validated on Linux
-with Python 3.14. No competitor is a Polypix runtime dependency.
-
-Two deterministic synthetic workloads:
-
-* **Visibility:** 128 cap centers spanning longitudes and latitudes up to 63
-  degrees, with radii from 3 to 12 degrees. Produce per-cell overlapping service
-  counts for one timestamp. Repetitions measure the same timestamp independently;
-  they do not simulate an orbit or measure time-series throughput.
-* **Observation:** four consecutive overlapping convex footprints per track,
-  across 128 tracks. Produce their union and estimate the observed fraction of
-  the whole Earth (the target region) using equal-area random samples.
-
-Use `--regions 8 --order 4 --samples 2000 --repeats 1` for a smoke run. Use
-`--backends polypix-serial healpy hpgeom` for direct HEALPix comparisons.
-Order means HEALPix order, not nside. H3 and S2 levels minimize the logarithmic
-ratio of global cell counts to the requested HEALPix count. JSON records actual
-levels, counts, and mean cell areas; equal mean area does not mean equal accuracy.
-
-## What is measured
-
-Each repetition runs in a fresh process. Timing includes shape construction,
-covering, count accumulation or union, and lookup of the common evaluation points. Imports, deterministic input creation,
-evaluation-point indexing, and analytic correctness checks are excluded. There
-are separate first-call and warmed measurements. Each process records its first
-call followed by `--iterations` warmed calls (default five). `seconds` is the
-within-process warm median; `warm_seconds` retains every sample. Report the
-median and range across processes (`--repeats`, default five).
-
-Peak RSS is the entire worker process high-water mark, including imports and
-input preparation, captured before validation. It includes native allocations;
-it is not incremental algorithm memory. Threads in BLAS/OpenMP are limited to
-one. Polypix runs both explicitly serial and automatic; other libraries retain
-their own native threading policies. These are not identical CPU budgets.
-
-## Comparison semantics
-
-* **Polypix / healpy / HPGeom:** center-selected RING cells at identical order.
-  Full count maps or unions must equal Polypix exactly; a mismatch fails the run.
-  Independent analytic containment at sampled points measures rasterization error.
-* **H3:** center-selected polygons on its own grid. Caps are approximated by
-  128-vertex inscribed spherical polygons, including conversion in the timing.
-  This approximation contributes to the reported accuracy error.
-* **S2:** native C++ `s2geometry` binding, fixed-level outer coverings. Caps are
-  native caps; polygons have great-circle edges. Boundary cells can over-cover.
-* **MOCPy:** native hierarchical outer coverage. Observation uses the native
-  batch polygon constructor and a native union.
-  Visibility retains one MOC per cap and accumulates counts at evaluation points.
-  This evaluation is included in visibility timing; no dense map expansion is
-  imposed on MOCPy.
-
-The last three are application comparisons, not equivalent-output races. JSON
-reports mean absolute count error, sample disagreement, and estimated/reference
-covered fractions on the same independent points. Sampling is an estimate, not
-an exact area computation or maximum boundary-error bound. Increase `--samples`
-for small footprints and report sample count with results. Repeat at several
-orders and seeds before drawing conclusions.
-
-A missing package or adapter failure is recorded with its traceback and makes
-the command exit nonzero. Successful records remain available. There are no
-performance thresholds or claims that one backend universally wins.
-
-API references: [healpy](https://healpy.readthedocs.io/en/stable/generated/healpy.query_polygon.html),
-[HPGeom](https://hpgeom.readthedocs.io/), [MOCPy](https://cds-astro.github.io/mocpy/),
-[H3](https://h3geo.org/docs/api/regions/), [S2](https://s2geometry.io/devguide/examples/coverings.html).
-
-## Published matrix and charts
+Use a separate environment, so the other libraries never end up next to your
+normal Polypix install. Installing `.` builds Polypix from this checkout, which
+needs a Rust toolchain:
 
 ```sh
-PYTHONPATH=. python benchmarks/run_comparisons.py
-# Use the documentation environment for Matplotlib:
+python -m venv .venv-bench
+.venv-bench/bin/pip install -r benchmarks/competitors-requirements.txt .
+.venv-bench/bin/python benchmarks/competitors.py --quick   # about ten seconds
+.venv-bench/bin/python benchmarks/competitors.py           # about twenty minutes
 pixi run -e docs python benchmarks/plot_comparisons.py
 ```
 
-The matrix runs all backends at orders 5, 6, 7 with 128 circles / 512 footprints.
-It also runs equivalent HEALPix workloads with 10,000 circles or 4,000 footprints
-at all three orders. Outputs go to `benchmarks/results`; SVG charts and a CSV
-summary go to `docs/assets/benchmarks`. No timings run during a docs build.
-See the [documentation page](../docs/benchmarks.md) for interpretation and limits.
+The full run writes `results/cross-grid.json` and `results/healpix-large.json`;
+the quick one writes to `results/quick/` so it never replaces them.
+Each file records the commit, whether the checkout had uncommitted changes, the
+CPU, and every library version. Run it from a clean commit if you want to
+publish the numbers.
 
-The additional small-workload seed checks can be reproduced with:
+## The workloads
 
-```sh
-mkdir -p benchmarks/results/seeds
-for seed in 20261110 20261111; do
-  for order in 5 6 7; do
-    PYTHONPATH=. python benchmarks/competitors.py --seed "$seed" --order "$order" \
-      --repeats 3 --iterations 3 --output "benchmarks/results/seeds/$seed-$order.json"
-  done
-done
-```
+We draw 128 random tracks between 63° south and 63° north. Each track gets:
 
-These are separate validation runs, not pooled into the headline charts.
+- a circle with a radius between 3° and 12°, like a satellite's coverage area;
+- four overlapping 1.4° × 0.9° footprints stepping east, like consecutive images
+  along a ground track.
+
+**Visibility** counts, for every cell, how many circles cover it.
+**Observation** finds the cells covered by at least one footprint.
+
+## What we time
+
+Only the coverage itself: the library's coverage call, plus whatever it takes to
+end up with per-cell counts, such as adding up the cells of each shape. Each
+library gets 3D unit vectors, so converting to latitude and longitude counts
+towards the library that needs them. H3 has no circles, so we hand it a
+128-point outline of each one and include building it.
+
+Each case runs in five fresh processes. A process makes one call to warm up,
+then five timed calls, and keeps the median. The charts show the median over
+processes, with whiskers for the fastest and slowest; the CSV also has the
+first call. Polypix runs on one thread unless the label says "threaded", and
+MOCPy is held to one thread too. healpy, HPGeom, H3, and S2 are single-threaded
+anyway.
+
+## Comparing fairly
+
+Libraries differ in when a cell counts as covered, so we only compare libraries
+that use the same rule:
+
+| Rule | Libraries |
+|---|---|
+| Cell's center is inside the shape | Polypix, healpy, HPGeom, H3 |
+| Any part of the cell touches the shape | Polypix (`mode="overlap"`), MOCPy, S2, H3 (`contain="overlap"`) |
+
+The grids don't line up either. HEALPix has 12 × 4ⁿ cells, S2 6 × 4ⁿ, and H3
+grows sevenfold per level. So we run each library at several of its own levels
+and plot time against the number of cells on the globe.
+
+healpy and HPGeom must select exactly the cells Polypix selects; the run fails
+otherwise. The second suite uses that to compare speed on much bigger inputs:
+10,000 circles and 4,000 footprints, HEALPix libraries only.
+
+## Checking the answers
+
+After timing, we look each result up at 100,000 random points and compare it
+with the exact answer from spherical geometry. This is a sanity check, not a
+ranking: the error mostly comes from using cells at all, and it is about the
+same on every grid with the same number of cells. It does catch a broken
+adapter straight away, and it is how we noticed that MOCPy approximates circles.
+
+The JSON keeps two numbers per case. `mean_abs_error` is the average number of
+circles miscounted per point for visibility, or the fraction of points wrongly
+marked as seen or unseen for observation. `mean_error` keeps the sign, so you
+can see that the touch rule over-counts.
+
+## Things to keep in mind
+
+- These are numbers from one laptop, an Intel i7-1165G7 under WSL2. Expect
+  different ratios on other hardware.
+- H3 draws polygon edges as straight lines in latitude and longitude, not great
+  circles. The edges here are short enough that the difference is far below
+  one cell.
+- H3's overlap mode is marked experimental in h3-py.
+- The answer check uses random points, so its error figures are estimates. At
+  the finest levels they rest on a couple of hundred points out of 100,000.

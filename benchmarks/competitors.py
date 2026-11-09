@@ -10,7 +10,7 @@ step that turns its output into per-cell counts. We then look the answer up at
 random points and compare it with exact spherical geometry.
 
     python benchmarks/competitors.py                 # the published runs
-    python benchmarks/competitors.py --quick         # a one-minute smoke test
+    python benchmarks/competitors.py --quick         # a ten-second smoke test
 
 See competitors.md for the setup and what each comparison means.
 """
@@ -31,6 +31,7 @@ import traceback
 from collections.abc import Callable
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass
+from functools import partial
 from multiprocessing import get_context
 from pathlib import Path
 from typing import NamedTuple
@@ -92,7 +93,9 @@ def latlng(xyz: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     )
 
 
-def circle_outline(center: np.ndarray, radius: float, vertices=128) -> np.ndarray:
+def circle_outline(
+    center: np.ndarray, radius: float, vertices: int = 128
+) -> np.ndarray:
     """Points on a circle, for libraries that only accept polygons."""
     east = np.cross([0.0, 0.0, 1.0], center)
     east /= np.linalg.norm(east)
@@ -112,18 +115,13 @@ def count_cells(cell_lists: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
 # script still runs when some libraries are missing.
 
 
-def polypix_cover(threads: int | None):
-    def cover(scene, level, mode, workload):
-        import polypix
+def polypix_cover(scene, level, mode, workload, threads=1):
+    import polypix
 
-        options = dict(
-            resolution=level, mode=mode, threads=threads, reduce=polypix.Count()
-        )
-        if workload == "visibility":
-            return polypix.cover_cap(scene.centers, scene.radii, **options)
-        return polypix.cover_polygon(scene.footprints, **options)
-
-    return cover
+    options = dict(resolution=level, mode=mode, threads=threads, reduce=polypix.Count())
+    if workload == "visibility":
+        return polypix.cover_cap(scene.centers, scene.radii, **options)
+    return polypix.cover_polygon(scene.footprints, **options)
 
 
 def healpy_cover(scene, level, mode, workload):
@@ -169,7 +167,7 @@ def mocpy_cover(scene, level, mode, workload):
         )
     else:
         lat, lon = latlng(scene.footprints)
-        # MOCPy wants rows of [lon, lat, lon, lat, ...], longitudes in [0, 360).
+        # MOCPy wants alternating rows of longitudes and latitudes, in [0, 360).
         rows = np.stack([lon % 360, lat], axis=1).reshape(-1, lon.shape[1])
         mocs = MOC.from_polygons(rows, max_depth=level, n_threads=1)
     return count_cells([moc.flatten() for moc in mocs])
@@ -255,15 +253,11 @@ def s2_ids(points, level):
 
 @dataclass(frozen=True)
 class Library:
-    module: str  # imported before timing so the first call excludes it
+    modules: tuple[str, ...]  # imported before timing
     cover: Callable
     cell_ids: Callable  # untimed: grid cell of each evaluation point
     cell_count: Callable[[int], int]
     modes: tuple[str, ...]
-
-
-def healpix_cells(level):
-    return 12 * 4**level
 
 
 def h3_cells(level):
@@ -272,34 +266,34 @@ def h3_cells(level):
     return h3.get_num_cells(level)
 
 
+def s2_cells(level):
+    return 6 * 4**level
+
+
+def healpix(cover, modes, cell_ids=healpix_ring_ids, modules=("polypix",)):
+    """A library on the HEALPix grid; Polypix is needed for cell counts."""
+    import polypix
+
+    return Library(modules, cover, cell_ids, polypix.cell_count, modes)
+
+
 LIBRARIES = {
-    "polypix": Library(
-        "polypix",
-        polypix_cover(threads=1),
-        healpix_ring_ids,
-        healpix_cells,
-        ("center", "overlap"),
+    "polypix": healpix(polypix_cover, ("center", "overlap")),
+    "polypix-threaded": healpix(
+        partial(polypix_cover, threads=None), ("center", "overlap")
     ),
-    "polypix-threaded": Library(
-        "polypix",
-        polypix_cover(threads=None),
-        healpix_ring_ids,
-        healpix_cells,
-        ("center", "overlap"),
+    "healpy": healpix(healpy_cover, ("center",), modules=("polypix", "healpy")),
+    "hpgeom": healpix(hpgeom_cover, ("center",), modules=("polypix", "hpgeom")),
+    "mocpy": healpix(
+        mocpy_cover,
+        ("overlap",),
+        cell_ids=healpix_nested_ids,
+        modules=("polypix", "mocpy", "astropy.units", "hpgeom"),
     ),
-    "healpy": Library(
-        "healpy", healpy_cover, healpix_ring_ids, healpix_cells, ("center",)
+    "h3": Library(
+        ("h3.api.numpy_int",), h3_cover, h3_ids, h3_cells, ("center", "overlap")
     ),
-    "hpgeom": Library(
-        "hpgeom", hpgeom_cover, healpix_ring_ids, healpix_cells, ("center",)
-    ),
-    "mocpy": Library(
-        "mocpy", mocpy_cover, healpix_nested_ids, healpix_cells, ("overlap",)
-    ),
-    "h3": Library("h3", h3_cover, h3_ids, h3_cells, ("center", "overlap")),
-    "s2": Library(
-        "s2geometry", s2_cover, s2_ids, lambda level: 6 * 4**level, ("overlap",)
-    ),
+    "s2": Library(("s2geometry",), s2_cover, s2_ids, s2_cells, ("overlap",)),
 }
 
 
@@ -310,7 +304,7 @@ class Case:
     mode: str
     level: int
     tracks: int
-    samples: int  # 0 skips the accuracy check
+    samples: int  # healpix-large passes 0 to skip the accuracy check
     seed: int
     iterations: int
 
@@ -327,7 +321,8 @@ def lookup(result, ids: np.ndarray) -> np.ndarray:
 def measure(case: Case) -> dict:
     """Time one case; runs in a fresh process."""
     library = LIBRARIES[case.library]
-    importlib.import_module(library.module)
+    for module in library.modules:
+        importlib.import_module(module)
     scene = make_scene(case.tracks, case.seed)
 
     times = []
@@ -342,7 +337,7 @@ def measure(case: Case) -> dict:
         "warm_seconds": times[1:],
     }
     if case.library in ("healpy", "hpgeom"):
-        reference = polypix_cover(1)(scene, case.level, case.mode, case.workload)
+        reference = polypix_cover(scene, case.level, case.mode, case.workload)
         if not np.array_equal(result, reference):
             raise AssertionError(f"{case.library} and Polypix select different cells")
     if case.samples:
@@ -469,14 +464,15 @@ def main():
     parser.add_argument(
         "--iterations", type=int, default=5, help="warm calls per process"
     )
-    parser.add_argument("--out", type=Path, default=RESULTS)
+    parser.add_argument("--out", type=Path, help="default: results/, or results/quick")
     parser.add_argument("--quick", action="store_true", help="tiny smoke test")
     args = parser.parse_args()
     if args.quick:
         args.tracks, args.samples, args.repeats, args.iterations = 8, 2_000, 1, 1
-    for value in ("tracks", "samples", "repeats", "iterations"):
-        if getattr(args, value) < 1:
-            parser.error(f"--{value} must be at least 1")
+    args.out = args.out or (RESULTS / "quick" if args.quick else RESULTS)
+    for name in ("tracks", "samples", "repeats", "iterations"):
+        if getattr(args, name) < 1:
+            parser.error(f"--{name} must be at least 1")
 
     # Keep NumPy's BLAS on one thread; children inherit this before importing it.
     for variable in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):

@@ -33,3 +33,4 @@ docs/assets/generated/*.svg
 !docs/assets/generated/cover-convex-polygon.svg
 !docs/assets/generated/cover-sweep.svg
 !docs/assets/generated/resolution-steps.svg
+benchmarks/results/quick/

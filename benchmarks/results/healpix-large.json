@@ -1,0 +1,2423 @@
+{
+ "suite": "healpix-large",
+ "environment": {
+  "commit": "6cfbf6b87c0c41105d63365d9c738daf9a930898",
+  "uncommitted_changes": false,
+  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
+  "cpu": "11th Gen Intel(R) Core(TM) i7-1165G7 @ 2.80GHz",
+  "cpu_count": 8,
+  "python": "3.14.5",
+  "versions": {
+   "numpy": "2.5.4",
+   "healpy": "1.20.1",
+   "hpgeom": "1.7.1",
+   "mocpy": "0.21.0",
+   "astropy": "8.0.2",
+   "h3": "4.5.0",
+   "s2geometry": "0.14.0",
+   "polypix": "1.0.0"
+  }
+ },
+ "records": [
+  {
+   "library": "polypix",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 5,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.0052018089991179295,
+   "warm_seconds": [
+    0.005829219000588637,
+    0.005162430999916978,
+    0.004974149000190664,
+    0.004677142002037726,
+    0.0045415499989758246
+   ],
+   "repeat": 0
+  },
+  {
+   "library": "polypix",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 5,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.004913535001833225,
+   "warm_seconds": [
+    0.004841401998419315,
+    0.004560970999591518,
+    0.004528539000602905,
+    0.004810550999536645,
+    0.004460115000256337
+   ],
+   "repeat": 1
+  },
+  {
+   "library": "polypix",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 5,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.0048036900006991345,
+   "warm_seconds": [
+    0.004398356999445241,
+    0.004578672000207007,
+    0.00436274799722014,
+    0.0044012329999532085,
+    0.0043599759992503095
+   ],
+   "repeat": 2
+  },
+  {
+   "library": "polypix",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 5,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.005096316999697592,
+   "warm_seconds": [
+    0.004581741002766648,
+    0.004592634999426082,
+    0.004597498998919036,
+    0.004651049999665702,
+    0.004585458998917602
+   ],
+   "repeat": 3
+  },
+  {
+   "library": "polypix",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 5,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.004725589998997748,
+   "warm_seconds": [
+    0.004608670999004971,
+    0.004501227998844115,
+    0.004458785999304382,
+    0.004538624998531304,
+    0.004462711000087438
+   ],
+   "repeat": 4
+  },
+  {
+   "library": "polypix",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 6,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.00849955699959537,
+   "warm_seconds": [
+    0.009924866000801558,
+    0.008781586999248248,
+    0.008528825997927925,
+    0.008820046998152975,
+    0.009063330999197206
+   ],
+   "repeat": 0
+  },
+  {
+   "library": "polypix",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 6,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.009347407998575363,
+   "warm_seconds": [
+    0.008257272998889675,
+    0.008353386998351198,
+    0.008682614003191702,
+    0.007862730999477208,
+    0.007736429000942735
+   ],
+   "repeat": 1
+  },
+  {
+   "library": "polypix",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 6,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.007788956001604674,
+   "warm_seconds": [
+    0.007724752002104651,
+    0.007437151001795428,
+    0.00791448599920841,
+    0.0074720629963849206,
+    0.009152661998086842
+   ],
+   "repeat": 2
+  },
+  {
+   "library": "polypix",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 6,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.008083882999926573,
+   "warm_seconds": [
+    0.007729493998340331,
+    0.007678623001993401,
+    0.00823829600267345,
+    0.008709794001333648,
+    0.009490476000792114
+   ],
+   "repeat": 3
+  },
+  {
+   "library": "polypix",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 6,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.007771033997414634,
+   "warm_seconds": [
+    0.007707996999670286,
+    0.007405705000564922,
+    0.008084846998826833,
+    0.007447126001352444,
+    0.00794629700249061
+   ],
+   "repeat": 4
+  },
+  {
+   "library": "polypix",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 7,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.021586763999948744,
+   "warm_seconds": [
+    0.016567105001740856,
+    0.015162920000875602,
+    0.014441336003073957,
+    0.014761616999749094,
+    0.0160019850009121
+   ],
+   "repeat": 0
+  },
+  {
+   "library": "polypix",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 7,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.014758448996872175,
+   "warm_seconds": [
+    0.014341445999889402,
+    0.014719401999172987,
+    0.01557100799982436,
+    0.020794509000552353,
+    0.021512413997697877
+   ],
+   "repeat": 1
+  },
+  {
+   "library": "polypix",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 7,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.014950378001231002,
+   "warm_seconds": [
+    0.014483496997854672,
+    0.01454927300073905,
+    0.014520922002702719,
+    0.01459534999958123,
+    0.014500446002784884
+   ],
+   "repeat": 2
+  },
+  {
+   "library": "polypix",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 7,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.015103454003110528,
+   "warm_seconds": [
+    0.014710989002196584,
+    0.014676138998765964,
+    0.014422521999222226,
+    0.014447927998844534,
+    0.014258175000577467
+   ],
+   "repeat": 3
+  },
+  {
+   "library": "polypix",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 7,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.014957882998714922,
+   "warm_seconds": [
+    0.015342501999839442,
+    0.01648120400204789,
+    0.014243654997699196,
+    0.014453590996708954,
+    0.014492418998997891
+   ],
+   "repeat": 4
+  },
+  {
+   "library": "polypix",
+   "workload": "observation",
+   "mode": "center",
+   "level": 5,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.002691541001695441,
+   "warm_seconds": [
+    0.0025229120001313277,
+    0.0023340709994954523,
+    0.002137411000148859,
+    0.002163337001547916,
+    0.0023790900013409555
+   ],
+   "repeat": 0
+  },
+  {
+   "library": "polypix",
+   "workload": "observation",
+   "mode": "center",
+   "level": 5,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.00238090499988175,
+   "warm_seconds": [
+    0.0022509839982376434,
+    0.002230214002338471,
+    0.002263959002448246,
+    0.002202226998633705,
+    0.0024108190009428654
+   ],
+   "repeat": 1
+  },
+  {
+   "library": "polypix",
+   "workload": "observation",
+   "mode": "center",
+   "level": 5,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.002517105000151787,
+   "warm_seconds": [
+    0.002347341000131564,
+    0.002404119000857463,
+    0.002372971997829154,
+    0.002325457000551978,
+    0.002334835000510793
+   ],
+   "repeat": 2
+  },
+  {
+   "library": "polypix",
+   "workload": "observation",
+   "mode": "center",
+   "level": 5,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.0024799530001473613,
+   "warm_seconds": [
+    0.0021719389987993054,
+    0.0022443089983426034,
+    0.002220481001131702,
+    0.002157689999876311,
+    0.002156326998374425
+   ],
+   "repeat": 3
+  },
+  {
+   "library": "polypix",
+   "workload": "observation",
+   "mode": "center",
+   "level": 5,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.00268757999947411,
+   "warm_seconds": [
+    0.002212528997915797,
+    0.0022157060011522844,
+    0.002274564998515416,
+    0.002284124002471799,
+    0.002254539002024103
+   ],
+   "repeat": 4
+  },
+  {
+   "library": "polypix",
+   "workload": "observation",
+   "mode": "center",
+   "level": 6,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.002972066999063827,
+   "warm_seconds": [
+    0.0026113059975614306,
+    0.002459184997860575,
+    0.002532233000238193,
+    0.002368055000260938,
+    0.002388564000284532
+   ],
+   "repeat": 0
+  },
+  {
+   "library": "polypix",
+   "workload": "observation",
+   "mode": "center",
+   "level": 6,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.0029593130020657554,
+   "warm_seconds": [
+    0.002589857998827938,
+    0.002527133001422044,
+    0.0026012010021077003,
+    0.0025073569995583966,
+    0.0025925039990397636
+   ],
+   "repeat": 1
+  },
+  {
+   "library": "polypix",
+   "workload": "observation",
+   "mode": "center",
+   "level": 6,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.002758995000476716,
+   "warm_seconds": [
+    0.002556442002969561,
+    0.002661148002516711,
+    0.0025217680013156496,
+    0.00242513500052155,
+    0.0024341479984286707
+   ],
+   "repeat": 2
+  },
+  {
+   "library": "polypix",
+   "workload": "observation",
+   "mode": "center",
+   "level": 6,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.002827091000654036,
+   "warm_seconds": [
+    0.0025858680019155145,
+    0.00253617699854658,
+    0.002563394002208952,
+    0.002481481002178043,
+    0.0029584620024252217
+   ],
+   "repeat": 3
+  },
+  {
+   "library": "polypix",
+   "workload": "observation",
+   "mode": "center",
+   "level": 6,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.004796959001396317,
+   "warm_seconds": [
+    0.0041712349993758835,
+    0.0027413320021878462,
+    0.0025779429997783154,
+    0.0024866060011845548,
+    0.0024951619998319075
+   ],
+   "repeat": 4
+  },
+  {
+   "library": "polypix",
+   "workload": "observation",
+   "mode": "center",
+   "level": 7,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.0037728540009993594,
+   "warm_seconds": [
+    0.0037877759968978353,
+    0.003606289999879664,
+    0.0033493070004624315,
+    0.0028542710024339613,
+    0.0029067249997751787
+   ],
+   "repeat": 0
+  },
+  {
+   "library": "polypix",
+   "workload": "observation",
+   "mode": "center",
+   "level": 7,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.003745008998521371,
+   "warm_seconds": [
+    0.0035379019973333925,
+    0.0033157210018543992,
+    0.0035410259988566395,
+    0.0028800549989682622,
+    0.002819810000801226
+   ],
+   "repeat": 1
+  },
+  {
+   "library": "polypix",
+   "workload": "observation",
+   "mode": "center",
+   "level": 7,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.0038472800006275065,
+   "warm_seconds": [
+    0.0034788250013662037,
+    0.0033887650024553295,
+    0.003317913000500994,
+    0.002923293999629095,
+    0.003088786997977877
+   ],
+   "repeat": 2
+  },
+  {
+   "library": "polypix",
+   "workload": "observation",
+   "mode": "center",
+   "level": 7,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.003712360998179065,
+   "warm_seconds": [
+    0.003535660998750245,
+    0.0035764770000241697,
+    0.003411856003367575,
+    0.0029479120021278504,
+    0.002947967997897649
+   ],
+   "repeat": 3
+  },
+  {
+   "library": "polypix",
+   "workload": "observation",
+   "mode": "center",
+   "level": 7,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.003780610000831075,
+   "warm_seconds": [
+    0.0035233310009061825,
+    0.003510657999868272,
+    0.003521587001159787,
+    0.0029612590005854145,
+    0.002961656999104889
+   ],
+   "repeat": 4
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 5,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.004349915001512272,
+   "warm_seconds": [
+    0.003081455000938149,
+    0.003076547996897716,
+    0.002910261002398329,
+    0.002869956999347778,
+    0.002975200000946643
+   ],
+   "repeat": 0
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 5,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.0049174270025105216,
+   "warm_seconds": [
+    0.0037286960032361094,
+    0.0036426389997359365,
+    0.003670111000246834,
+    0.0032139070026460104,
+    0.0030897090000507887
+   ],
+   "repeat": 1
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 5,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.004461821998120286,
+   "warm_seconds": [
+    0.0032150799997907598,
+    0.003158258998155361,
+    0.002901520001614699,
+    0.0029671029988094233,
+    0.0032108080013131257
+   ],
+   "repeat": 2
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 5,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.004233511997881578,
+   "warm_seconds": [
+    0.0032040550031524617,
+    0.0030891120004525874,
+    0.003005426999152405,
+    0.0031832189997658134,
+    0.0030101029988145456
+   ],
+   "repeat": 3
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 5,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.004147590003412915,
+   "warm_seconds": [
+    0.0028892310001538135,
+    0.003607383001508424,
+    0.0031114080011320766,
+    0.0028880539975943975,
+    0.003167908998875646
+   ],
+   "repeat": 4
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 6,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.005091408998850966,
+   "warm_seconds": [
+    0.004134013001021231,
+    0.0038669599998684134,
+    0.004101905000425177,
+    0.0037359369998739567,
+    0.0040051809992291965
+   ],
+   "repeat": 0
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 6,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.005101083999761613,
+   "warm_seconds": [
+    0.003973802002292359,
+    0.004074062999279704,
+    0.004441049000888597,
+    0.0038402760001190472,
+    0.003659738998976536
+   ],
+   "repeat": 1
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 6,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.004977534001227468,
+   "warm_seconds": [
+    0.004249405999871669,
+    0.004226626999297878,
+    0.004006450999440858,
+    0.0037510189977183472,
+    0.004105733001779299
+   ],
+   "repeat": 2
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 6,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.005248237001069356,
+   "warm_seconds": [
+    0.004375350999907823,
+    0.003939756999898236,
+    0.003735586000402691,
+    0.004024165002192603,
+    0.003957655000704108
+   ],
+   "repeat": 3
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 6,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.005202151001867605,
+   "warm_seconds": [
+    0.004284115999325877,
+    0.004049700000905432,
+    0.0038758100017730612,
+    0.0037839080032426864,
+    0.0038454810019175056
+   ],
+   "repeat": 4
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 7,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.006828327001130674,
+   "warm_seconds": [
+    0.006093240997870453,
+    0.005808283000078518,
+    0.005725830000301357,
+    0.0057281840017822105,
+    0.005526766999537358
+   ],
+   "repeat": 0
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 7,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.007158197000535438,
+   "warm_seconds": [
+    0.006066231999284355,
+    0.006023669997375691,
+    0.0059247939971101005,
+    0.005679717000020901,
+    0.005534624000574695
+   ],
+   "repeat": 1
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 7,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.007149928002036177,
+   "warm_seconds": [
+    0.005999987002724083,
+    0.006032827001035912,
+    0.005941845000052126,
+    0.0054835209994053,
+    0.005552392001845874
+   ],
+   "repeat": 2
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 7,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.007144553001126042,
+   "warm_seconds": [
+    0.006097493002016563,
+    0.006396355998731451,
+    0.005569935001403792,
+    0.005510031998710474,
+    0.005880756998521974
+   ],
+   "repeat": 3
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 7,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.0072728250015643425,
+   "warm_seconds": [
+    0.00647966699762037,
+    0.00561622500026715,
+    0.005724646001908695,
+    0.0057581590008339845,
+    0.005836087002535351
+   ],
+   "repeat": 4
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "observation",
+   "mode": "center",
+   "level": 5,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.0020219289981469046,
+   "warm_seconds": [
+    0.001165213998319814,
+    0.0010214809990429785,
+    0.0012632630023290403,
+    0.0012060590015607886,
+    0.0010335039987694472
+   ],
+   "repeat": 0
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "observation",
+   "mode": "center",
+   "level": 5,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.002202490999479778,
+   "warm_seconds": [
+    0.0011736099986592308,
+    0.0011262270018050913,
+    0.0011751339989132248,
+    0.0013009350004722364,
+    0.0012039629982609767
+   ],
+   "repeat": 1
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "observation",
+   "mode": "center",
+   "level": 5,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.002311578002263559,
+   "warm_seconds": [
+    0.0012163920000602957,
+    0.001069769001333043,
+    0.0011342789985064883,
+    0.001218787998368498,
+    0.0011999300004390534
+   ],
+   "repeat": 2
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "observation",
+   "mode": "center",
+   "level": 5,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.0023527809971710667,
+   "warm_seconds": [
+    0.0012196049974591006,
+    0.001193657000840176,
+    0.0012646350005525164,
+    0.0011662610013445374,
+    0.0011070349974033888
+   ],
+   "repeat": 3
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "observation",
+   "mode": "center",
+   "level": 5,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.0020552620007947553,
+   "warm_seconds": [
+    0.0013590679991466459,
+    0.0012644260023080278,
+    0.0012050340010318905,
+    0.0010729640016506892,
+    0.0012559050010167994
+   ],
+   "repeat": 4
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "observation",
+   "mode": "center",
+   "level": 6,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.002298044997587567,
+   "warm_seconds": [
+    0.0016392810030083638,
+    0.001169058999948902,
+    0.001411757999449037,
+    0.001224047999130562,
+    0.0013312549999682233
+   ],
+   "repeat": 0
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "observation",
+   "mode": "center",
+   "level": 6,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.0022953919979045168,
+   "warm_seconds": [
+    0.0014748069988854695,
+    0.0013690410014532972,
+    0.0014103760004218202,
+    0.0012459470017347485,
+    0.0011858410034619737
+   ],
+   "repeat": 1
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "observation",
+   "mode": "center",
+   "level": 6,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.002216713000962045,
+   "warm_seconds": [
+    0.0013916829993831925,
+    0.0014289030004874803,
+    0.0011988929982180707,
+    0.0011880890015163459,
+    0.0011922209996555466
+   ],
+   "repeat": 2
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "observation",
+   "mode": "center",
+   "level": 6,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.0026222829983453266,
+   "warm_seconds": [
+    0.0015380280019599013,
+    0.0013375679991440848,
+    0.0012487520034483168,
+    0.0011964100012846757,
+    0.0011527080023370218
+   ],
+   "repeat": 3
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "observation",
+   "mode": "center",
+   "level": 6,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.0028358119998301845,
+   "warm_seconds": [
+    0.0015747799989185296,
+    0.0016362969981855713,
+    0.0013447470009850804,
+    0.0012795059992640745,
+    0.0010936869985016529
+   ],
+   "repeat": 4
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "observation",
+   "mode": "center",
+   "level": 7,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.003133697999146534,
+   "warm_seconds": [
+    0.0020110650002607144,
+    0.001842055000452092,
+    0.0018570549982541706,
+    0.0013430940016405657,
+    0.001436040001863148
+   ],
+   "repeat": 0
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "observation",
+   "mode": "center",
+   "level": 7,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.002962085000035586,
+   "warm_seconds": [
+    0.0020675689993367996,
+    0.001851619002991356,
+    0.0016847690021677408,
+    0.001511238999228226,
+    0.0012062610003340524
+   ],
+   "repeat": 1
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "observation",
+   "mode": "center",
+   "level": 7,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.0026860450016101822,
+   "warm_seconds": [
+    0.0019129649990645703,
+    0.0018160399995394982,
+    0.0017956900010176469,
+    0.0014966279995860532,
+    0.0016004690005502198
+   ],
+   "repeat": 2
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "observation",
+   "mode": "center",
+   "level": 7,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.0027270160026091617,
+   "warm_seconds": [
+    0.0021040610008640215,
+    0.0018630260019563138,
+    0.001733876000798773,
+    0.001327945999946678,
+    0.0013683229990419932
+   ],
+   "repeat": 3
+  },
+  {
+   "library": "polypix-threaded",
+   "workload": "observation",
+   "mode": "center",
+   "level": 7,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.003209013000741834,
+   "warm_seconds": [
+    0.002088416000333382,
+    0.0018572949993540533,
+    0.0020660080008383375,
+    0.0016022050003812183,
+    0.0013429050013655797
+   ],
+   "repeat": 4
+  },
+  {
+   "library": "healpy",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 5,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.02657857300073374,
+   "warm_seconds": [
+    0.025115838998317486,
+    0.025840159996732837,
+    0.026210740998067195,
+    0.025635147001594305,
+    0.025447730000450974
+   ],
+   "repeat": 0
+  },
+  {
+   "library": "healpy",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 5,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.02592850299697602,
+   "warm_seconds": [
+    0.02576327299902914,
+    0.026816950001375517,
+    0.027604078997683246,
+    0.026330190998123726,
+    0.025422405000426807
+   ],
+   "repeat": 1
+  },
+  {
+   "library": "healpy",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 5,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.026006730997323757,
+   "warm_seconds": [
+    0.026480395998078166,
+    0.026028306998341577,
+    0.03344635599933099,
+    0.033069730998249725,
+    0.026374058001238154
+   ],
+   "repeat": 2
+  },
+  {
+   "library": "healpy",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 5,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.024954780001280596,
+   "warm_seconds": [
+    0.02528547600013553,
+    0.030251284999394557,
+    0.03582450899921241,
+    0.02527711099901353,
+    0.024575310002546757
+   ],
+   "repeat": 3
+  },
+  {
+   "library": "healpy",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 5,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.026400785998703213,
+   "warm_seconds": [
+    0.026425895001011668,
+    0.02508522399875801,
+    0.02617732599901501,
+    0.026085755998792592,
+    0.029459797002346022
+   ],
+   "repeat": 4
+  },
+  {
+   "library": "healpy",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 6,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.034280210002179956,
+   "warm_seconds": [
+    0.03611432099933154,
+    0.03522996999890893,
+    0.03348891600035131,
+    0.03377322199958144,
+    0.034147275997383986
+   ],
+   "repeat": 0
+  },
+  {
+   "library": "healpy",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 6,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.035964399998192675,
+   "warm_seconds": [
+    0.04306364299918641,
+    0.034074985996994656,
+    0.03277218700168305,
+    0.0326439210002718,
+    0.03243400999781443
+   ],
+   "repeat": 1
+  },
+  {
+   "library": "healpy",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 6,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.034566998001537286,
+   "warm_seconds": [
+    0.03402770899992902,
+    0.0346947750003892,
+    0.03752727399842115,
+    0.03397780299928854,
+    0.03435561900187167
+   ],
+   "repeat": 2
+  },
+  {
+   "library": "healpy",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 6,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.04081480899913004,
+   "warm_seconds": [
+    0.033937387001060415,
+    0.03595744199992623,
+    0.03463228500186233,
+    0.033943790000193985,
+    0.03346034700007294
+   ],
+   "repeat": 3
+  },
+  {
+   "library": "healpy",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 6,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.03359871299835504,
+   "warm_seconds": [
+    0.04510266799843521,
+    0.0351989209993917,
+    0.03399053100292804,
+    0.034620072998222895,
+    0.03464012599943089
+   ],
+   "repeat": 4
+  },
+  {
+   "library": "healpy",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 7,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.07164307399943937,
+   "warm_seconds": [
+    0.056736631002422655,
+    0.05661830399913015,
+    0.0568594899996242,
+    0.056109033001121134,
+    0.0566956750008103
+   ],
+   "repeat": 0
+  },
+  {
+   "library": "healpy",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 7,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.07549379600095563,
+   "warm_seconds": [
+    0.06209707699963474,
+    0.05921741099882638,
+    0.055367365002894076,
+    0.057678622997627826,
+    0.05678005300069344
+   ],
+   "repeat": 1
+  },
+  {
+   "library": "healpy",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 7,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.0674906899985217,
+   "warm_seconds": [
+    0.0741187550011091,
+    0.07016599599955953,
+    0.06725676000132808,
+    0.06196988499868894,
+    0.06851803400058998
+   ],
+   "repeat": 2
+  },
+  {
+   "library": "healpy",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 7,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.05805611699906876,
+   "warm_seconds": [
+    0.05714016199999605,
+    0.06211153900221689,
+    0.056987982999999076,
+    0.057590469001297606,
+    0.061734200000501005
+   ],
+   "repeat": 3
+  },
+  {
+   "library": "healpy",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 7,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.05901205000191112,
+   "warm_seconds": [
+    0.05692511899906094,
+    0.058310036998591386,
+    0.057860771998093696,
+    0.058082440998987295,
+    0.05907304200081853
+   ],
+   "repeat": 4
+  },
+  {
+   "library": "healpy",
+   "workload": "observation",
+   "mode": "center",
+   "level": 5,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.044896440998854814,
+   "warm_seconds": [
+    0.043096875997434836,
+    0.04771141300079762,
+    0.04370945199843845,
+    0.04432427099891356,
+    0.04494188999888138
+   ],
+   "repeat": 0
+  },
+  {
+   "library": "healpy",
+   "workload": "observation",
+   "mode": "center",
+   "level": 5,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.04493335100050899,
+   "warm_seconds": [
+    0.04799223599911784,
+    0.04380631200183416,
+    0.05411842600005912,
+    0.04609873400113429,
+    0.044976580000366084
+   ],
+   "repeat": 1
+  },
+  {
+   "library": "healpy",
+   "workload": "observation",
+   "mode": "center",
+   "level": 5,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.04439189999902737,
+   "warm_seconds": [
+    0.04511399100010749,
+    0.0451770680010668,
+    0.04433475599944359,
+    0.045295454998267815,
+    0.044890550001582596
+   ],
+   "repeat": 2
+  },
+  {
+   "library": "healpy",
+   "workload": "observation",
+   "mode": "center",
+   "level": 5,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.04420473799837055,
+   "warm_seconds": [
+    0.04470554399813409,
+    0.044595278002816485,
+    0.04843432499910705,
+    0.05417338299957919,
+    0.046152016999258194
+   ],
+   "repeat": 3
+  },
+  {
+   "library": "healpy",
+   "workload": "observation",
+   "mode": "center",
+   "level": 5,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.04393586599690025,
+   "warm_seconds": [
+    0.047866176999377785,
+    0.04553369499990367,
+    0.044803119999414776,
+    0.053818020001926925,
+    0.049421724001149414
+   ],
+   "repeat": 4
+  },
+  {
+   "library": "healpy",
+   "workload": "observation",
+   "mode": "center",
+   "level": 6,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.07196774200201617,
+   "warm_seconds": [
+    0.07066849200055003,
+    0.07243647199720726,
+    0.07248257899846067,
+    0.07123319899983471,
+    0.07662307099963073
+   ],
+   "repeat": 0
+  },
+  {
+   "library": "healpy",
+   "workload": "observation",
+   "mode": "center",
+   "level": 6,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.07287354999789386,
+   "warm_seconds": [
+    0.07294579100198462,
+    0.07270626200261177,
+    0.07616341600078158,
+    0.07470028399984585,
+    0.07265126800120925
+   ],
+   "repeat": 1
+  },
+  {
+   "library": "healpy",
+   "workload": "observation",
+   "mode": "center",
+   "level": 6,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.07290930799717898,
+   "warm_seconds": [
+    0.07129717600037111,
+    0.07233521700254641,
+    0.07168580400320934,
+    0.07153184299750137,
+    0.10295663599754334
+   ],
+   "repeat": 2
+  },
+  {
+   "library": "healpy",
+   "workload": "observation",
+   "mode": "center",
+   "level": 6,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.08148684199841227,
+   "warm_seconds": [
+    0.07187754300321103,
+    0.072517794000305,
+    0.06955780399948708,
+    0.07282184400173719,
+    0.07335331300055259
+   ],
+   "repeat": 3
+  },
+  {
+   "library": "healpy",
+   "workload": "observation",
+   "mode": "center",
+   "level": 6,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.07436464200145565,
+   "warm_seconds": [
+    0.07680128500214778,
+    0.07811181299985037,
+    0.0826360860010027,
+    0.0735746520003886,
+    0.0730926689975604
+   ],
+   "repeat": 4
+  },
+  {
+   "library": "healpy",
+   "workload": "observation",
+   "mode": "center",
+   "level": 7,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.12451987199892756,
+   "warm_seconds": [
+    0.13156668100054958,
+    0.12696856500042486,
+    0.1314154520005104,
+    0.12545108799895388,
+    0.12343456899907324
+   ],
+   "repeat": 0
+  },
+  {
+   "library": "healpy",
+   "workload": "observation",
+   "mode": "center",
+   "level": 7,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.12403457300024456,
+   "warm_seconds": [
+    0.15609303100063698,
+    0.13034958700154675,
+    0.13393469900256605,
+    0.12473756300096284,
+    0.12420320400269702
+   ],
+   "repeat": 1
+  },
+  {
+   "library": "healpy",
+   "workload": "observation",
+   "mode": "center",
+   "level": 7,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.1280064009988564,
+   "warm_seconds": [
+    0.12622380899847485,
+    0.12642791399775888,
+    0.12875155999790877,
+    0.12365219499770319,
+    0.12478058299893746
+   ],
+   "repeat": 2
+  },
+  {
+   "library": "healpy",
+   "workload": "observation",
+   "mode": "center",
+   "level": 7,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.13121308599875192,
+   "warm_seconds": [
+    0.125360902002285,
+    0.12385408099726192,
+    0.13564667899845517,
+    0.12259868800174445,
+    0.12318200799927581
+   ],
+   "repeat": 3
+  },
+  {
+   "library": "healpy",
+   "workload": "observation",
+   "mode": "center",
+   "level": 7,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.1258875919993443,
+   "warm_seconds": [
+    0.12314453500221134,
+    0.1232524029983324,
+    0.12347851199956494,
+    0.12395774299875484,
+    0.12376032799875247
+   ],
+   "repeat": 4
+  },
+  {
+   "library": "hpgeom",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 5,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.08863650699640857,
+   "warm_seconds": [
+    0.09836784999788506,
+    0.09710443199946894,
+    0.09229432400024962,
+    0.09226667000257294,
+    0.10184793600274133
+   ],
+   "repeat": 0
+  },
+  {
+   "library": "hpgeom",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 5,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.0893379900007858,
+   "warm_seconds": [
+    0.08974438299992471,
+    0.08670973499829415,
+    0.09007738700165646,
+    0.09400036000079126,
+    0.09565222699893638
+   ],
+   "repeat": 1
+  },
+  {
+   "library": "hpgeom",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 5,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.08742861000064295,
+   "warm_seconds": [
+    0.08527163800317794,
+    0.09968385100000887,
+    0.08988060000046971,
+    0.09009943599812686,
+    0.08716871900105616
+   ],
+   "repeat": 2
+  },
+  {
+   "library": "hpgeom",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 5,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.08977068900276208,
+   "warm_seconds": [
+    0.08991445299761835,
+    0.09223655499954475,
+    0.09103878200039617,
+    0.09202554499643156,
+    0.09932561800087569
+   ],
+   "repeat": 3
+  },
+  {
+   "library": "hpgeom",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 5,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.08881532200030051,
+   "warm_seconds": [
+    0.0847845150019566,
+    0.08351751000009244,
+    0.08549906700136489,
+    0.08346679800160928,
+    0.08474469900102122
+   ],
+   "repeat": 4
+  },
+  {
+   "library": "hpgeom",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 6,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.10301557699858677,
+   "warm_seconds": [
+    0.09945539199907216,
+    0.09800092400109861,
+    0.09832983300293563,
+    0.09652748799999245,
+    0.09538537900152733
+   ],
+   "repeat": 0
+  },
+  {
+   "library": "hpgeom",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 6,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.09228621500005829,
+   "warm_seconds": [
+    0.09572972499881871,
+    0.09224984699903871,
+    0.10086067999873194,
+    0.09970193700064556,
+    0.09669678000136628
+   ],
+   "repeat": 1
+  },
+  {
+   "library": "hpgeom",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 6,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.10864448299980722,
+   "warm_seconds": [
+    0.09875600300074439,
+    0.10428585699992254,
+    0.0956028629989305,
+    0.09644434999790974,
+    0.09413000299900887
+   ],
+   "repeat": 2
+  },
+  {
+   "library": "hpgeom",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 6,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.10234373599814717,
+   "warm_seconds": [
+    0.09764510399691062,
+    0.09781742799896165,
+    0.09553377200063551,
+    0.09636349599895766,
+    0.09611507799854735
+   ],
+   "repeat": 3
+  },
+  {
+   "library": "hpgeom",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 6,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.10179552499903366,
+   "warm_seconds": [
+    0.10866750100103673,
+    0.10245079599917517,
+    0.12530387999868253,
+    0.10685273600029177,
+    0.10299610600122833
+   ],
+   "repeat": 4
+  },
+  {
+   "library": "hpgeom",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 7,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.12485535100131528,
+   "warm_seconds": [
+    0.12395213399940985,
+    0.12369093400047859,
+    0.12333417900299537,
+    0.1281083520007087,
+    0.12662534699848038
+   ],
+   "repeat": 0
+  },
+  {
+   "library": "hpgeom",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 7,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.12351348100128234,
+   "warm_seconds": [
+    0.12127535699983127,
+    0.12114392700095777,
+    0.12198502299725078,
+    0.12201741799799493,
+    0.12868047200026922
+   ],
+   "repeat": 1
+  },
+  {
+   "library": "hpgeom",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 7,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.12372283900185721,
+   "warm_seconds": [
+    0.15436104199761758,
+    0.1392740649971529,
+    0.12371171599806985,
+    0.12269438499788521,
+    0.12065939199965214
+   ],
+   "repeat": 2
+  },
+  {
+   "library": "hpgeom",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 7,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.12408204899838893,
+   "warm_seconds": [
+    0.12296637100007501,
+    0.11950345699733589,
+    0.12114828899939312,
+    0.11967467100112117,
+    0.12129700999867055
+   ],
+   "repeat": 3
+  },
+  {
+   "library": "hpgeom",
+   "workload": "visibility",
+   "mode": "center",
+   "level": 7,
+   "tracks": 10000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.1346625000005588,
+   "warm_seconds": [
+    0.11910057299974142,
+    0.13938807200247538,
+    0.12241084100242006,
+    0.1223150279984111,
+    0.1365669999977399
+   ],
+   "repeat": 4
+  },
+  {
+   "library": "hpgeom",
+   "workload": "observation",
+   "mode": "center",
+   "level": 5,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.08403334399918094,
+   "warm_seconds": [
+    0.06516422399727162,
+    0.07038094300150988,
+    0.06907731799947214,
+    0.066503696001746,
+    0.07107066200114787
+   ],
+   "repeat": 0
+  },
+  {
+   "library": "hpgeom",
+   "workload": "observation",
+   "mode": "center",
+   "level": 5,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.06592608200298855,
+   "warm_seconds": [
+    0.06639284300035797,
+    0.06487086400011322,
+    0.06538927200017497,
+    0.0675591990002431,
+    0.06630360700000892
+   ],
+   "repeat": 1
+  },
+  {
+   "library": "hpgeom",
+   "workload": "observation",
+   "mode": "center",
+   "level": 5,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.06739954400109127,
+   "warm_seconds": [
+    0.06851559099959559,
+    0.06642159100010758,
+    0.06837148900012835,
+    0.0693073619986535,
+    0.07079829299982521
+   ],
+   "repeat": 2
+  },
+  {
+   "library": "hpgeom",
+   "workload": "observation",
+   "mode": "center",
+   "level": 5,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.07163428999774624,
+   "warm_seconds": [
+    0.06886372200096957,
+    0.07139003799966304,
+    0.06979036399934557,
+    0.06714741399991908,
+    0.07587930199952098
+   ],
+   "repeat": 3
+  },
+  {
+   "library": "hpgeom",
+   "workload": "observation",
+   "mode": "center",
+   "level": 5,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 12288,
+   "first_seconds": 0.07043853299910552,
+   "warm_seconds": [
+    0.06800777799799107,
+    0.06778393700005836,
+    0.06628612599888584,
+    0.06700821500271559,
+    0.06775477200062596
+   ],
+   "repeat": 4
+  },
+  {
+   "library": "hpgeom",
+   "workload": "observation",
+   "mode": "center",
+   "level": 6,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.09803710899723228,
+   "warm_seconds": [
+    0.1004510710008617,
+    0.10341981599776773,
+    0.104402097997081,
+    0.09824967999884393,
+    0.0995774020011595
+   ],
+   "repeat": 0
+  },
+  {
+   "library": "hpgeom",
+   "workload": "observation",
+   "mode": "center",
+   "level": 6,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.09465466899928288,
+   "warm_seconds": [
+    0.09353553999972064,
+    0.0962472829996841,
+    0.11515280000094208,
+    0.10237922600208549,
+    0.09574346600129502
+   ],
+   "repeat": 1
+  },
+  {
+   "library": "hpgeom",
+   "workload": "observation",
+   "mode": "center",
+   "level": 6,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.10712787000011303,
+   "warm_seconds": [
+    0.09852486199815758,
+    0.09772590899956413,
+    0.09263371499764617,
+    0.09372451400122372,
+    0.09704028499982087
+   ],
+   "repeat": 2
+  },
+  {
+   "library": "hpgeom",
+   "workload": "observation",
+   "mode": "center",
+   "level": 6,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.09716725300313556,
+   "warm_seconds": [
+    0.10205341900291387,
+    0.09515536400067504,
+    0.09376436000093236,
+    0.09582945200236281,
+    0.09527894100028789
+   ],
+   "repeat": 3
+  },
+  {
+   "library": "hpgeom",
+   "workload": "observation",
+   "mode": "center",
+   "level": 6,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 49152,
+   "first_seconds": 0.09715585700178053,
+   "warm_seconds": [
+    0.09269059400321566,
+    0.09279843400145182,
+    0.09415260999958264,
+    0.11844587400264572,
+    0.09724067500064848
+   ],
+   "repeat": 4
+  },
+  {
+   "library": "hpgeom",
+   "workload": "observation",
+   "mode": "center",
+   "level": 7,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.16214509999917937,
+   "warm_seconds": [
+    0.16672040800040122,
+    0.15738448100091773,
+    0.1515951719993609,
+    0.15946744900065823,
+    0.2110340079998423
+   ],
+   "repeat": 0
+  },
+  {
+   "library": "hpgeom",
+   "workload": "observation",
+   "mode": "center",
+   "level": 7,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.16883269300160464,
+   "warm_seconds": [
+    0.17646363899984863,
+    0.14974803000222892,
+    0.15511727800185326,
+    0.15311336800004938,
+    0.14474838100068155
+   ],
+   "repeat": 1
+  },
+  {
+   "library": "hpgeom",
+   "workload": "observation",
+   "mode": "center",
+   "level": 7,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.15469935199871543,
+   "warm_seconds": [
+    0.15090846699968097,
+    0.14479881300212583,
+    0.16077271299946005,
+    0.1499448049980856,
+    0.15270188499926007
+   ],
+   "repeat": 2
+  },
+  {
+   "library": "hpgeom",
+   "workload": "observation",
+   "mode": "center",
+   "level": 7,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.14525183099976857,
+   "warm_seconds": [
+    0.14651503000277444,
+    0.14956077199894935,
+    0.15301852400079952,
+    0.14190487999803736,
+    0.1511961730029725
+   ],
+   "repeat": 3
+  },
+  {
+   "library": "hpgeom",
+   "workload": "observation",
+   "mode": "center",
+   "level": 7,
+   "tracks": 1000,
+   "samples": 0,
+   "seed": 20261109,
+   "iterations": 5,
+   "cells": 196608,
+   "first_seconds": 0.14441384399833623,
+   "warm_seconds": [
+    0.15447500000300352,
+    0.15119272499941872,
+    0.15202345899888314,
+    0.14437119200010784,
+    0.14606046799963224
+   ],
+   "repeat": 4
+  }
+ ]
+}

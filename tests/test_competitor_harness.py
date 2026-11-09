@@ -22,7 +22,7 @@ def test_exact_counts_agree_with_polypix_at_cell_centers():
     centers = px.cell_centers(np.arange(px.cell_count(5)), resolution=5)
     for workload in ("visibility", "observation"):
         expected = bench.exact_counts(centers, scene, workload)
-        found = bench.polypix_cover(1)(scene, 5, "center", workload)
+        found = bench.polypix_cover(scene, 5, "center", workload)
         if workload == "observation":
             found = found > 0
         np.testing.assert_array_equal(found, expected)
