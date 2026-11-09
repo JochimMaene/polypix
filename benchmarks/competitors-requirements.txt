@@ -1,0 +1,8 @@
+# Validated competitor versions; Polypix is installed from this checkout.
+numpy==2.5.4
+healpy==1.20.1
+hpgeom==1.7.1
+mocpy==0.21.0
+h3==4.5.0
+s2geometry==0.14.0
+astropy==8.0.2

@@ -126,3 +126,9 @@ Worker threads don't survive `fork()`. A process forked after Polypix started
 its worker threads, such as a `multiprocessing` worker started with the `fork`
 method from a parent that already ran parallel calls, runs every call on one
 thread. A process forked before that starts its own threads as usual.
+
+## Competitor workflows
+
+The [benchmark results](benchmarks.md) compare visibility counts and accumulated
+observation coverage with healpy, HPGeom, MOCPy, H3, and S2. The page includes
+throughput charts, accuracy comparisons, methodology, and reproduction commands.
