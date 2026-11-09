@@ -1,421 +1,490 @@
-"""Reproducible application benchmarks; see competitors.md for semantics."""
+"""Compare Polypix with other sphere-gridding libraries.
+
+Two workloads, both built from the same random shapes:
+
+* visibility: count, for every grid cell, how many circles cover it;
+* observation: find the cells covered by any of a set of small footprints.
+
+Each library covers the shapes on its own grid, and we time that call plus the
+step that turns its output into per-cell counts. We then look the answer up at
+random points and compare it with exact spherical geometry.
+
+    python benchmarks/competitors.py                 # the published runs
+    python benchmarks/competitors.py --quick         # a one-minute smoke test
+
+See competitors.md for the setup and what each comparison means.
+"""
 
 from __future__ import annotations
 
 import argparse
-import hashlib
+import importlib
 import importlib.metadata
 import json
-import math
 import os
 import platform
 import statistics
 import subprocess
 import sys
 import time
+import traceback
+from collections.abc import Callable
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import asdict, dataclass
+from multiprocessing import get_context
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 
-BACKENDS = (
-    "polypix-serial",
-    "polypix-auto",
-    "healpy",
-    "hpgeom",
-    "mocpy",
-    "h3",
-    "s2geometry",
-)
+RESULTS = Path(__file__).resolve().parent / "results"
 
 
-def lonlat(xyz):
-    return np.degrees(np.arctan2(xyz[..., 1], xyz[..., 0])), np.degrees(
-        np.arcsin(xyz[..., 2])
-    )
+class Scene(NamedTuple):
+    centers: np.ndarray  # (tracks, 3) unit vectors
+    radii: np.ndarray  # (tracks,) radians
+    footprints: np.ndarray  # (4 * tracks, 4, 3) counter-clockwise quadrilaterals
 
 
-def scene(count, seed):
+def make_scene(tracks: int, seed: int) -> Scene:
+    """Random circles and footprints between 63 degrees south and north.
+
+    Each track has one circle of 3 to 12 degrees radius, and four overlapping
+    1.4 by 0.9 degree footprints stepping east from the same center.
+    """
     rng = np.random.default_rng(seed)
-    lon = rng.uniform(-np.pi, np.pi, count)
-    lat = rng.uniform(-1.1, 1.1, count)
+    lon = rng.uniform(-np.pi, np.pi, tracks)
+    lat = rng.uniform(-1.1, 1.1, tracks)
+    radii = np.radians(rng.uniform(3, 12, tracks))
     centers = np.column_stack(
-        (np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat))
+        [np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)]
     )
-    east = np.column_stack((-np.sin(lon), np.cos(lon), np.zeros(count)))
+    east = np.column_stack([-np.sin(lon), np.cos(lon), np.zeros(tracks)])
     north = np.cross(centers, east)
-    radii = rng.uniform(np.radians(3), np.radians(12), count)
-    # Consecutive overlapping footprints along each synthetic track.
-    polygons = []
-    for c, e, n in zip(centers, east, north, strict=True):
-        for step in range(4):
-            p = np.array(
-                [
-                    c + (step * 0.015 + x) * e + y * n
-                    for x, y in [
-                        (-0.012, -0.008),
-                        (0.012, -0.008),
-                        (0.012, 0.008),
-                        (-0.012, 0.008),
-                    ]
-                ]
-            )
-            polygons.append(p / np.linalg.norm(p, axis=1)[:, None])
-    return centers, radii, np.array(polygons)
+
+    corners = np.array([(-1, -1), (1, -1), (1, 1), (-1, 1)]) * (0.012, 0.008)
+    steps = np.array([(0.015 * i, 0) for i in range(4)])
+    offsets = steps[:, None, :] + corners  # (step, corner, east/north)
+    footprints = (
+        centers[:, None, None]
+        + offsets[None, ..., :1] * east[:, None, None]
+        + offsets[None, ..., 1:] * north[:, None, None]
+    ).reshape(-1, 4, 3)
+    footprints /= np.linalg.norm(footprints, axis=-1, keepdims=True)
+    return Scene(centers, radii, footprints)
 
 
-def truth(points, centers, radii, polygons, workflow):
-    result = np.zeros(len(points), dtype=np.int64)
-    if workflow == "visibility":
-        for c, r in zip(centers, radii, strict=True):
-            result += points @ c >= np.cos(r)
+def exact_counts(points: np.ndarray, scene: Scene, workload: str) -> np.ndarray:
+    """Circles covering each point, or 1 where any footprint covers it."""
+    if workload == "visibility":
+        return np.sum(points @ scene.centers.T >= np.cos(scene.radii), axis=1)
+    covered = np.zeros(len(points), dtype=bool)
+    for corners in scene.footprints:
+        edge_normals = np.cross(corners, np.roll(corners, -1, axis=0))
+        covered |= np.all(points @ edge_normals.T >= 0, axis=1)
+    return covered.astype(np.int64)
+
+
+def latlng(xyz: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Latitude and longitude in degrees."""
+    return np.degrees(np.arcsin(xyz[..., 2])), np.degrees(
+        np.arctan2(xyz[..., 1], xyz[..., 0])
+    )
+
+
+def circle_outline(center: np.ndarray, radius: float, vertices=128) -> np.ndarray:
+    """Points on a circle, for libraries that only accept polygons."""
+    east = np.cross([0.0, 0.0, 1.0], center)
+    east /= np.linalg.norm(east)
+    north = np.cross(center, east)
+    angle = np.linspace(0, 2 * np.pi, vertices, endpoint=False)[:, None]
+    ring = np.cos(angle) * east + np.sin(angle) * north
+    return np.cos(radius) * center + np.sin(radius) * ring
+
+
+def count_cells(cell_lists: list[np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    """Sorted unique cell IDs and how many lists contain each."""
+    return np.unique(np.concatenate(cell_lists), return_counts=True)
+
+
+# Each library turns a scene into either a dense array indexed by cell ID or a
+# sorted (cell IDs, counts) pair. Imports happen inside the functions so the
+# script still runs when some libraries are missing.
+
+
+def polypix_cover(threads: int | None):
+    def cover(scene, level, mode, workload):
+        import polypix
+
+        options = dict(
+            resolution=level, mode=mode, threads=threads, reduce=polypix.Count()
+        )
+        if workload == "visibility":
+            return polypix.cover_cap(scene.centers, scene.radii, **options)
+        return polypix.cover_polygon(scene.footprints, **options)
+
+    return cover
+
+
+def healpy_cover(scene, level, mode, workload):
+    import healpy
+
+    nside = 2**level
+    counts = np.zeros(12 * nside**2, dtype=np.int64)
+    if workload == "visibility":
+        for center, radius in zip(scene.centers, scene.radii, strict=True):
+            counts[healpy.query_disc(nside, center, radius)] += 1
     else:
-        for p in polygons:
-            normals = np.cross(p, np.roll(p, -1, axis=0))
-            result |= np.all(points @ normals.T >= -1e-14, axis=1)
-    return result
-
-
-def prepare(backend, order, points):
-    """Import and prepare evaluation cells outside the timed region."""
-    if backend.startswith("polypix"):
-        import polypix as lib
-
-        return lib, order, lib.cell_at(points, resolution=order)
-    if backend == "healpy":
-        import healpy as lib
-
-        return lib, order, lib.vec2pix(2**order, *points.T)
-    if backend == "hpgeom":
-        import hpgeom as lib
-
-        return lib, order, lib.vector_to_pixel(2**order, *points.T, nest=False)
-    if backend == "mocpy":
-        import mocpy as lib
-
-        return lib, order, None
-    if backend == "h3":
-        import h3 as lib
-
-        level = min(
-            range(16),
-            key=lambda x: abs(math.log(lib.get_num_cells(x) / (12 * 4**order))),
-        )
-        lon, lat = lonlat(points)
-        return (
-            lib,
-            level,
-            [lib.latlng_to_cell(y, x, level) for x, y in zip(lon, lat, strict=True)],
-        )
-    import s2geometry as lib
-
-    level = min(range(31), key=lambda x: abs(math.log((6 * 4**x) / (12 * 4**order))))
-    ids = [
-        lib.S2CellId(lib.S2LatLng.FromDegrees(y, x)).parent(level).id()
-        for x, y in zip(*lonlat(points), strict=True)
-    ]
-    return lib, level, ids
-
-
-def execute(backend, lib, level, centers, radii, polygons, workflow):
-    """Return counts or a union on the backend's own grid."""
-    if backend.startswith("polypix"):
-        kw = dict(
-            resolution=level,
-            threads=1 if backend.endswith("serial") else None,
-            reduce=lib.Count(),
-        )
-        counts = (
-            lib.cover_cap(centers, radii, **kw)
-            if workflow == "visibility"
-            else lib.cover_polygon(polygons, **kw)
-        )
-        return counts if workflow == "visibility" else counts > 0
-    if backend in ("healpy", "hpgeom"):
-        counts = np.zeros(12 * 4**level, dtype=np.int64)
-        if workflow == "visibility":
-            if backend == "healpy":
-                regions = (
-                    lib.query_disc(2**level, c, r)
-                    for c, r in zip(centers, radii, strict=True)
-                )
-            else:
-                regions = (
-                    lib.query_circle_vec(2**level, c, r, nest=False)
-                    for c, r in zip(centers, radii, strict=True)
-                )
-        else:
-            regions = (
-                lib.query_polygon(2**level, p)
-                if backend == "healpy"
-                else lib.query_polygon_vec(2**level, p, nest=False)
-                for p in polygons
-            )
-        for cells in regions:
-            counts[cells] += 1
-        return counts if workflow == "visibility" else counts > 0
-    if backend == "mocpy":
-        import astropy.units as u
-
-        if workflow == "visibility":
-            lon, lat = lonlat(centers)
-            return lib.MOC.from_cones(
-                lon=lon * u.deg, lat=lat * u.deg, radius=radii * u.rad, max_depth=level
-            )
-        lon, lat = lonlat(polygons)
-        vertices = np.stack((lon % 360, lat), axis=1).reshape(-1, polygons.shape[1])
-        regions = lib.MOC.from_polygons(vertices, max_depth=level)
-        return regions[0].union(*regions[1:])
-    counts = {}
-    if backend == "s2geometry":
-        coverer = lib.S2RegionCoverer()
-        coverer.set_min_level(level)
-        coverer.set_max_level(level)
-    shapes = zip(centers, radii, strict=True) if workflow == "visibility" else polygons
-    for shape in shapes:
-        if backend == "h3":
-            if workflow == "visibility":
-                c, r = shape
-                e = np.cross(c, [0.0, 0.0, 1.0])
-                e /= np.linalg.norm(e)
-                n = np.cross(c, e)
-                angles = np.arange(128) * 2 * np.pi / 128
-                p = np.cos(r) * c + np.sin(r) * (
-                    np.cos(angles)[:, None] * e + np.sin(angles)[:, None] * n
-                )
-            else:
-                p = shape
-            lon, lat = lonlat(p)
-            cells = lib.polygon_to_cells(
-                lib.LatLngPoly(list(zip(lat, lon, strict=True))), level
-            )
-        else:
-            if workflow == "visibility":
-                c, r = shape
-                x, y = lonlat(c)
-                region = lib.S2Cap(
-                    lib.S2LatLng.FromDegrees(y, x).ToPoint(),
-                    lib.S1Angle.Radians(float(r)),
-                )
-            else:
-                loop = lib.S2Loop(
-                    [
-                        lib.S2LatLng.FromDegrees(y, x).ToPoint()
-                        for x, y in zip(*lonlat(shape), strict=True)
-                    ]
-                )
-                loop.Normalize()
-                region = lib.S2Polygon(loop)
-            cells = [c.id() for c in coverer.GetCovering(region)]
-        for cell in cells:
-            counts[cell] = counts.get(cell, 0) + 1 if workflow == "visibility" else 1
+        for corners in scene.footprints:
+            counts[healpy.query_polygon(nside, corners)] += 1
     return counts
 
 
-def evaluate(backend, result, ids, points, workflow):
-    if backend == "mocpy":
-        import astropy.units as u
+def hpgeom_cover(scene, level, mode, workload):
+    import hpgeom
 
-        lon, lat = lonlat(points)
-        if workflow == "visibility":
-            return sum(
-                (
-                    m.contains_lonlat(lon * u.deg, lat * u.deg).astype(np.int64)
-                    for m in result
-                ),
-                np.zeros(len(points), dtype=np.int64),
+    nside = 2**level
+    counts = np.zeros(12 * nside**2, dtype=np.int64)
+    if workload == "visibility":
+        for center, radius in zip(scene.centers, scene.radii, strict=True):
+            counts[hpgeom.query_circle_vec(nside, center, radius, nest=False)] += 1
+    else:
+        for corners in scene.footprints:
+            counts[hpgeom.query_polygon_vec(nside, corners, nest=False)] += 1
+    return counts
+
+
+def mocpy_cover(scene, level, mode, workload):
+    import astropy.units as u
+    from mocpy import MOC
+
+    if workload == "visibility":
+        lat, lon = latlng(scene.centers)
+        mocs = MOC.from_cones(
+            lon=lon * u.deg,
+            lat=lat * u.deg,
+            radius=scene.radii * u.rad,
+            max_depth=level,
+            n_threads=1,
+        )
+    else:
+        lat, lon = latlng(scene.footprints)
+        # MOCPy wants rows of [lon, lat, lon, lat, ...], longitudes in [0, 360).
+        rows = np.stack([lon % 360, lat], axis=1).reshape(-1, lon.shape[1])
+        mocs = MOC.from_polygons(rows, max_depth=level, n_threads=1)
+    return count_cells([moc.flatten() for moc in mocs])
+
+
+def h3_cover(scene, level, mode, workload):
+    from h3.api import numpy_int as h3
+
+    if workload == "visibility":
+        shapes = [
+            circle_outline(*cap) for cap in zip(scene.centers, scene.radii, strict=True)
+        ]
+    else:
+        shapes = scene.footprints
+    cells = []
+    for shape in shapes:
+        polygon = h3.LatLngPoly(np.column_stack(latlng(shape)).tolist())
+        if mode == "center":
+            cells.append(h3.polygon_to_cells(polygon, level))
+        else:
+            cells.append(
+                h3.h3shape_to_cells_experimental(polygon, level, contain="overlap")
             )
-        return result.contains_lonlat(lon * u.deg, lat * u.deg).astype(np.int64)
-    if isinstance(result, dict):
-        return np.array([result.get(cell, 0) for cell in ids])
-    return result[ids].astype(np.int64)
+    return count_cells(cells)
 
 
-def worker(args):
-    import resource
+def s2_cover(scene, level, mode, workload):
+    import s2geometry as s2
 
-    centers, radii, polygons = scene(args.regions, args.seed)
-    # Equal-area global samples: the target region is the whole sphere.
-    rng = np.random.default_rng(args.seed + 1)
-    points = rng.normal(size=(args.samples, 3))
-    points /= np.linalg.norm(points, axis=1)[:, None]
-    lib, level, ids = prepare(args.backend, args.order, points)
-    timings = []
-    for iteration in range(args.iterations + 1):
-        started = time.perf_counter()
-        result = execute(
-            args.backend, lib, level, centers, radii, polygons, args.workflow
-        )
-        actual = evaluate(args.backend, result, ids, points, args.workflow)
-        timings.append(time.perf_counter() - started)
-        # Do not retain the preceding output during the next allocation.
-        if iteration < args.iterations:
-            del result, actual
-    elapsed = statistics.median(timings[1:])
-    # Capture process high-water RSS before validation allocates its own arrays.
-    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    rss *= 1 if sys.platform == "darwin" else 1024
-    expected = truth(points, centers, radii, polygons, args.workflow)
-    exact = None
-    if args.backend in ("healpy", "hpgeom"):
-        import polypix as px
+    def point(xyz):
+        return s2.S2Point_FromRaw(*map(float, xyz))
 
-        reference = execute(
-            "polypix-serial", px, args.order, centers, radii, polygons, args.workflow
-        )
-        exact = bool(np.array_equal(result, reference))
-        if not exact:
-            raise AssertionError("HEALPix outputs differ from Polypix")
-    size = (
-        12 * 4**level
-        if args.backend not in ("h3", "s2geometry")
-        else lib.get_num_cells(level)
-        if args.backend == "h3"
-        else 6 * 4**level
+    if workload == "visibility":
+        regions = [
+            s2.S2Cap(point(center), s2.S1Angle.Radians(float(radius)))
+            for center, radius in zip(scene.centers, scene.radii, strict=True)
+        ]
+    else:
+        regions = []
+        for corners in scene.footprints:
+            loop = s2.S2Loop([point(corner) for corner in corners])
+            loop.Normalize()
+            regions.append(s2.S2Polygon(loop))
+    coverer = s2.S2RegionCoverer()
+    coverer.set_min_level(level)
+    coverer.set_max_level(level)
+    cells = [
+        np.array([cell.id() for cell in coverer.GetCovering(region)], np.uint64)
+        for region in regions
+    ]
+    return count_cells(cells)
+
+
+def healpix_ring_ids(points, level):
+    import polypix
+
+    return polypix.cell_at(points, resolution=level)
+
+
+def healpix_nested_ids(points, level):
+    import hpgeom
+
+    return hpgeom.vector_to_pixel(2**level, *points.T, nest=True)
+
+
+def h3_ids(points, level):
+    from h3.api import numpy_int as h3
+
+    lat, lon = latlng(points)
+    return np.array(
+        [h3.latlng_to_cell(*p, level) for p in zip(lat, lon, strict=True)], np.uint64
     )
-    return dict(
-        backend=args.backend,
-        workflow=args.workflow,
-        level=level,
-        global_cell_count=size,
-        mean_cell_area_steradians=4 * np.pi / size,
-        seconds=elapsed,
-        cold_seconds=timings[0],
-        warm_seconds=timings[1:],
-        peak_process_rss_bytes=rss,
-        output_cells=int(np.count_nonzero(result))
-        if isinstance(result, np.ndarray)
-        else len(result)
-        if isinstance(result, dict)
-        else None,
-        mean_absolute_sample_error=float(np.mean(abs(actual - expected))),
-        sample_disagreement_fraction=float(np.mean(actual != expected)),
-        estimated_covered_fraction=float(np.mean(actual > 0)),
-        reference_covered_fraction=float(np.mean(expected > 0)),
-        exact_healpix_match=exact,
-        input_sha256=hashlib.sha256(
-            centers.tobytes() + radii.tobytes() + polygons.tobytes()
-        ).hexdigest(),
+
+
+def s2_ids(points, level):
+    import s2geometry as s2
+
+    return np.array(
+        [s2.S2CellId(s2.S2Point_FromRaw(*p)).parent(level).id() for p in points],
+        np.uint64,
     )
+
+
+@dataclass(frozen=True)
+class Library:
+    module: str  # imported before timing so the first call excludes it
+    cover: Callable
+    cell_ids: Callable  # untimed: grid cell of each evaluation point
+    cell_count: Callable[[int], int]
+    modes: tuple[str, ...]
+
+
+def healpix_cells(level):
+    return 12 * 4**level
+
+
+def h3_cells(level):
+    from h3.api import numpy_int as h3
+
+    return h3.get_num_cells(level)
+
+
+LIBRARIES = {
+    "polypix": Library(
+        "polypix",
+        polypix_cover(threads=1),
+        healpix_ring_ids,
+        healpix_cells,
+        ("center", "overlap"),
+    ),
+    "polypix-threaded": Library(
+        "polypix",
+        polypix_cover(threads=None),
+        healpix_ring_ids,
+        healpix_cells,
+        ("center", "overlap"),
+    ),
+    "healpy": Library(
+        "healpy", healpy_cover, healpix_ring_ids, healpix_cells, ("center",)
+    ),
+    "hpgeom": Library(
+        "hpgeom", hpgeom_cover, healpix_ring_ids, healpix_cells, ("center",)
+    ),
+    "mocpy": Library(
+        "mocpy", mocpy_cover, healpix_nested_ids, healpix_cells, ("overlap",)
+    ),
+    "h3": Library("h3", h3_cover, h3_ids, h3_cells, ("center", "overlap")),
+    "s2": Library(
+        "s2geometry", s2_cover, s2_ids, lambda level: 6 * 4**level, ("overlap",)
+    ),
+}
+
+
+@dataclass(frozen=True)
+class Case:
+    library: str
+    workload: str
+    mode: str
+    level: int
+    tracks: int
+    samples: int  # 0 skips the accuracy check
+    seed: int
+    iterations: int
+
+
+def lookup(result, ids: np.ndarray) -> np.ndarray:
+    """Read counts at the given cells from a dense array or sparse pair."""
+    if isinstance(result, np.ndarray):
+        return result[ids]
+    cells, counts = result
+    index = np.minimum(np.searchsorted(cells, ids), len(cells) - 1)
+    return np.where(cells[index] == ids, counts[index], 0)
+
+
+def measure(case: Case) -> dict:
+    """Time one case; runs in a fresh process."""
+    library = LIBRARIES[case.library]
+    importlib.import_module(library.module)
+    scene = make_scene(case.tracks, case.seed)
+
+    times = []
+    for _ in range(case.iterations + 1):
+        start = time.perf_counter()
+        result = library.cover(scene, case.level, case.mode, case.workload)
+        times.append(time.perf_counter() - start)
+
+    record = asdict(case) | {
+        "cells": library.cell_count(case.level),
+        "first_seconds": times[0],
+        "warm_seconds": times[1:],
+    }
+    if case.library in ("healpy", "hpgeom"):
+        reference = polypix_cover(1)(scene, case.level, case.mode, case.workload)
+        if not np.array_equal(result, reference):
+            raise AssertionError(f"{case.library} and Polypix select different cells")
+    if case.samples:
+        rng = np.random.default_rng(case.seed + 1)
+        points = rng.normal(size=(case.samples, 3))
+        points /= np.linalg.norm(points, axis=1, keepdims=True)
+        found = lookup(result, library.cell_ids(points, case.level))
+        if case.workload == "observation":
+            found = (found > 0).astype(np.int64)
+        error = found - exact_counts(points, scene, case.workload)
+        record["mean_abs_error"] = float(np.mean(np.abs(error)))
+        record["mean_error"] = float(np.mean(error))
+    return record
+
+
+def cross_grid_cases(args) -> list[Case]:
+    """Every library on its own grid, from about 3,000 to 800,000 cells."""
+    levels = {
+        "polypix": range(4, 9),
+        "healpy": range(4, 9),
+        "hpgeom": range(4, 9),
+        "mocpy": range(4, 9),
+        "h3": range(2, 5),
+        "s2": range(5, 9),
+    }
+    if args.quick:
+        levels = {name: [min(lv) + 1] for name, lv in levels.items()}
+    shared = (args.tracks, args.samples, args.seed, args.iterations)
+    return [
+        Case(name, workload, mode, level, *shared)
+        for name, name_levels in levels.items()
+        for mode in LIBRARIES[name].modes
+        for workload in ("visibility", "observation")
+        for level in name_levels
+    ]
+
+
+def healpix_large_cases(args) -> list[Case]:
+    """Many more shapes, HEALPix libraries only, exact cell-for-cell agreement."""
+    tracks = {"visibility": 10_000, "observation": 1_000}
+    if args.quick:
+        tracks = {"visibility": 100, "observation": 10}
+    return [
+        Case(name, workload, "center", level, count, 0, args.seed, args.iterations)
+        for name in ("polypix", "polypix-threaded", "healpy", "hpgeom")
+        for workload, count in tracks.items()
+        for level in (5, 6, 7)
+    ]
+
+
+SUITES = {"cross-grid": cross_grid_cases, "healpix-large": healpix_large_cases}
+
+
+def environment() -> dict:
+    cpu = platform.processor()
+    cpuinfo = Path("/proc/cpuinfo")
+    if cpuinfo.exists():
+        names = [
+            line.split(":", 1)[1].strip()
+            for line in cpuinfo.read_text().splitlines()
+            if line.startswith("model name")
+        ]
+        cpu = names[0] if names else cpu
+    versions = {}
+    for package in "numpy healpy hpgeom mocpy astropy h3 s2geometry".split():
+        try:
+            versions[package] = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            versions[package] = None
+    # Read from the module itself: it may be a local build with no metadata.
+    versions["polypix"] = importlib.import_module("polypix").__version__
+    git = ["git", "-C", str(RESULTS.parent)]
+    return {
+        "commit": subprocess.run(
+            [*git, "rev-parse", "HEAD"], capture_output=True, text=True
+        ).stdout.strip(),
+        "uncommitted_changes": bool(
+            subprocess.run(
+                [*git, "status", "--porcelain"], capture_output=True, text=True
+            ).stdout.strip()
+        ),
+        "platform": platform.platform(),
+        "cpu": cpu,
+        "cpu_count": os.cpu_count(),
+        "python": platform.python_version(),
+        "versions": versions,
+    }
+
+
+def run_suite(name: str, args, machine: dict) -> bool:
+    cases = SUITES[name](args)
+    records = []
+    for case in cases:
+        for repeat in range(args.repeats):
+            # A fresh process per repeat, so every first call is a real first call.
+            with ProcessPoolExecutor(1, mp_context=get_context("spawn")) as pool:
+                try:
+                    record = pool.submit(measure, case).result()
+                except Exception:
+                    record = asdict(case) | {"error": traceback.format_exc()}
+            records.append(record | {"repeat": repeat})
+            seconds = statistics.median(record.get("warm_seconds") or [float("nan")])
+            print(
+                f"{name}: {case.library} {case.workload} {case.mode} level {case.level}"
+                f" #{repeat + 1}: {seconds * 1e3:.2f} ms"
+                + (" FAILED" if "error" in record else ""),
+                file=sys.stderr,
+            )
+    report = {"suite": name, "environment": machine, "records": records}
+    args.out.mkdir(parents=True, exist_ok=True)
+    (args.out / f"{name}.json").write_text(json.dumps(report, indent=1) + "\n")
+    return all("error" not in record for record in records)
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--order", type=int, default=6)
-    parser.add_argument("--regions", type=int, default=128)
-    parser.add_argument("--samples", type=int, default=20000)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("--suite", choices=[*SUITES, "all"], default="all")
+    parser.add_argument("--tracks", type=int, default=128, help="cross-grid shapes")
+    parser.add_argument("--samples", type=int, default=100_000, help="accuracy points")
     parser.add_argument("--seed", type=int, default=20261109)
-    parser.add_argument("--repeats", type=int, default=5)
-    parser.add_argument("--iterations", type=int, default=5)
+    parser.add_argument("--repeats", type=int, default=5, help="processes per case")
     parser.add_argument(
-        "--workflows",
-        nargs="+",
-        choices=("visibility", "observation"),
-        default=["visibility", "observation"],
+        "--iterations", type=int, default=5, help="warm calls per process"
     )
-    parser.add_argument(
-        "--backends", nargs="+", choices=BACKENDS, default=list(BACKENDS)
-    )
-    parser.add_argument("--output", type=Path, default=Path("competitor-results.json"))
-    parser.add_argument("--backend", choices=BACKENDS, help=argparse.SUPPRESS)
-    parser.add_argument(
-        "--workflow", choices=("visibility", "observation"), help=argparse.SUPPRESS
-    )
+    parser.add_argument("--out", type=Path, default=RESULTS)
+    parser.add_argument("--quick", action="store_true", help="tiny smoke test")
     args = parser.parse_args()
-    if (
-        not 0 <= args.order <= 10
-        or min(args.regions, args.samples, args.repeats, args.iterations) < 1
-    ):
-        parser.error(
-            "order must be 0..10; regions, samples and repeats must be positive"
-        )
-    if args.backend:
-        print(json.dumps(worker(args)))
-        return
-    records = []
-    for backend in args.backends:
-        for workflow in args.workflows:
-            for repeat in range(args.repeats):
-                cmd = [
-                    sys.executable,
-                    str(Path(__file__).resolve()),
-                    "--iterations",
-                    str(args.iterations),
-                    "--backend",
-                    backend,
-                    "--workflow",
-                    workflow,
-                    "--order",
-                    str(args.order),
-                    "--regions",
-                    str(args.regions),
-                    "--samples",
-                    str(args.samples),
-                    "--seed",
-                    str(args.seed),
-                ]
-                env = dict(
-                    os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1])
-                )
-                for name in (
-                    "OMP_NUM_THREADS",
-                    "OPENBLAS_NUM_THREADS",
-                    "MKL_NUM_THREADS",
-                ):
-                    env[name] = "1"
-                run = subprocess.run(cmd, env=env, capture_output=True, text=True)
-                record = (
-                    json.loads(run.stdout)
-                    if run.returncode == 0
-                    else dict(backend=backend, workflow=workflow, error=run.stderr)
-                )
-                record["repeat"] = repeat
-                records.append(record)
-                print(
-                    f"{backend} {workflow} {repeat + 1}: {record.get('seconds', 'ERROR')}",
-                    file=sys.stderr,
-                )
-    versions = {}
-    for name in (
-        "polypix",
-        "numpy",
-        "healpy",
-        "hpgeom",
-        "mocpy",
-        "h3",
-        "s2geometry",
-        "astropy",
-    ):
-        try:
-            versions[name] = importlib.metadata.version(name)
-        except importlib.metadata.PackageNotFoundError:
-            versions[name] = None
-    revision = subprocess.run(
-        ["git", "rev-parse", "HEAD"], capture_output=True, text=True
-    ).stdout.strip()
-    cpu = platform.processor()
-    if Path("/proc/cpuinfo").exists():
-        cpu = next(
-            (
-                line.split(":", 1)[1].strip()
-                for line in Path("/proc/cpuinfo").read_text().splitlines()
-                if line.startswith("model name")
-            ),
-            cpu,
-        )
-    report = dict(
-        revision=revision,
-        harness_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-        platform=platform.platform(),
-        cpu=cpu,
-        cpu_count=os.cpu_count(),
-        python=sys.version,
-        versions=versions,
-        configuration=vars(args) | {"output": str(args.output)},
-        records=records,
-    )
-    args.output.write_text(json.dumps(report, indent=2) + "\n")
-    if any("error" in r for r in records):
-        sys.exit(1)
+    if args.quick:
+        args.tracks, args.samples, args.repeats, args.iterations = 8, 2_000, 1, 1
+    for value in ("tracks", "samples", "repeats", "iterations"):
+        if getattr(args, value) < 1:
+            parser.error(f"--{value} must be at least 1")
+
+    # Keep NumPy's BLAS on one thread; children inherit this before importing it.
+    for variable in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+        os.environ[variable] = "1"
+    machine = environment()  # before any results are written to the checkout
+    suites = list(SUITES) if args.suite == "all" else [args.suite]
+    ok = [run_suite(name, args, machine) for name in suites]
+    sys.exit(0 if all(ok) else 1)
 
 
 if __name__ == "__main__":
