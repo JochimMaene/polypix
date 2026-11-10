@@ -33,6 +33,8 @@ def test_lookup_reads_dense_and_sparse_results():
     sparse = (np.array([1, 5, 7], dtype=np.uint64), np.array([2, 4, 6]))
     np.testing.assert_array_equal(bench.lookup(sparse, ids), [0, 4, 0])
     np.testing.assert_array_equal(bench.lookup(np.arange(10) * 2, ids), [6, 10, 18])
+    empty = (np.array([], dtype=np.uint64), np.array([], dtype=np.int64))
+    np.testing.assert_array_equal(bench.lookup(empty, ids), [0, 0, 0])
 
 
 def test_measure_reports_timings_and_accuracy():
@@ -40,4 +42,5 @@ def test_measure_reports_timings_and_accuracy():
     record = bench.measure(case)
     assert len(record["warm_seconds"]) == 2
     assert record["cells"] == px.cell_count(4)
+    assert record["shapes"] == 4
     assert 0 <= record["mean_abs_error"] < 0.1

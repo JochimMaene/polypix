@@ -314,6 +314,8 @@ def lookup(result, ids: np.ndarray) -> np.ndarray:
     if isinstance(result, np.ndarray):
         return result[ids]
     cells, counts = result
+    if not len(cells):
+        return np.zeros(len(ids), dtype=counts.dtype)
     index = np.minimum(np.searchsorted(cells, ids), len(cells) - 1)
     return np.where(cells[index] == ids, counts[index], 0)
 
@@ -333,10 +335,13 @@ def measure(case: Case) -> dict:
 
     record = asdict(case) | {
         "cells": library.cell_count(case.level),
+        "shapes": len(
+            scene.centers if case.workload == "visibility" else scene.footprints
+        ),
         "first_seconds": times[0],
         "warm_seconds": times[1:],
     }
-    if case.library in ("healpy", "hpgeom"):
+    if case.library in ("polypix-threaded", "healpy", "hpgeom"):
         reference = polypix_cover(scene, case.level, case.mode, case.workload)
         if not np.array_equal(result, reference):
             raise AssertionError(f"{case.library} and Polypix select different cells")
@@ -457,18 +462,20 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--suite", choices=[*SUITES, "all"], default="all")
-    parser.add_argument("--tracks", type=int, default=128, help="cross-grid shapes")
-    parser.add_argument("--samples", type=int, default=100_000, help="accuracy points")
+    parser.add_argument("--tracks", type=int, help="cross-grid shapes")
+    parser.add_argument("--samples", type=int, help="accuracy points")
     parser.add_argument("--seed", type=int, default=20261109)
-    parser.add_argument("--repeats", type=int, default=5, help="processes per case")
-    parser.add_argument(
-        "--iterations", type=int, default=5, help="warm calls per process"
-    )
+    parser.add_argument("--repeats", type=int, help="processes per case")
+    parser.add_argument("--iterations", type=int, help="warm calls per process")
     parser.add_argument("--out", type=Path, help="default: results/, or results/quick")
     parser.add_argument("--quick", action="store_true", help="tiny smoke test")
     args = parser.parse_args()
+    defaults = {"tracks": 128, "samples": 100_000, "repeats": 5, "iterations": 5}
     if args.quick:
-        args.tracks, args.samples, args.repeats, args.iterations = 8, 2_000, 1, 1
+        defaults = {"tracks": 8, "samples": 2_000, "repeats": 1, "iterations": 1}
+    for name, value in defaults.items():
+        if getattr(args, name) is None:
+            setattr(args, name, value)
     args.out = args.out or (RESULTS / "quick" if args.quick else RESULTS)
     for name in ("tracks", "samples", "repeats", "iterations"):
         if getattr(args, name) < 1:

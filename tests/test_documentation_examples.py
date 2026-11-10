@@ -70,3 +70,18 @@ def test_static_documentation_figures_are_checked_in() -> None:
         "sphere-levels.png",
     ):
         assert (figures / name).is_file()
+
+
+def test_chart_palette_matches_site_css() -> None:
+    """The benchmark charts reuse the site colours, so keep both copies equal."""
+    from examples.palette import SITE_THEMES
+
+    css = (REPO / "docs" / "_static" / "polypix.css").read_text()
+    names = {"primary": "--pst-color-primary"} | {
+        key: f"--polypix-{key}" for key in ("muted", "surface", "rule")
+    }
+    for theme, colours in SITE_THEMES.items():
+        block = re.search(rf'html\[data-theme="{theme}"\] \{{(.*?)\}}', css, re.S)
+        assert block is not None, f"polypix.css has no {theme} theme block"
+        for key, variable in names.items():
+            assert f"{variable}: {colours[key]};" in block.group(1), (theme, key)

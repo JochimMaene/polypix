@@ -99,10 +99,9 @@ def label(library, versions):
 
 def shapes(workload, groups):
     """'128 circles' or '512 footprints', read from the records."""
-    tracks = next(g[0]["tracks"] for key, g in groups.items() if key[1] == workload)
-    if workload == "visibility":
-        return f"{tracks:,} circles"
-    return f"{4 * tracks:,} footprints"
+    count = next(g[0]["shapes"] for key, g in groups.items() if key[1] == workload)
+    kind = "circles" if workload == "visibility" else "footprints"
+    return f"{count:,} {kind}"
 
 
 def style(ax):
@@ -157,7 +156,10 @@ def healpix_chart(workload, groups, versions, theme):
             )
     ax.set_xticks(
         range(len(levels)),
-        [f"Order {lv}\n{12 * 4**lv:,} cells" for lv in levels],
+        [
+            f"Order {lv}\n{s['cells']:,} cells"
+            for lv, s in zip(levels, stats, strict=True)
+        ],
     )
     ax.set_ylabel("Milliseconds per call (lower is better)")
     title = f"{WORKLOADS[workload]}: {shapes(workload, groups)}"
@@ -251,9 +253,8 @@ def main():
             "svg.hashsalt": "polypix",  # stable SVG ids, so reruns diff cleanly
         }
     )
-    environment, cross_grid = load("cross-grid")
-    _, healpix_large = load("healpix-large")
-    versions = environment["versions"]
+    cross_env, cross_grid = load("cross-grid")
+    healpix_env, healpix_large = load("healpix-large")
     for theme, site in SITE.items():
         colours = {
             "text.color": site["text"],
@@ -265,9 +266,9 @@ def main():
             "legend.labelcolor": site["text"],
         }
         with plt.rc_context(colours):
-            grids_chart(cross_grid, versions, theme)
+            grids_chart(cross_grid, cross_env["versions"], theme)
             for workload in WORKLOADS:
-                healpix_chart(workload, healpix_large, versions, theme)
+                healpix_chart(workload, healpix_large, healpix_env["versions"], theme)
     write_csv({"cross-grid": cross_grid, "healpix-large": healpix_large})
 
 

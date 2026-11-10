@@ -2,7 +2,8 @@
 
 Everything here is derived from the two colors in `docs/_static/polypix.svg`,
 so the site, the explanatory diagrams, and the global maps stay recognisably
-the same product. `docs/_static/polypix.css` mirrors the theme values.
+the same product. `docs/_static/polypix.css` mirrors the theme values, and
+tests/test_documentation_examples.py keeps the two equal.
 """
 
 from __future__ import annotations
