@@ -30,6 +30,9 @@ pub(crate) struct Coverage {
 // keep the threshold at the first measured batch with a clear parallel win.
 const NEIGHBOR_PARALLEL_MIN_CELLS: usize = 1 << 14;
 
+// Below about a megabyte of cells the serial copy wins.
+const PARALLEL_MERGE_MIN_CELLS: usize = 1 << 17;
+
 /// Map directions to cells, in parallel when the batch is large enough.
 pub(crate) fn cells_at(vectors: &[f64], resolution: u8) -> NativeResult<Vec<u64>> {
     let count = vectors.len() / 3;
@@ -120,10 +123,36 @@ pub(super) fn merge_coverages(chunks: Vec<Coverage>) -> NativeResult<Coverage> {
     let (Some(polygon_count), Some(cell_count)) = (polygon_count, cell_count) else {
         return Err(NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY));
     };
-    let mut cells = Vec::new();
-    cells
-        .try_reserve_exact(cell_count)
-        .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
+    // Large results are copied in parallel into lazily zeroed pages, so page
+    // faults and the copy spread over the workers instead of one thread.
+    let cells = if cell_count >= PARALLEL_MERGE_MIN_CELLS {
+        // `vec!` aborts on allocation failure; probe first so an oversized
+        // result still raises MemoryError, then let calloc map pages lazily.
+        Vec::<u64>::new()
+            .try_reserve_exact(cell_count)
+            .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
+        let mut cells = vec![0_u64; cell_count];
+        let mut rest = cells.as_mut_slice();
+        let mut pieces = Vec::with_capacity(chunks.len());
+        for chunk in &chunks {
+            let (head, tail) = rest.split_at_mut(chunk.cells.len());
+            pieces.push((head, &chunk.cells));
+            rest = tail;
+        }
+        pieces
+            .into_par_iter()
+            .for_each(|(target, source)| target.copy_from_slice(source));
+        cells
+    } else {
+        let mut cells = Vec::new();
+        cells
+            .try_reserve_exact(cell_count)
+            .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
+        for chunk in &chunks {
+            cells.extend_from_slice(&chunk.cells);
+        }
+        cells
+    };
     let mut offsets = Vec::new();
     let offset_count = polygon_count
         .checked_add(1)
@@ -134,15 +163,16 @@ pub(super) fn merge_coverages(chunks: Vec<Coverage>) -> NativeResult<Coverage> {
     let mut coverage = Coverage { cells, offsets };
     coverage.offsets.push(0);
 
+    let mut base = 0_u64;
     for chunk in chunks {
-        let base = coverage.cells.len() as u64;
-        coverage.cells.extend(chunk.cells);
+        let chunk_base = base;
+        base += chunk.cells.len() as u64;
         coverage.offsets.extend(
             chunk
                 .offsets
                 .into_iter()
                 .skip(1)
-                .map(|offset| base + offset),
+                .map(|offset| chunk_base + offset),
         );
     }
     Ok(coverage)
