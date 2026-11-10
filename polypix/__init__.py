@@ -802,7 +802,7 @@ def _ragged_polygons(values: Sequence[Any]) -> tuple[np.ndarray, np.ndarray]:
     """
     try:
         vertices = _as_float_matrix(
-            np.concatenate(values, axis=0),  # type: ignore[arg-type]
+            np.concatenate(values, axis=0),
             3,
             "geometry",
         )
