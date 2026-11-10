@@ -1686,6 +1686,10 @@ impl<T: std::borrow::Borrow<PreparedFootprint>> PreparedFootprintOverlap<T> {
         self.footprint.borrow().z_bounds()
     }
 
+    pub(super) fn longitude_bounds(&self) -> LongitudeBounds {
+        self.footprint.borrow().longitude_bounds()
+    }
+
     pub(super) fn overlaps_cell_at(&self, cell: u64, point: Vec3) -> bool {
         if self.footprint.borrow().contains(point) || self.vertex_cells.contains(&cell) {
             return true;

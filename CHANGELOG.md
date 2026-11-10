@@ -14,7 +14,8 @@ omitted.
 
 - Coverage over `candidate_cells` is up to 20 times as fast when the selection
   is much wider than each polygon or sweep.
-- Overlap coverage is 1.4 to 2.7 times as fast.
+- Overlap coverage is 1.4 to 2.7 times as fast, and up to 2 times as fast
+  again over `candidate_cells` that span many longitudes, such as a land mask.
 - Polygon lists convert up to 1.8 times as fast.
 - Large threaded results, about a million cells and up, are assembled in
   parallel.

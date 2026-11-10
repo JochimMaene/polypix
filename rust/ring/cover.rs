@@ -211,7 +211,7 @@ pub(super) fn dispatch_coverage(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn compute_candidate_coverage<T: Send + Sync>(
+pub(super) fn compute_candidate_coverage<const WHOLE_CELL_MARGIN: bool, T: Send + Sync>(
     item_count: usize,
     candidates: &[u64],
     resolution: u8,
@@ -233,7 +233,7 @@ pub(super) fn compute_candidate_coverage<T: Send + Sync>(
         plan_item_candidates(items, candidates, resolution, parallel, &z_bounds)
     };
     let compute_planned = |items: &[T], plan: &CandidatePlan, parallel| {
-        compute_planned_candidates(
+        compute_planned_candidates::<WHOLE_CELL_MARGIN>(
             item_count,
             plan,
             candidates,
@@ -345,7 +345,7 @@ pub(super) fn compute_mixed_coverage(
                 .map_err(|error| format!("geometry[{index}]: {error}"))
         };
         return if overlap {
-            compute_candidate_coverage(
+            compute_candidate_coverage::<true, _>(
                 polygon_count,
                 candidates,
                 resolution,
@@ -356,10 +356,10 @@ pub(super) fn compute_mixed_coverage(
                 },
                 PreparedFootprintOverlap::z_bounds,
                 |footprint, cell, point| footprint.overlaps_cell_at(cell, point),
-                |_| None,
+                |footprint| Some(footprint.longitude_bounds()),
             )
         } else {
-            compute_candidate_coverage(
+            compute_candidate_coverage::<false, _>(
                 polygon_count,
                 candidates,
                 resolution,
@@ -524,7 +524,7 @@ pub(crate) fn cover_prepared_regions(
         )
     }) {
         return if overlap {
-            compute_candidate_coverage(
+            compute_candidate_coverage::<true, _>(
                 region_count,
                 candidates,
                 resolution,
@@ -552,10 +552,13 @@ pub(crate) fn cover_prepared_regions(
                         .iter()
                         .any(|polygon| polygon.overlaps_cell_at(cell, point))
                 },
-                |_| None,
+                |polygons| match polygons.as_slice() {
+                    [polygon] => Some(polygon.longitude_bounds()),
+                    _ => None,
+                },
             )
         } else {
-            compute_candidate_coverage(
+            compute_candidate_coverage::<false, _>(
                 region_count,
                 candidates,
                 resolution,
@@ -563,7 +566,10 @@ pub(crate) fn cover_prepared_regions(
                 |region| Ok::<_, String>(regions[region]),
                 |polygons| region_z_bounds(polygons),
                 |polygons, _cell, point| region_contains(polygons, point),
-                |_| None,
+                |polygons| match *polygons {
+                    [polygon] => Some(polygon.footprint.longitude_bounds()),
+                    _ => None,
+                },
             )
         };
     }
@@ -680,7 +686,7 @@ pub(crate) fn cover_caps(
                 CapOverlap::new(&caps[index], resolution)
             })?;
             let compute_planned = |plan: &CandidatePlan, parallel| {
-                compute_planned_candidates(
+                compute_planned_candidates::<true>(
                     caps.len(),
                     plan,
                     candidates,
@@ -707,7 +713,7 @@ pub(crate) fn cover_caps(
             );
         }
         let compute_planned = |plan: &CandidatePlan, parallel| {
-            compute_planned_candidates(
+            compute_planned_candidates::<false>(
                 caps.len(),
                 plan,
                 candidates,
@@ -1147,7 +1153,7 @@ pub(crate) fn cover_sweep(
     }) {
         let prepare = |index| prepare_sweep_footprint(&normalized_left, &normalized_right, index);
         return if overlap {
-            compute_candidate_coverage(
+            compute_candidate_coverage::<true, _>(
                 segment_count,
                 candidates,
                 resolution,
@@ -1158,10 +1164,10 @@ pub(crate) fn cover_sweep(
                 },
                 PreparedFootprintOverlap::z_bounds,
                 |footprint, cell, point| footprint.overlaps_cell_at(cell, point),
-                |_| None,
+                |footprint| Some(footprint.longitude_bounds()),
             )
         } else {
-            compute_candidate_coverage(
+            compute_candidate_coverage::<false, _>(
                 segment_count,
                 candidates,
                 resolution,
@@ -1220,7 +1226,7 @@ pub(super) fn candidate_centers(
 ///
 /// `contains` is monomorphized per caller, so the inner loops stay identical to
 /// a hand-written version for each item type.
-pub(super) fn compute_candidate_chunk_with(
+pub(super) fn compute_candidate_chunk_with<const WHOLE_CELL_MARGIN: bool>(
     plan: &CandidatePlan,
     centers: Option<&[Vec3]>,
     candidates: &[u64],
@@ -1270,7 +1276,7 @@ pub(super) fn compute_candidate_chunk_with(
                     .split_at(band.partition_point(|&cell| cell < start + scan_ring.ring.cells));
                 band = rest;
                 let (windows, window_count) =
-                    ring_offset_windows::<false>(scan_ring, intervals, interval_count);
+                    ring_offset_windows::<WHOLE_CELL_MARGIN>(scan_ring, intervals, interval_count);
                 for &(first, last) in &windows[..window_count] {
                     let low = ring_cells.partition_point(|&cell| cell < start + first);
                     let high = ring_cells.partition_point(|&cell| cell <= start + last);
@@ -1307,7 +1313,7 @@ pub(super) fn compute_candidate_chunk_with(
 ///
 /// Both stages honour `parallel`, so a caller that decided to enter a pool
 /// keeps the cache construction inside it rather than paying for it serially.
-pub(super) fn compute_planned_candidates(
+pub(super) fn compute_planned_candidates<const WHOLE_CELL_MARGIN: bool>(
     item_count: usize,
     plan: &CandidatePlan,
     candidates: &[u64],
@@ -1316,10 +1322,18 @@ pub(super) fn compute_planned_candidates(
     matches: impl Fn(usize, u64, Vec3) -> bool + Send + Sync,
     windows: impl Fn(usize) -> Option<LongitudeBounds> + Send + Sync,
 ) -> NativeResult<Coverage> {
-    // A call site either windows every item or none. Windowed items visit
-    // only the candidates in their longitude envelope, far fewer than the
-    // z-band count the plan priced the cache on, so decoding centers inline
-    // is cheaper than building the cache for the whole band.
+    let windows = |index| {
+        windows(index).filter(|(intervals, count)| {
+            intervals[..*count]
+                .iter()
+                .map(|(start, end)| end - start)
+                .sum::<f64>()
+                < std::f64::consts::TAU
+        })
+    };
+    // Windowed items visit far fewer candidates than the z-band estimate.
+    // Use the first item as a cheap hint to avoid building a mostly unused
+    // center cache; mixed multipart batches can still decode centers inline.
     let windowed = item_count > 0 && windows(0).is_some();
     let centers = if windowed {
         None
@@ -1327,7 +1341,7 @@ pub(super) fn compute_planned_candidates(
         candidate_centers(plan, candidates, resolution, parallel)?
     };
     compute_coverage_chunks(item_count, parallel, |range| {
-        compute_candidate_chunk_with(
+        compute_candidate_chunk_with::<WHOLE_CELL_MARGIN>(
             plan,
             centers.as_deref(),
             candidates,
