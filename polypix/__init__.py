@@ -114,7 +114,7 @@ class Polygon:
                 np.cumsum([len(ring) for ring in rings], dtype=np.uint64),
             )
         )
-        vertices = np.concatenate(rings) if rings else np.empty((0, 3), np.float64)
+        vertices = np.concatenate(rings)
         prepared = _prepare_polygon(vertices, offsets)
         for ring in rings:
             _freeze_array(ring)
