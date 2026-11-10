@@ -1092,6 +1092,15 @@ def test_revisit_output_heavy_eo_shape(
     assert int(stats.visit_counts.sum()) == 921_600
 
 
+@pytest.mark.parametrize("resolution", [4, 6, 7, 8])
+def test_revisit_small_work(benchmark, resolution: int) -> None:
+    coverage = px.Coverage.from_arrays([123], [0, 1], resolution=resolution)
+    stats = benchmark(px.revisit, coverage)
+
+    np.testing.assert_array_equal(stats.cells, [123])
+    np.testing.assert_array_equal(stats.visit_counts, [1])
+
+
 def test_revisit_sparse_high_resolution(
     benchmark,
     many_sparse_sources: list[px.Coverage],

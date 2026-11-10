@@ -68,7 +68,6 @@ fn validate_run_sources(
 // admitted grid is resolution 9: 72 MiB of 24-byte statistics state, leaving
 // headroom for the touched-cell indices (at most one per cell).
 const DENSE_STATE_MAX_BYTES: usize = 128 * 1024 * 1024;
-const DENSE_STATE_ALWAYS_BYTES: usize = 8 * 1024 * 1024;
 const DENSE_MINIMUM_WORK_DIVISOR: usize = 8;
 const NEVER_SEGMENT: u32 = u32::MAX;
 
@@ -78,12 +77,10 @@ fn dense_state_length(resolution: u8, total_hits: usize, element_bytes: usize) -
     if state_bytes > DENSE_STATE_MAX_BYTES {
         return None;
     }
-    // Larger grids only amortize zero-initializing the state array when the
+    // Dense grids only amortize zero-initializing the state array when the
     // call contains enough hit-processing work. Repeated hits still count as
     // work here; this is deliberately not an estimate of spatial density.
-    if state_bytes > DENSE_STATE_ALWAYS_BYTES
-        && total_hits < cell_count.div_ceil(DENSE_MINIMUM_WORK_DIVISOR)
-    {
+    if total_hits < cell_count.div_ceil(DENSE_MINIMUM_WORK_DIVISOR) {
         return None;
     }
     Some(cell_count)
@@ -464,9 +461,24 @@ pub(crate) fn revisit_stats(
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashMap};
+    use std::mem::size_of;
 
-    use super::{revisit_stats, RevisitStats};
+    use super::{dense_state_length, revisit_stats, RevisitStats, StatsState};
     use crate::ring;
+
+    #[test]
+    fn sparse_work_does_not_initialize_a_dense_grid() {
+        for resolution in 4..=9 {
+            assert_eq!(
+                dense_state_length(resolution, 1, size_of::<StatsState>()),
+                None
+            );
+        }
+        assert_eq!(
+            dense_state_length(6, 921_600, size_of::<StatsState>()),
+            Some(49_152)
+        );
+    }
 
     fn assert_stats(actual: &RevisitStats, expected: &RevisitStats) {
         assert_eq!(actual.cells, expected.cells);
