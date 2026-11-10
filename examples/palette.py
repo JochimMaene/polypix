@@ -2,7 +2,8 @@
 
 Everything here is derived from the two colors in `docs/_static/polypix.svg`,
 so the site, the explanatory diagrams, and the global maps stay recognisably
-the same product. `docs/_static/polypix.css` mirrors the theme values.
+the same product. `docs/_static/polypix.css` mirrors the theme values, and
+tests/test_documentation_examples.py keeps the two equal.
 """
 
 from __future__ import annotations
@@ -57,3 +58,25 @@ GAP_CMAP = "YlOrBr"
 # the way up keeps seven ordered steps and gives the lightest band a colour of
 # its own.
 RAMP_START = 0.25
+
+# The documentation site's two themes, for charts that ship a light and a dark
+# version. Primary, muted, surface and rule come from docs/_static/polypix.css;
+# text and background are the pydata theme's own.
+SITE_THEMES = {
+    "light": {
+        "primary": "#17607d",
+        "text": "#222832",
+        "muted": "#536273",
+        "surface": "#f5f7fa",
+        "rule": "#dce2e8",
+        "background": "#ffffff",
+    },
+    "dark": {
+        "primary": "#2db7d4",
+        "text": "#ced6dd",
+        "muted": "#aeb9c5",
+        "surface": "#19232f",
+        "rule": "#344252",
+        "background": "#14181e",
+    },
+}

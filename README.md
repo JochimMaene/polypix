@@ -85,7 +85,9 @@ print(counts.shape)  # (49152,) one value per cell on the grid
 Start with [Getting started](https://jochimmaene.github.io/polypix/guide.html). The
 site also carries the [API reference](https://jochimmaene.github.io/polypix/api.html),
 a [resolution guide](https://jochimmaene.github.io/polypix/resolutions.html), and two
-constellation case studies that run end to end.
+constellation case studies that run end to end. The
+[benchmarks](https://jochimmaene.github.io/polypix/benchmarks.html) compare Polypix
+with healpy, HPGeom, MOCPy, H3, and S2.
 
 ## Versioning
 

@@ -116,6 +116,7 @@ install
 concepts
 resolutions
 performance
+benchmarks
 ```
 
 ```{toctree}
