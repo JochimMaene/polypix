@@ -123,17 +123,17 @@ pub(super) fn merge_coverages(chunks: Vec<Coverage>) -> NativeResult<Coverage> {
     let (Some(polygon_count), Some(cell_count)) = (polygon_count, cell_count) else {
         return Err(NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY));
     };
-    // Large results are copied in parallel into lazily zeroed pages, so page
-    // faults and the copy spread over the workers instead of one thread.
-    let cells = if cell_count >= PARALLEL_MERGE_MIN_CELLS {
-        // `vec!` aborts on allocation failure; probe first so an oversized
-        // result still raises MemoryError, then let calloc map pages lazily.
-        Vec::<u64>::new()
-            .try_reserve_exact(cell_count)
-            .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
-        let mut cells = vec![0_u64; cell_count];
+    let mut cells = Vec::new();
+    cells
+        .try_reserve_exact(cell_count)
+        .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
+    if cell_count >= PARALLEL_MERGE_MIN_CELLS {
+        cells.resize(cell_count, 0_u64);
         let mut rest = cells.as_mut_slice();
-        let mut pieces = Vec::with_capacity(chunks.len());
+        let mut pieces = Vec::new();
+        pieces
+            .try_reserve_exact(chunks.len())
+            .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
         for chunk in &chunks {
             let (head, tail) = rest.split_at_mut(chunk.cells.len());
             pieces.push((head, &chunk.cells));
@@ -142,17 +142,11 @@ pub(super) fn merge_coverages(chunks: Vec<Coverage>) -> NativeResult<Coverage> {
         pieces
             .into_par_iter()
             .for_each(|(target, source)| target.copy_from_slice(source));
-        cells
     } else {
-        let mut cells = Vec::new();
-        cells
-            .try_reserve_exact(cell_count)
-            .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
         for chunk in &chunks {
             cells.extend_from_slice(&chunk.cells);
         }
-        cells
-    };
+    }
     let mut offsets = Vec::new();
     let offset_count = polygon_count
         .checked_add(1)
@@ -1346,6 +1340,38 @@ mod tests {
     };
     use crate::ring::fixtures::caps_along_equator;
     use crate::ring::shape::{cap_count_ring_visits, prepare_caps};
+
+    #[test]
+    fn merge_preserves_cells_and_empty_rows_across_parallel_threshold() {
+        for count in [
+            0,
+            super::PARALLEL_MERGE_MIN_CELLS - 1,
+            super::PARALLEL_MERGE_MIN_CELLS,
+        ] {
+            let expected: Vec<u64> = (0..count as u64).collect();
+            let split = count / 3;
+            let merged = super::merge_coverages(vec![
+                super::Coverage {
+                    cells: expected[..split].to_vec(),
+                    offsets: vec![0, 0, split as u64],
+                },
+                super::Coverage {
+                    cells: vec![],
+                    offsets: vec![0, 0],
+                },
+                super::Coverage {
+                    cells: expected[split..].to_vec(),
+                    offsets: vec![0, (count - split) as u64],
+                },
+            ])
+            .unwrap();
+            assert_eq!(merged.cells, expected);
+            assert_eq!(
+                merged.offsets,
+                vec![0, 0, split as u64, split as u64, count as u64]
+            );
+        }
+    }
 
     #[test]
     fn selected_cap_counts_scan_compact_spans_and_decline_wide_ones() {
