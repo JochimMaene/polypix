@@ -129,10 +129,11 @@ def healpix_chart(workload, groups, versions, theme):
     for i, library in enumerate(libraries):
         stats = [summary(groups[library, workload, "center", lv]) for lv in levels]
         x = [j + (i - (len(libraries) - 1) / 2) * width for j in range(len(levels))]
-        heights = [s["warm_ms"] for s in stats]
+        # Bars show the fastest process; laptop noise only ever adds time.
+        heights = [s["warm_min_ms"] for s in stats]
         whiskers = [
-            [s["warm_ms"] - s["warm_min_ms"] for s in stats],
-            [s["warm_max_ms"] - s["warm_ms"] for s in stats],
+            [0] * len(stats),
+            [s["warm_max_ms"] - s["warm_min_ms"] for s in stats],
         ]
         threaded = library.endswith("threaded")
         ax.bar(
@@ -148,7 +149,7 @@ def healpix_chart(workload, groups, versions, theme):
         )
         for xi, s in zip(x, stats, strict=True):
             ax.annotate(
-                f"{s['warm_ms']:.3g}",
+                f"{s['warm_min_ms']:.3g}",
                 (xi, s["warm_max_ms"]),
                 xytext=(0, 3),
                 textcoords="offset points",
@@ -189,7 +190,7 @@ def grids_chart(groups, versions, theme):
                 stats = [summary(groups[library, workload, mode, lv]) for lv in levels]
                 (handles[library],) = ax.plot(
                     [s["cells"] for s in stats],
-                    [s["warm_ms"] for s in stats],
+                    [s["warm_min_ms"] for s in stats],
                     color=colour(library, theme),
                     marker=NAMES[library][1],
                     ms=6,

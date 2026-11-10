@@ -3,7 +3,7 @@
 How does Polypix compare with the other libraries you might reach for? We ran it
 next to healpy and HPGeom, which use the same HEALPix grid, and next to MOCPy, H3,
 and S2, which cover shapes on their own grids. In short: on one thread, Polypix
-is 4 to 5 times faster than healpy at counting overlapping circles, and 20 to 40
+is 4 to 6 times faster than healpy at counting overlapping circles, and 20 to 40
 times faster at covering many small polygons.
 
 All numbers come from one laptop (Intel i7-1165G7, Linux under WSL2), so treat
@@ -30,28 +30,28 @@ checks every time, so this is a pure speed comparison. Here we use more shapes:
 
 ```{figure} assets/benchmarks/visibility-healpix.svg
 :class: only-light
-:alt: Bar chart of milliseconds per call for 10,000 circles at HEALPix orders 5, 6 and 7. Polypix takes 5.3, 7.3 and 14 ms on one thread, healpy 25, 33 and 56 ms, HPGeom 86, 97 and 131 ms.
+:alt: Bar chart of milliseconds per call for 10,000 circles at HEALPix orders 5, 6 and 7. Polypix takes 4.3, 7.2 and 13.6 ms on one thread, healpy 24, 32 and 55 ms, HPGeom 83, 93 and 126 ms.
 ```
 
 ```{figure} assets/benchmarks/visibility-healpix-dark.svg
 :class: only-dark
-:alt: Bar chart of milliseconds per call for 10,000 circles at HEALPix orders 5, 6 and 7. Polypix takes 5.3, 7.3 and 14 ms on one thread, healpy 25, 33 and 56 ms, HPGeom 86, 97 and 131 ms.
+:alt: Bar chart of milliseconds per call for 10,000 circles at HEALPix orders 5, 6 and 7. Polypix takes 4.3, 7.2 and 13.6 ms on one thread, healpy 24, 32 and 55 ms, HPGeom 83, 93 and 126 ms.
 ```
 
 ```{figure} assets/benchmarks/observation-healpix.svg
 :class: only-light
-:alt: Bar chart of milliseconds per call for 4,000 footprints at HEALPix orders 5, 6 and 7. Polypix takes 2.1 to 3.3 ms on one thread, healpy 44 to 131 ms, HPGeom 67 to 142 ms.
+:alt: Bar chart of milliseconds per call for 4,000 footprints at HEALPix orders 5, 6 and 7. Polypix takes 2.1 to 3.2 ms on one thread, healpy 44 to 123 ms, HPGeom 65 to 140 ms.
 ```
 
 ```{figure} assets/benchmarks/observation-healpix-dark.svg
 :class: only-dark
-:alt: Bar chart of milliseconds per call for 4,000 footprints at HEALPix orders 5, 6 and 7. Polypix takes 2.1 to 3.3 ms on one thread, healpy 44 to 131 ms, HPGeom 67 to 142 ms.
+:alt: Bar chart of milliseconds per call for 4,000 footprints at HEALPix orders 5, 6 and 7. Polypix takes 2.1 to 3.2 ms on one thread, healpy 44 to 123 ms, HPGeom 65 to 140 ms.
 ```
 
 healpy and HPGeom cover one shape per Python call, so their time grows with the
 number of shapes. Polypix takes the whole batch in one call. That gap is largest
 for many small shapes, which is why observation shows the bigger difference.
-With threads, Polypix gets another 1.7 to 2.4 times faster on these inputs.
+With threads, Polypix gets another 1.5 to 2.5 times faster on these inputs.
 
 ## Against other grids
 
@@ -68,21 +68,21 @@ that use the same rule share a column.
 
 ```{figure} assets/benchmarks/grids.svg
 :class: only-light
-:alt: Milliseconds per call against cell count, for circles and footprints, with the center rule and the touch rule. Center rule, circles: Polypix 0.04 to 4.4 ms, healpy 0.3 to 5.7 ms, HPGeom 1 to 8 ms, H3 36 to 212 ms. Center rule, footprints: Polypix 0.25 to 2.5 ms, the others 4 to 34 ms. Touch rule, circles: Polypix 2.6 to 36 ms, MOCPy 2.8 to 45 ms, S2 4.7 to 177 ms, H3 49 to 280 ms. Touch rule, footprints: MOCPy 3.4 to 13 ms, Polypix 7.7 to 14 ms, S2 10 to 23 ms, H3 50 to 102 ms.
+:alt: Milliseconds per call against cell count, for circles and footprints, with the center rule and the touch rule. Center rule, circles: Polypix 0.04 to 2.8 ms, healpy 0.3 to 5.1 ms, HPGeom 1 to 6.6 ms, H3 36 to 206 ms. Center rule, footprints: Polypix 0.24 to 2.2 ms, the others 3.7 to 33 ms. Touch rule, circles: Polypix 2.6 to 33 ms, MOCPy 2.7 to 43 ms, S2 4.7 to 173 ms, H3 47 to 262 ms. Touch rule, footprints: MOCPy 3.1 to 11 ms, Polypix 7.3 to 13.5 ms, S2 10 to 22 ms, H3 49 to 102 ms.
 ```
 
 ```{figure} assets/benchmarks/grids-dark.svg
 :class: only-dark
-:alt: Milliseconds per call against cell count, for circles and footprints, with the center rule and the touch rule. Center rule, circles: Polypix 0.04 to 4.4 ms, healpy 0.3 to 5.7 ms, HPGeom 1 to 8 ms, H3 36 to 212 ms. Center rule, footprints: Polypix 0.25 to 2.5 ms, the others 4 to 34 ms. Touch rule, circles: Polypix 2.6 to 36 ms, MOCPy 2.8 to 45 ms, S2 4.7 to 177 ms, H3 49 to 280 ms. Touch rule, footprints: MOCPy 3.4 to 13 ms, Polypix 7.7 to 14 ms, S2 10 to 23 ms, H3 50 to 102 ms.
+:alt: Milliseconds per call against cell count, for circles and footprints, with the center rule and the touch rule. Center rule, circles: Polypix 0.04 to 2.8 ms, healpy 0.3 to 5.1 ms, HPGeom 1 to 6.6 ms, H3 36 to 206 ms. Center rule, footprints: Polypix 0.24 to 2.2 ms, the others 3.7 to 33 ms. Touch rule, circles: Polypix 2.6 to 33 ms, MOCPy 2.7 to 43 ms, S2 4.7 to 173 ms, H3 47 to 262 ms. Touch rule, footprints: MOCPy 3.1 to 11 ms, Polypix 7.3 to 13.5 ms, S2 10 to 22 ms, H3 49 to 102 ms.
 ```
 
 What stands out:
 
 - **With the center rule, Polypix is the fastest everywhere.** For footprints
-  it is 12 to 23 times faster than healpy. With only 128 circles the gap to
-  healpy shrinks to 1.3 to 7 times, while H3 is a few hundred times slower.
+  it is 14 to 23 times faster than healpy. With only 128 circles the gap to
+  healpy shrinks to 2 to 7 times, while H3 is a few hundred times slower.
 - **For small polygons under the touch rule, MOCPy is faster than Polypix.**
-  Polypix spends around 8 ms here even on the coarsest grid, so this is an area
+  Polypix spends over 7 ms here even on the coarsest grid, so this is an area
   where it has room to improve.
 
 ## What about accuracy?
@@ -101,7 +101,7 @@ tests the exact boundary.
 ## How we measured
 
 Each case runs in five fresh processes. Each process makes one warm-up call and
-five timed calls, and we report the median. Times cover the coverage call and
+five timed calls and keeps their median; we report the fastest process. Times cover the coverage call and
 turning its output into per-cell counts; they exclude imports and creating the
 shapes. Polypix runs on one thread unless the label says threaded, and MOCPy is
 held to one thread. healpy, HPGeom, H3, and S2 are single-threaded.

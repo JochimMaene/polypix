@@ -44,11 +44,11 @@ towards the library that needs them. H3 has no circles, so we hand it a
 128-point outline of each one and include building it.
 
 Each case runs in five fresh processes. A process makes one call to warm up,
-then five timed calls, and keeps the median. The charts show the median over
-processes, with whiskers for the fastest and slowest; the CSV also has the
-first call. Polypix runs on one thread unless the label says "threaded", and
-MOCPy is held to one thread too. healpy, HPGeom, H3, and S2 are single-threaded
-anyway.
+then five timed calls, and keeps the median. The charts show the fastest
+process, since background load only ever adds time, with whiskers up to the
+slowest; the CSV also has the median over processes and the first call. Polypix
+runs on one thread unless the label says "threaded", and MOCPy is held to one
+thread too. healpy, HPGeom, H3, and S2 are single-threaded anyway.
 
 ## Comparing fairly
 
