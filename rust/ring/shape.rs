@@ -1156,16 +1156,40 @@ struct CellBoundary {
     x: i64,
     y: i64,
     nside: u64,
+    // Boundary points at quarter steps of each edge, filled on first use.
+    // A cell is tested against every footprint edge and each test starts
+    // from these same samples, so they are decoded once per cell. Edge `e`
+    // at parameter 1 is edge `e + 1` at 0, hence sixteen slots, not twenty.
+    quarters: [std::cell::Cell<Option<Vec3>>; 16],
 }
 
 impl CellBoundary {
     fn new(cell: u64, resolution: u8) -> Self {
         let nside = 1_u64 << resolution;
         let (face, x, y) = ring_to_face_xy(cell, nside);
-        Self { face, x, y, nside }
+        Self {
+            face,
+            x,
+            y,
+            nside,
+            quarters: Default::default(),
+        }
     }
 
     fn point(&self, edge: u8, parameter: f64) -> Vec3 {
+        let quarter = (4.0 * parameter) as usize;
+        if quarter as f64 != 4.0 * parameter {
+            return self.evaluate(edge, parameter);
+        }
+        let slot = &self.quarters[(4 * edge as usize + quarter) % 16];
+        slot.get().unwrap_or_else(|| {
+            let point = self.evaluate(edge, parameter);
+            slot.set(Some(point));
+            point
+        })
+    }
+
+    fn evaluate(&self, edge: u8, parameter: f64) -> Vec3 {
         let (dx, dy) = match edge {
             0 => (1.0 - parameter, 1.0),
             1 => (0.0, 1.0 - parameter),
@@ -1439,7 +1463,7 @@ fn cell_edge_cap_interval_intersects(
     budget: &mut u32,
 ) -> Intersection {
     let middle = 0.5 * (start + end);
-    let point = boundary.point(edge, middle);
+    let point = boundary.evaluate(edge, middle);
     let chord = cap.chord(point);
     if cap.contains_chord(chord) {
         return Intersection::Yes;
@@ -1648,22 +1672,30 @@ impl<T: std::borrow::Borrow<PreparedFootprint>> PreparedFootprintOverlap<T> {
         if self.footprint.borrow().contains(point) || self.vertex_cells.contains(&cell) {
             return true;
         }
-        let boundary = CellBoundary::new(cell, self.resolution);
-        if (0..4).any(|edge| self.footprint.borrow().contains(boundary.point(edge, 0.0))) {
-            return true;
-        }
         // From the face center to any boundary point, the two coordinate
         // displacements sum to at most one. The existing face-map speed
         // bound therefore bounds both the plane residual and arc-span change
         // over the entire cell. Reject distant arcs before decoding its edges.
-        let bound = CELL_EDGE_DOT_LIPSCHITZ / boundary.nside as f64
+        let bound = CELL_EDGE_DOT_LIPSCHITZ / (1_u64 << self.resolution) as f64
             + CELL_EDGE_CHORD_GUARD
             + CONTAINMENT_EPSILON;
-        self.arcs.iter().any(|&arc| {
-            dot(arc.normal, point).abs() <= bound
-                && arc.span_slack(point) >= -bound
-                && (0..4).any(|edge| cell_edge_intersects_arc(&boundary, edge, arc))
-        })
+        let near = |arc: &&MinorArc| {
+            dot(arc.normal, point).abs() <= bound && arc.span_slack(point) >= -bound
+        };
+        // With no footprint edge in reach, the boundary cannot cross the cell,
+        // so an outside center and no vertex inside leave the whole cell out.
+        // That also covers the corners, which cannot sit inside then either.
+        if !self.arcs.iter().any(|arc| near(&arc)) {
+            return false;
+        }
+        let boundary = CellBoundary::new(cell, self.resolution);
+        if (0..4).any(|edge| self.footprint.borrow().contains(boundary.point(edge, 0.0))) {
+            return true;
+        }
+        self.arcs
+            .iter()
+            .filter(near)
+            .any(|&arc| (0..4).any(|edge| cell_edge_intersects_arc(&boundary, edge, arc)))
     }
 
     pub(super) fn cover(&self, cells: &mut Vec<u64>) -> NativeResult<()> {
