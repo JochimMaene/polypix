@@ -84,7 +84,7 @@ jobs:
             test_latest_python: false
           - label: macOS ARM64
             artifact: macos-aarch64
-            os: macos-14
+            os: macos-15
             target: aarch64
             manylinux: "off"
             macosx_deployment_target: "11.0"
@@ -124,7 +124,7 @@ jobs:
             test_latest_python: true
           - label: macOS ARM64
             artifact: macos-aarch64
-            os: macos-14
+            os: macos-15
             target: aarch64
             manylinux: "off"
             macosx_deployment_target: "11.0"
