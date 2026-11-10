@@ -186,6 +186,7 @@ pub(super) fn dispatch_coverage(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn compute_candidate_coverage<T: Send + Sync>(
     item_count: usize,
     candidates: &[u64],
@@ -194,6 +195,7 @@ pub(super) fn compute_candidate_coverage<T: Send + Sync>(
     prepare: impl Fn(usize) -> Result<T, String> + Send + Sync,
     z_bounds: impl Fn(&T) -> (f64, f64) + Send + Sync,
     matches: impl Fn(&T, u64, Vec3) -> bool + Send + Sync,
+    windows: impl Fn(&T) -> Option<LongitudeBounds> + Send + Sync,
 ) -> NativeResult<Coverage> {
     let prepare_all = |parallel| -> NativeResult<Vec<T>> {
         let prepared = try_collect_indexed(item_count, parallel, &prepare)?;
@@ -214,6 +216,7 @@ pub(super) fn compute_candidate_coverage<T: Send + Sync>(
             resolution,
             parallel,
             |index, cell, point| matches(&items[index], cell, point),
+            |index| windows(&items[index]),
         )
     };
     // Footprint preparation happens here too, so it counts toward the decision.
@@ -329,6 +332,7 @@ pub(super) fn compute_mixed_coverage(
                 },
                 PreparedFootprintOverlap::z_bounds,
                 |footprint, cell, point| footprint.overlaps_cell_at(cell, point),
+                |_| None,
             )
         } else {
             compute_candidate_coverage(
@@ -339,6 +343,7 @@ pub(super) fn compute_mixed_coverage(
                 prepare,
                 PreparedFootprint::z_bounds,
                 |footprint, _cell, point| footprint.contains(point),
+                |footprint| Some(footprint.longitude_bounds()),
             )
         };
     }
@@ -523,6 +528,7 @@ pub(crate) fn cover_prepared_regions(
                         .iter()
                         .any(|polygon| polygon.overlaps_cell_at(cell, point))
                 },
+                |_| None,
             )
         } else {
             compute_candidate_coverage(
@@ -533,6 +539,7 @@ pub(crate) fn cover_prepared_regions(
                 |region| Ok::<_, String>(regions[region]),
                 |polygons| region_z_bounds(polygons),
                 |polygons, _cell, point| region_contains(polygons, point),
+                |_| None,
             )
         };
     }
@@ -656,6 +663,7 @@ pub(crate) fn cover_caps(
                     resolution,
                     parallel,
                     |index, cell, point| overlaps[index].overlaps_cell_at(cell, point),
+                    |_| None,
                 )
             };
             let preparation_work = candidate_preparation_work(caps.len(), candidates.len(), 0);
@@ -682,6 +690,7 @@ pub(crate) fn cover_caps(
                 resolution,
                 parallel,
                 |index, _cell, point| caps[index].contains(point),
+                |_| None,
             )
         };
         // Caps arrive prepared, so only planning and the candidate-center cache
@@ -1112,6 +1121,7 @@ pub(crate) fn cover_sweep(
                 },
                 PreparedFootprintOverlap::z_bounds,
                 |footprint, cell, point| footprint.overlaps_cell_at(cell, point),
+                |_| None,
             )
         } else {
             compute_candidate_coverage(
@@ -1122,6 +1132,7 @@ pub(crate) fn cover_sweep(
                 prepare,
                 PreparedFootprint::z_bounds,
                 |footprint, _cell, point| footprint.contains(point),
+                |footprint| Some(footprint.longitude_bounds()),
             )
         };
     }
@@ -1179,6 +1190,7 @@ pub(super) fn compute_candidate_chunk_with(
     range: Range<usize>,
     resolution: u8,
     matches: impl Fn(usize, u64, Vec3) -> bool,
+    windows: impl Fn(usize) -> Option<LongitudeBounds>,
 ) -> NativeResult<Coverage> {
     // Candidate hit rates vary from empty to dense; reserving from the full
     // candidate-set size overallocates badly for sparse queries. Grow
@@ -1194,9 +1206,45 @@ pub(super) fn compute_candidate_chunk_with(
         .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
     let mut coverage = Coverage { cells, offsets };
     coverage.offsets.push(0);
+    let nside = 1_u64 << resolution;
+    let ring_table = cached_scan_rings(resolution);
     for index in range {
         let candidate_range = plan.ranges[index].clone();
-        if let Some(centers) = centers {
+        let windows = if candidate_range.len() > CANDIDATE_WINDOW_MIN_BAND {
+            windows(index)
+        } else {
+            None
+        };
+        if let Some((intervals, interval_count)) = windows {
+            // Visit only the candidates inside the item's longitude envelope,
+            // one occupied ring at a time, found by binary search.
+            let mut band = &candidates[candidate_range];
+            while let Some(&next) = band.first() {
+                let ring_index = ring_of_cell(next, nside);
+                let uncached;
+                let scan_ring = if let Some(table) = ring_table {
+                    &table[(ring_index - 1) as usize]
+                } else {
+                    uncached = ScanRing::new(grid::ring_info(nside, ring_index));
+                    &uncached
+                };
+                let start = scan_ring.ring.start;
+                let (ring_cells, rest) = band
+                    .split_at(band.partition_point(|&cell| cell < start + scan_ring.ring.cells));
+                band = rest;
+                let (windows, window_count) =
+                    ring_offset_windows::<false>(scan_ring, intervals, interval_count);
+                for &(first, last) in &windows[..window_count] {
+                    let low = ring_cells.partition_point(|&cell| cell < start + first);
+                    let high = ring_cells.partition_point(|&cell| cell <= start + last);
+                    for &cell in &ring_cells[low..high] {
+                        if matches(index, cell, center(cell, resolution)) {
+                            push_coverage_cell(&mut coverage.cells, cell, 1)?;
+                        }
+                    }
+                }
+            }
+        } else if let Some(centers) = centers {
             for candidate_index in candidate_range {
                 let cell = candidates[candidate_index];
                 let point = centers[candidate_index - plan.center_start];
@@ -1229,8 +1277,18 @@ pub(super) fn compute_planned_candidates(
     resolution: u8,
     parallel: bool,
     matches: impl Fn(usize, u64, Vec3) -> bool + Send + Sync,
+    windows: impl Fn(usize) -> Option<LongitudeBounds> + Send + Sync,
 ) -> NativeResult<Coverage> {
-    let centers = candidate_centers(plan, candidates, resolution, parallel)?;
+    // A call site either windows every item or none. Windowed items visit
+    // only the candidates in their longitude envelope, far fewer than the
+    // z-band count the plan priced the cache on, so decoding centers inline
+    // is cheaper than building the cache for the whole band.
+    let windowed = item_count > 0 && windows(0).is_some();
+    let centers = if windowed {
+        None
+    } else {
+        candidate_centers(plan, candidates, resolution, parallel)?
+    };
     compute_coverage_chunks(item_count, parallel, |range| {
         compute_candidate_chunk_with(
             plan,
@@ -1239,6 +1297,7 @@ pub(super) fn compute_planned_candidates(
             range,
             resolution,
             &matches,
+            &windows,
         )
     })
 }
