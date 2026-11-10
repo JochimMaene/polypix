@@ -149,7 +149,7 @@ pub(super) fn normalized_cell_at(direction: Vec3, resolution: u8) -> u64 {
     let nside = 1_u64 << resolution;
     let nside_float = nside as f64;
     let absolute_z = z.abs();
-    let radial = x.hypot(y);
+    let radial = (x * x + y * y).sqrt();
     // Longitude is undefined at an exact pole. Assign both poles to the
     // longitude-zero pixel rather than letting signed zero choose a quadrant.
     let longitude = if radial == 0.0 {

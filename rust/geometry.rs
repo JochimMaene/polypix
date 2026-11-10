@@ -49,8 +49,11 @@ pub(crate) fn stable_cross(left: Vec3, right: Vec3) -> Vec3 {
     [0.5 * doubled[0], 0.5 * doubled[1], 0.5 * doubled[2]]
 }
 
+// Callers pass vectors built from unit directions, so squaring can neither
+// overflow nor underflow above ZERO_NORM_EPSILON; glibc `hypot` guards against
+// both and was the single largest cost of overlap cap coverage.
 pub(crate) fn norm(vector: Vec3) -> f64 {
-    vector[0].hypot(vector[1]).hypot(vector[2])
+    (vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]).sqrt()
 }
 
 pub(crate) fn normalize(vector: Vec3) -> Result<Vec3, String> {
