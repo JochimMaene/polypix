@@ -270,11 +270,15 @@ def s2_cells(level):
     return 6 * 4**level
 
 
-def healpix(cover, modes, cell_ids=healpix_ring_ids, modules=("polypix",)):
-    """A library on the HEALPix grid; Polypix is needed for cell counts."""
+def healpix_cells(level):
     import polypix
 
-    return Library(modules, cover, cell_ids, polypix.cell_count, modes)
+    return polypix.cell_count(level)
+
+
+def healpix(cover, modes, cell_ids=healpix_ring_ids, modules=("polypix",)):
+    """A library on the HEALPix grid; Polypix is needed for cell counts."""
+    return Library(modules, cover, cell_ids, healpix_cells, modes)
 
 
 LIBRARIES = {

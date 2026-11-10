@@ -25,7 +25,7 @@ OUT = ROOT / "docs" / "assets" / "benchmarks"
 SITE = palette.SITE_THEMES
 NAMES = {
     "polypix": ("Polypix", "o"),
-    "polypix-threaded": ("Polypix, threaded", "o"),
+    "polypix-threaded": ("Polypix", "o"),
     "healpy": ("healpy", "s"),
     "hpgeom": ("HPGeom", "D"),
     "mocpy": ("MOCPy", "v"),
@@ -94,7 +94,8 @@ def colour(library, theme):
 def label(library, versions):
     name = NAMES[library][0]
     version = versions.get(VERSION_KEY.get(library, library))
-    return f"{name} {version}" if version else name
+    name = f"{name} {version}" if version else name
+    return f"{name}, threaded" if library.endswith("-threaded") else name
 
 
 def shapes(workload, groups):
@@ -157,8 +158,8 @@ def healpix_chart(workload, groups, versions, theme):
     ax.set_xticks(
         range(len(levels)),
         [
-            f"Order {lv}\n{s['cells']:,} cells"
-            for lv, s in zip(levels, stats, strict=True)
+            f"Order {lv}\n{groups['polypix', workload, 'center', lv][0]['cells']:,} cells"
+            for lv in levels
         ],
     )
     ax.set_ylabel("Milliseconds per call (lower is better)")
