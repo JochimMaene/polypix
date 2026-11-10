@@ -7,6 +7,16 @@ documentation. Internal refactors, tests, and CI changes are omitted.
 
 ## Unreleased
 
+### Performance
+
+- Coverage over `candidate_cells` is up to 20 times as fast when the selection
+  is much wider than each polygon or sweep.
+- Overlap coverage is 1.4 to 2.7 times as fast.
+- Polygons passed as lists convert up to 1.8 times as fast. A list whose
+  entries have the wrong width now names the offending entry.
+- Large threaded results, about a million cells and up, are assembled in
+  parallel, so threads speed them up again.
+
 ## [1.0.0] — 2026-11-04
 
 First stable release, unchanged since 1.0.0-rc.1. From 1.0 on, Polypix
