@@ -819,6 +819,7 @@ pub(crate) fn count_caps_per_cell(
     }
     if let Some(cells) = raw_cells {
         if let Some(span) = selected_span {
+            sort_caps_for_deltas(&mut caps, (span.end - span.start) as usize);
             return count_caps_in_cell_span(&caps, resolution, cells, span).map(Some);
         }
         validate_cell_range(cells, resolution, "cells")?;
@@ -903,6 +904,7 @@ pub(crate) fn count_caps_per_cell(
         return Ok(Some(counts));
     }
 
+    sort_caps_for_deltas(&mut caps, cell_count);
     // Pricing every cap costs two binary searches each, which on a batch of
     // ten thousand is itself a measurable share of the count. Sample instead,
     // as every other planning estimate here does.
@@ -919,6 +921,17 @@ pub(crate) fn count_caps_per_cell(
         };
         count_caps_chunked(&caps, resolution, cell_count, worker_count).map(Some)
     })
+}
+
+// Above about 2 MiB of deltas, the +1/-1 writes of caps in input order miss
+// cache on nearly every ring. Caps sorted by latitude visit neighbouring rings
+// in turn. Counting does not depend on cap order.
+const SORTED_CAP_DELTAS_MIN_CELLS: usize = 1 << 18;
+
+fn sort_caps_for_deltas(caps: &mut [Cap], delta_cells: usize) {
+    if delta_cells >= SORTED_CAP_DELTAS_MIN_CELLS {
+        caps.sort_unstable_by(|a, b| a.minimum_z.total_cmp(&b.minimum_z));
+    }
 }
 
 /// Count only the bounded RING span containing a selection, without cell hits.
