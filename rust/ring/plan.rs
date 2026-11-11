@@ -33,6 +33,10 @@ pub(super) const CANDIDATE_PREPARATION_WORK: usize = 1 << 8;
 
 pub(super) const CANDIDATE_RANGE_PROBE_WORK: usize = 1 << 5;
 
+// Bounding an item's longitudes and searching each ring costs about as much
+// as testing this many candidates directly, so narrower bands skip it.
+pub(super) const CANDIDATE_WINDOW_MIN_BAND: usize = 16;
+
 pub(super) const CANDIDATE_CENTER_CACHE_REUSE: usize = 3;
 
 pub(super) const CANDIDATE_CENTER_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;

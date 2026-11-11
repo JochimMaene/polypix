@@ -725,6 +725,43 @@ def test_cover_cap_constellation_batch(
     assert coverage.cells.size == 1_629_277
 
 
+@pytest.mark.parametrize(
+    ("shape", "mode"),
+    [
+        ("cap", "center"),
+        ("cap", "overlap"),
+        ("polygon", "overlap"),
+        ("sweep", "overlap"),
+    ],
+)
+def test_cover_with_distributed_candidates(
+    benchmark,
+    shape: str,
+    mode: str,
+    constellation_caps: tuple[np.ndarray, np.ndarray],
+    footprints: np.ndarray,
+    strip_edges: tuple[np.ndarray, np.ndarray],
+) -> None:
+    candidates = np.arange(0, px.cell_count(6), 3, dtype=np.uint64)
+    if shape == "cap":
+        centers, radii = constellation_caps
+        function, args = px.cover_cap, (centers[:512], radii[:512])
+        region_count = 512
+    elif shape == "polygon":
+        function, args = px.cover_polygon, (footprints,)
+        region_count = len(footprints)
+    else:
+        function, args = px.cover_sweep, strip_edges
+        region_count = len(strip_edges[0]) - 1
+    coverage = benchmark(
+        function, *args, resolution=6, candidate_cells=candidates, mode=mode, threads=1
+    )
+
+    assert coverage.offsets.shape == (region_count + 1,)
+    assert coverage.cells.size > 0
+    assert np.isin(coverage.cells, candidates).all()
+
+
 def test_cover_cap_overlap_batch(
     benchmark,
     constellation_caps: tuple[np.ndarray, np.ndarray],
@@ -1053,6 +1090,15 @@ def test_revisit_output_heavy_eo_shape(
 
     assert stats.cells.size == 49_152
     assert int(stats.visit_counts.sum()) == 921_600
+
+
+@pytest.mark.parametrize("resolution", [4, 6, 7, 8])
+def test_revisit_small_work(benchmark, resolution: int) -> None:
+    coverage = px.Coverage.from_arrays([123], [0, 1], resolution=resolution)
+    stats = benchmark(px.revisit, coverage)
+
+    np.testing.assert_array_equal(stats.cells, [123])
+    np.testing.assert_array_equal(stats.visit_counts, [1])
 
 
 def test_revisit_sparse_high_resolution(

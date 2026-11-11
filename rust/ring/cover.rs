@@ -30,6 +30,9 @@ pub(crate) struct Coverage {
 // keep the threshold at the first measured batch with a clear parallel win.
 const NEIGHBOR_PARALLEL_MIN_CELLS: usize = 1 << 14;
 
+// Below about a megabyte of cells the serial copy wins.
+const PARALLEL_MERGE_MIN_CELLS: usize = 1 << 17;
+
 /// Map directions to cells, in parallel when the batch is large enough.
 pub(crate) fn cells_at(vectors: &[f64], resolution: u8) -> NativeResult<Vec<u64>> {
     let count = vectors.len() / 3;
@@ -124,6 +127,26 @@ pub(super) fn merge_coverages(chunks: Vec<Coverage>) -> NativeResult<Coverage> {
     cells
         .try_reserve_exact(cell_count)
         .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
+    if cell_count >= PARALLEL_MERGE_MIN_CELLS {
+        cells.resize(cell_count, 0_u64);
+        let mut rest = cells.as_mut_slice();
+        let mut pieces = Vec::new();
+        pieces
+            .try_reserve_exact(chunks.len())
+            .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
+        for chunk in &chunks {
+            let (head, tail) = rest.split_at_mut(chunk.cells.len());
+            pieces.push((head, &chunk.cells));
+            rest = tail;
+        }
+        pieces
+            .into_par_iter()
+            .for_each(|(target, source)| target.copy_from_slice(source));
+    } else {
+        for chunk in &chunks {
+            cells.extend_from_slice(&chunk.cells);
+        }
+    }
     let mut offsets = Vec::new();
     let offset_count = polygon_count
         .checked_add(1)
@@ -134,15 +157,16 @@ pub(super) fn merge_coverages(chunks: Vec<Coverage>) -> NativeResult<Coverage> {
     let mut coverage = Coverage { cells, offsets };
     coverage.offsets.push(0);
 
+    let mut base = 0_u64;
     for chunk in chunks {
-        let base = coverage.cells.len() as u64;
-        coverage.cells.extend(chunk.cells);
+        let chunk_base = base;
+        base += chunk.cells.len() as u64;
         coverage.offsets.extend(
             chunk
                 .offsets
                 .into_iter()
                 .skip(1)
-                .map(|offset| base + offset),
+                .map(|offset| chunk_base + offset),
         );
     }
     Ok(coverage)
@@ -186,7 +210,8 @@ pub(super) fn dispatch_coverage(
     })
 }
 
-pub(super) fn compute_candidate_coverage<T: Send + Sync>(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn compute_candidate_coverage<const WHOLE_CELL_MARGIN: bool, T: Send + Sync>(
     item_count: usize,
     candidates: &[u64],
     resolution: u8,
@@ -194,6 +219,7 @@ pub(super) fn compute_candidate_coverage<T: Send + Sync>(
     prepare: impl Fn(usize) -> Result<T, String> + Send + Sync,
     z_bounds: impl Fn(&T) -> (f64, f64) + Send + Sync,
     matches: impl Fn(&T, u64, Vec3) -> bool + Send + Sync,
+    windows: impl Fn(&T) -> Option<LongitudeBounds> + Send + Sync,
 ) -> NativeResult<Coverage> {
     let prepare_all = |parallel| -> NativeResult<Vec<T>> {
         let prepared = try_collect_indexed(item_count, parallel, &prepare)?;
@@ -207,13 +233,14 @@ pub(super) fn compute_candidate_coverage<T: Send + Sync>(
         plan_item_candidates(items, candidates, resolution, parallel, &z_bounds)
     };
     let compute_planned = |items: &[T], plan: &CandidatePlan, parallel| {
-        compute_planned_candidates(
+        compute_planned_candidates::<WHOLE_CELL_MARGIN>(
             item_count,
             plan,
             candidates,
             resolution,
             parallel,
             |index, cell, point| matches(&items[index], cell, point),
+            |index| windows(&items[index]),
         )
     };
     // Footprint preparation happens here too, so it counts toward the decision.
@@ -318,7 +345,7 @@ pub(super) fn compute_mixed_coverage(
                 .map_err(|error| format!("geometry[{index}]: {error}"))
         };
         return if overlap {
-            compute_candidate_coverage(
+            compute_candidate_coverage::<true, _>(
                 polygon_count,
                 candidates,
                 resolution,
@@ -329,9 +356,10 @@ pub(super) fn compute_mixed_coverage(
                 },
                 PreparedFootprintOverlap::z_bounds,
                 |footprint, cell, point| footprint.overlaps_cell_at(cell, point),
+                |footprint| Some(footprint.longitude_bounds()),
             )
         } else {
-            compute_candidate_coverage(
+            compute_candidate_coverage::<false, _>(
                 polygon_count,
                 candidates,
                 resolution,
@@ -339,6 +367,7 @@ pub(super) fn compute_mixed_coverage(
                 prepare,
                 PreparedFootprint::z_bounds,
                 |footprint, _cell, point| footprint.contains(point),
+                |footprint| Some(footprint.longitude_bounds()),
             )
         };
     }
@@ -495,7 +524,7 @@ pub(crate) fn cover_prepared_regions(
         )
     }) {
         return if overlap {
-            compute_candidate_coverage(
+            compute_candidate_coverage::<true, _>(
                 region_count,
                 candidates,
                 resolution,
@@ -523,9 +552,13 @@ pub(crate) fn cover_prepared_regions(
                         .iter()
                         .any(|polygon| polygon.overlaps_cell_at(cell, point))
                 },
+                |polygons| match polygons.as_slice() {
+                    [polygon] => Some(polygon.longitude_bounds()),
+                    _ => None,
+                },
             )
         } else {
-            compute_candidate_coverage(
+            compute_candidate_coverage::<false, _>(
                 region_count,
                 candidates,
                 resolution,
@@ -533,6 +566,10 @@ pub(crate) fn cover_prepared_regions(
                 |region| Ok::<_, String>(regions[region]),
                 |polygons| region_z_bounds(polygons),
                 |polygons, _cell, point| region_contains(polygons, point),
+                |polygons| match *polygons {
+                    [polygon] => Some(polygon.footprint.longitude_bounds()),
+                    _ => None,
+                },
             )
         };
     }
@@ -649,13 +686,14 @@ pub(crate) fn cover_caps(
                 CapOverlap::new(&caps[index], resolution)
             })?;
             let compute_planned = |plan: &CandidatePlan, parallel| {
-                compute_planned_candidates(
+                compute_planned_candidates::<true>(
                     caps.len(),
                     plan,
                     candidates,
                     resolution,
                     parallel,
                     |index, cell, point| overlaps[index].overlaps_cell_at(cell, point),
+                    |_| None,
                 )
             };
             let preparation_work = candidate_preparation_work(caps.len(), candidates.len(), 0);
@@ -675,13 +713,14 @@ pub(crate) fn cover_caps(
             );
         }
         let compute_planned = |plan: &CandidatePlan, parallel| {
-            compute_planned_candidates(
+            compute_planned_candidates::<false>(
                 caps.len(),
                 plan,
                 candidates,
                 resolution,
                 parallel,
                 |index, _cell, point| caps[index].contains(point),
+                |_| None,
             )
         };
         // Caps arrive prepared, so only planning and the candidate-center cache
@@ -786,6 +825,7 @@ pub(crate) fn count_caps_per_cell(
     }
     if let Some(cells) = raw_cells {
         if let Some(span) = selected_span {
+            sort_caps_for_deltas(&mut caps, (span.end - span.start) as usize);
             return count_caps_in_cell_span(&caps, resolution, cells, span).map(Some);
         }
         validate_cell_range(cells, resolution, "cells")?;
@@ -870,6 +910,7 @@ pub(crate) fn count_caps_per_cell(
         return Ok(Some(counts));
     }
 
+    sort_caps_for_deltas(&mut caps, cell_count);
     // Pricing every cap costs two binary searches each, which on a batch of
     // ten thousand is itself a measurable share of the count. Sample instead,
     // as every other planning estimate here does.
@@ -886,6 +927,17 @@ pub(crate) fn count_caps_per_cell(
         };
         count_caps_chunked(&caps, resolution, cell_count, worker_count).map(Some)
     })
+}
+
+// Above about 2 MiB of deltas, the +1/-1 writes of caps in input order miss
+// cache on nearly every ring. Caps sorted by latitude visit neighbouring rings
+// in turn. Counting does not depend on cap order.
+const SORTED_CAP_DELTAS_MIN_CELLS: usize = 1 << 18;
+
+fn sort_caps_for_deltas(caps: &mut [Cap], delta_cells: usize) {
+    if delta_cells >= SORTED_CAP_DELTAS_MIN_CELLS {
+        caps.sort_unstable_by(|a, b| a.minimum_z.total_cmp(&b.minimum_z));
+    }
 }
 
 /// Count only the bounded RING span containing a selection, without cell hits.
@@ -1101,7 +1153,7 @@ pub(crate) fn cover_sweep(
     }) {
         let prepare = |index| prepare_sweep_footprint(&normalized_left, &normalized_right, index);
         return if overlap {
-            compute_candidate_coverage(
+            compute_candidate_coverage::<true, _>(
                 segment_count,
                 candidates,
                 resolution,
@@ -1112,9 +1164,10 @@ pub(crate) fn cover_sweep(
                 },
                 PreparedFootprintOverlap::z_bounds,
                 |footprint, cell, point| footprint.overlaps_cell_at(cell, point),
+                |footprint| Some(footprint.longitude_bounds()),
             )
         } else {
-            compute_candidate_coverage(
+            compute_candidate_coverage::<false, _>(
                 segment_count,
                 candidates,
                 resolution,
@@ -1122,6 +1175,7 @@ pub(crate) fn cover_sweep(
                 prepare,
                 PreparedFootprint::z_bounds,
                 |footprint, _cell, point| footprint.contains(point),
+                |footprint| Some(footprint.longitude_bounds()),
             )
         };
     }
@@ -1172,13 +1226,14 @@ pub(super) fn candidate_centers(
 ///
 /// `contains` is monomorphized per caller, so the inner loops stay identical to
 /// a hand-written version for each item type.
-pub(super) fn compute_candidate_chunk_with(
+pub(super) fn compute_candidate_chunk_with<const WHOLE_CELL_MARGIN: bool>(
     plan: &CandidatePlan,
     centers: Option<&[Vec3]>,
     candidates: &[u64],
     range: Range<usize>,
     resolution: u8,
     matches: impl Fn(usize, u64, Vec3) -> bool,
+    windows: impl Fn(usize) -> Option<LongitudeBounds>,
 ) -> NativeResult<Coverage> {
     // Candidate hit rates vary from empty to dense; reserving from the full
     // candidate-set size overallocates badly for sparse queries. Grow
@@ -1194,9 +1249,45 @@ pub(super) fn compute_candidate_chunk_with(
         .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
     let mut coverage = Coverage { cells, offsets };
     coverage.offsets.push(0);
+    let nside = 1_u64 << resolution;
+    let ring_table = cached_scan_rings(resolution);
     for index in range {
         let candidate_range = plan.ranges[index].clone();
-        if let Some(centers) = centers {
+        let windows = if candidate_range.len() > CANDIDATE_WINDOW_MIN_BAND {
+            windows(index)
+        } else {
+            None
+        };
+        if let Some((intervals, interval_count)) = windows {
+            // Visit only the candidates inside the item's longitude envelope,
+            // one occupied ring at a time, found by binary search.
+            let mut band = &candidates[candidate_range];
+            while let Some(&next) = band.first() {
+                let ring_index = ring_of_cell(next, nside);
+                let uncached;
+                let scan_ring = if let Some(table) = ring_table {
+                    &table[(ring_index - 1) as usize]
+                } else {
+                    uncached = ScanRing::new(grid::ring_info(nside, ring_index));
+                    &uncached
+                };
+                let start = scan_ring.ring.start;
+                let (ring_cells, rest) = band
+                    .split_at(band.partition_point(|&cell| cell < start + scan_ring.ring.cells));
+                band = rest;
+                let (windows, window_count) =
+                    ring_offset_windows::<WHOLE_CELL_MARGIN>(scan_ring, intervals, interval_count);
+                for &(first, last) in &windows[..window_count] {
+                    let low = ring_cells.partition_point(|&cell| cell < start + first);
+                    let high = ring_cells.partition_point(|&cell| cell <= start + last);
+                    for &cell in &ring_cells[low..high] {
+                        if matches(index, cell, center(cell, resolution)) {
+                            push_coverage_cell(&mut coverage.cells, cell, 1)?;
+                        }
+                    }
+                }
+            }
+        } else if let Some(centers) = centers {
             for candidate_index in candidate_range {
                 let cell = candidates[candidate_index];
                 let point = centers[candidate_index - plan.center_start];
@@ -1222,23 +1313,42 @@ pub(super) fn compute_candidate_chunk_with(
 ///
 /// Both stages honour `parallel`, so a caller that decided to enter a pool
 /// keeps the cache construction inside it rather than paying for it serially.
-pub(super) fn compute_planned_candidates(
+pub(super) fn compute_planned_candidates<const WHOLE_CELL_MARGIN: bool>(
     item_count: usize,
     plan: &CandidatePlan,
     candidates: &[u64],
     resolution: u8,
     parallel: bool,
     matches: impl Fn(usize, u64, Vec3) -> bool + Send + Sync,
+    windows: impl Fn(usize) -> Option<LongitudeBounds> + Send + Sync,
 ) -> NativeResult<Coverage> {
-    let centers = candidate_centers(plan, candidates, resolution, parallel)?;
+    let windows = |index| {
+        windows(index).filter(|(intervals, count)| {
+            intervals[..*count]
+                .iter()
+                .map(|(start, end)| end - start)
+                .sum::<f64>()
+                < std::f64::consts::TAU
+        })
+    };
+    // Windowed items visit far fewer candidates than the z-band estimate.
+    // Use the first item as a cheap hint to avoid building a mostly unused
+    // center cache; mixed multipart batches can still decode centers inline.
+    let windowed = item_count > 0 && windows(0).is_some();
+    let centers = if windowed {
+        None
+    } else {
+        candidate_centers(plan, candidates, resolution, parallel)?
+    };
     compute_coverage_chunks(item_count, parallel, |range| {
-        compute_candidate_chunk_with(
+        compute_candidate_chunk_with::<WHOLE_CELL_MARGIN>(
             plan,
             centers.as_deref(),
             candidates,
             range,
             resolution,
             &matches,
+            &windows,
         )
     })
 }
@@ -1257,6 +1367,38 @@ mod tests {
     };
     use crate::ring::fixtures::caps_along_equator;
     use crate::ring::shape::{cap_count_ring_visits, prepare_caps};
+
+    #[test]
+    fn merge_preserves_cells_and_empty_rows_across_parallel_threshold() {
+        for count in [
+            0,
+            super::PARALLEL_MERGE_MIN_CELLS - 1,
+            super::PARALLEL_MERGE_MIN_CELLS,
+        ] {
+            let expected: Vec<u64> = (0..count as u64).collect();
+            let split = count / 3;
+            let merged = super::merge_coverages(vec![
+                super::Coverage {
+                    cells: expected[..split].to_vec(),
+                    offsets: vec![0, 0, split as u64],
+                },
+                super::Coverage {
+                    cells: vec![],
+                    offsets: vec![0, 0],
+                },
+                super::Coverage {
+                    cells: expected[split..].to_vec(),
+                    offsets: vec![0, (count - split) as u64],
+                },
+            ])
+            .unwrap();
+            assert_eq!(merged.cells, expected);
+            assert_eq!(
+                merged.offsets,
+                vec![0, 0, split as u64, split as u64, count as u64]
+            );
+        }
+    }
 
     #[test]
     fn selected_cap_counts_scan_compact_spans_and_decline_wide_ones() {

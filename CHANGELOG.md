@@ -1,23 +1,39 @@
 # Changelog
 
-Notable user-facing changes are listed here, newest first. Sections follow
-[Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/)
-categories: breaking changes first, then features, fixes, performance, and
-documentation. Internal refactors, tests, and CI changes are omitted.
+User-facing changes, newest first, grouped as breaking changes, features,
+fixes, performance, and documentation. Internal refactors, tests, and CI are
+omitted.
 
 ## Unreleased
 
+### Fixes
+
+- A polygon list entry with the wrong width is named in the error.
+
+### Performance
+
+- Coverage over `candidate_cells` is up to 20 times as fast when the selection
+  is much wider than each polygon or sweep.
+- Overlap coverage is 1.4 to 2.7 times as fast, and up to 2 times as fast
+  again over `candidate_cells` that span many longitudes, such as a land mask.
+- Polygon lists convert up to 1.8 times as fast.
+- Large threaded results, about a million cells and up, are assembled in
+  parallel.
+- `Count` and `Sum` over sparse `candidate_cells` at high resolutions are up to
+  3 times as fast.
+- Cap counts at resolution 9 and above are up to 1.7 times as fast.
+- `revisit()` calls with few hits no longer clear a whole grid first, which
+  made them up to 50 times slower at resolutions 5 to 8.
+
 ## [1.0.0] — 2026-11-04
 
-First stable release, unchanged since 1.0.0-rc.1. From 1.0 on, Polypix
-follows semantic versioning, and the public API is everything in
-`polypix.__all__`.
+First stable release, unchanged since 1.0.0-rc.1. Polypix now follows semantic
+versioning; the public API is `polypix.__all__`.
 
 ### Breaking changes
 
-- `resolution` is keyword-only on `cover_cap()`, `cover_polygon()`,
-  `cover_sweep()`, `cell_at()`, `cell_centers()`, `cell_corners()`, and
-  `cell_neighbors()`, so two numbers can no longer be swapped by accident.
+- `resolution` is keyword-only on every covering and cell function:
+  `px.cover_cap(centers, radii, resolution=6)`.
 - Renamed the `RevisitStats` fields:
 
   | Before | After |
@@ -28,91 +44,61 @@ follows semantic versioning, and the public API is everything in
   | `first_start` | `first_bin` |
   | `last_stop` | `stop_bin` |
 
-- Renamed `Coverage.reduce(cells=...)` to `candidate_cells=`, matching the
-  covering functions.
-- `Sum(values)` copies and checks its values when you create it. Errors are
-  raised there, and `Sum.values` is a read-only `float64` array.
-- A sweep segment too thin to cover now raises `ValueError`, as the same shape
-  already did in `cover_polygon()`.
-
-#### Migrating
-
-```python
-# resolution is keyword-only
-px.cover_cap(centers, radii, 6)               # before
-px.cover_cap(centers, radii, resolution=6)    # after
-px.cell_centers(cells, 10)                    # before
-px.cell_centers(cells, resolution=10)         # after
-
-# RevisitStats field names (meanings unchanged)
-stats.run_counts                              # before
-stats.visit_counts                            # after
-
-# Coverage.reduce keyword
-coverage.reduce(px.Count(), cells=wanted)             # before
-coverage.reduce(px.Count(), candidate_cells=wanted)   # after
-
-# Sum keeps its own copy: finish editing the values first
-weights[0] = 5.0
-reducer = px.Sum(weights)                     # invalid values fail here
-```
+- Renamed `Coverage.reduce(cells=...)` to `candidate_cells=`.
+- `Sum(values)` copies and validates its values when created; `Sum.values` is a
+  read-only `float64` array.
+- A sweep segment too thin to cover raises `ValueError`, as in
+  `cover_polygon()`.
 
 ### Fixes
 
 - Small or slightly concave polygons, and polygons with nearly duplicate
-  vertices, no longer miss cells inside them.
-- Polygons and sweeps with a very sharp corner no longer include cells beyond
-  that corner.
-- `mode="overlap"` caps with a radius close to pi no longer include cells around
-  the opposite point, and run much faster there. This removes the known
-  limitation listed under 0.5.1.
-- Cells exactly on a region's boundary are now treated the same whether you
-  scan the whole grid, pass `candidate_cells=`, or count with `reduce=`.
-- Large inputs that run out of memory raise `MemoryError` instead of crashing
-  the Python process.
-- Processes forked after Polypix started worker threads, such as
-  `multiprocessing` workers on Linux, no longer hang. They run single-threaded.
-- A process that briefly cannot start threads now runs calls single-threaded,
-  instead of raising `PanicException` from then on.
+  vertices, no longer miss interior cells.
+- Very sharp polygon and sweep corners no longer include cells past the corner.
+- `mode="overlap"` caps with a radius close to pi no longer include cells
+  around the opposite point, and run much faster there.
+- Boundary cells are treated the same by full scans, `candidate_cells=`, and
+  `reduce=`.
+- Running out of memory raises `MemoryError` instead of crashing Python.
+- Processes forked after Polypix started threads no longer hang; they run
+  single-threaded, as do calls when threads cannot start (previously
+  `PanicException`).
 - `RevisitStats` arrays and `Sum` values stay read-only after copying or
   pickling.
-- `timedelta64` arrays are rejected as coordinates and `Sum` values, instead of
-  being read as plain numbers.
+- `timedelta64` arrays are rejected as coordinates and `Sum` values.
 - Clearer errors for cell IDs of 2**63 and above, and for cap counts too large
   for memory.
 
 ### Performance
 
-- Overlap coverage is faster.
-- Cap counts are faster: up to 1.8 times as fast for counts over selected
-  cells, and 1.5 times for regional counts.
-- `threads=N` no longer starts more threads than requested.
+- Faster overlap coverage.
+- Cap counts over selected cells are up to 1.8 times as fast, regional counts
+  1.5 times.
+- `threads=N` never starts more than N threads.
 
 ### Documentation
 
-- The README states the versioning policy.
-- The guides describe behavior under `fork()` and Ctrl-C, list the accepted
-  input shapes, and give the correct resolutions for the case studies.
+- Documented the versioning policy, behavior under `fork()` and Ctrl-C, and the
+  accepted input shapes.
 
 ## [0.5.1] — 2026-09-24
 
 ### Fixes
 
-- Fixed coverage near short polygon edges, so full scans and
-  `candidate_cells=` return consistent results.
-- Kept `Coverage` arrays validated and read-only after copying or unpickling.
-- Fixed `mode="center"` coverage and counts for caps covering almost the
-  entire sphere.
+- Full scans and `candidate_cells=` agree near short polygon edges.
+- `Coverage` arrays stay validated and read-only after copying or unpickling.
+- Fixed `mode="center"` coverage and counts for caps covering almost the whole
+  sphere.
 
-Known limitation: `mode="overlap"` still treats cap radii within roughly
-2.1e-8 radians of pi as a full sphere. At resolutions 26 and above, this can
-include cells outside the cap.
+Known limitation, fixed in 1.0.0: `mode="overlap"` treats cap radii within
+about 2.1e-8 radians of pi as the full sphere, which can add cells at
+resolutions 26 and above.
 
 ### Performance
 
-- Sped up cap counts and reduced memory use when counting across the full grid.
-- Sped up convex polygon and sweep coverage, ring scans, and overlap coverage.
-- Sped up sparse `revisit(minimum_sources=1)` calculations.
+- Faster cap counts, with less memory across the full grid.
+- Faster convex polygon, sweep, ring-scan, and overlap coverage.
+- Faster sparse `revisit(minimum_sources=1)`.
 
 ## [0.5.0] — 2026-09-05
 
@@ -123,23 +109,22 @@ include cells outside the cap.
 
 ### Features
 
-- Added exact whole-cell intersection coverage through `mode="overlap"` on
-  `cover_cap()`, `cover_polygon()`, and `cover_sweep()`.
-- Accepted polygonal `__geo_interface__` objects and GeoJSON-like mappings in
-  `cover_polygon()`, including holes, multipart unions, and single Features.
-- Added `cell_neighbors()` for batched immediate HEALPix neighbor lookup.
+- `mode="overlap"` on `cover_cap()`, `cover_polygon()`, and `cover_sweep()`
+  covers every cell a region touches.
+- `cover_polygon()` accepts GeoJSON-like mappings and `__geo_interface__`
+  objects, including holes, multipart geometries, and single Features.
+- Added `cell_neighbors()`.
 
 ### Fixes
 
-- Stabilized short spherical-polygon edges so overlap coverage remains
-  conservative at resolutions 28 and 29.
-- Capped oversized positive `threads` values at the native integer limit
-  before applying the existing host thread limit.
+- Overlap coverage stays conservative near short edges at resolutions 28 and
+  29.
+- Very large `threads` values no longer overflow.
 
 ### Performance
 
-- Accelerated selected-cell cap counts for large cap batches and dense
-  `revisit(minimum_sources=1)` workloads whose state fits in cache.
+- Faster selected-cell cap counts for large batches, and faster dense
+  `revisit(minimum_sources=1)`.
 
 ## [0.4.0] — 2026-08-26
 
@@ -172,25 +157,20 @@ include cells outside the cap.
 
 ### Performance
 
-- Reduced a 128-edge concave polygon benchmark at resolution 9 from about
-  313 ms to 7 ms while keeping convex performance unchanged.
-- Made small `candidate_cells` reductions up to hundreds of times faster by
-  testing only the requested cells when that is cheaper than scanning the grid.
-- Reduced conversion and validation overhead for ragged batches, existing
-  `Coverage` objects, integer arrays, and repeated polygon use.
-- Avoided parallel cap-count and selected-reduction strategies when their
-  memory or merge cost would be slower than the sequential path.
+- A 128-edge concave polygon covers about 45 times as fast.
+- Small `candidate_cells` reductions are up to hundreds of times as fast.
+- Less conversion and validation overhead for ragged batches, `Coverage`
+  objects, integer arrays, and reused polygons.
+- Cap counts and selected reductions stay serial when threads would be slower.
 
 ### Documentation
 
-- Added executable Starlink and Earth-observation examples, including a
-  resolution-9 analysis restricted by a concave Germany area of interest.
+- Added runnable Starlink and Earth-observation examples.
 
 ## [0.3.0] — 2026-07-28
 
-Version 0.3 replaced the GPL-backed native backend with a Polypix-owned Rust
-kernel and changed the project license to Apache-2.0. Earlier releases remain
-available under their original license terms.
+Polypix's own Rust kernel replaces the GPL-backed backend, and the license
+changes to Apache-2.0. Earlier releases keep their original license.
 
 ### Breaking changes
 
@@ -205,18 +185,15 @@ available under their original license terms.
 
 ### Features
 
-- Added a Polypix-owned Rust kernel for fixed-resolution HEALPix RING coverage.
-- Added optional bounded native threading and Windows wheels.
+- Optional native threading and Windows wheels.
 
 ### Fixes
 
-- Tightened geometry, candidate-cell, and array validation around the new
-  native kernel.
+- Stricter geometry, candidate-cell, and array validation.
 
 ### Performance
 
-- Added automatic parallelism for large calls while retaining a low-latency
-  sequential path for small inputs.
+- Large calls run in parallel automatically; small ones stay serial.
 
 ## [0.2.1] — 2026-07-24
 

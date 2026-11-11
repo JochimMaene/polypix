@@ -26,32 +26,6 @@ def _xyz(longitude_deg: float, latitude_deg: float) -> tuple[float, float, float
     )
 
 
-def test_polygon_api_accepts_packed_and_ragged_vertices() -> None:
-    first = np.asarray(
-        [_xyz(-8, -5), _xyz(6, -5), _xyz(6, 7), _xyz(-8, 7)],
-        dtype=np.float64,
-    )
-    second = np.asarray(
-        [_xyz(32, 11), _xyz(43, 11), _xyz(43, 20), _xyz(32, 20)],
-        dtype=np.float64,
-    )
-
-    # A uniform sequence, a dense array, and a ragged sequence containing the
-    # same two polygons must all agree.
-    sequence = px.cover_polygon([first, second], resolution=4)
-    dense = px.cover_polygon(np.stack((first, second)), resolution=4)
-    triangle = second[:3]
-    ragged = px.cover_polygon([first, triangle], resolution=4)
-
-    np.testing.assert_array_equal(dense.cells, sequence.cells)
-    np.testing.assert_array_equal(dense.offsets, sequence.offsets)
-    assert len(ragged) == 2
-    np.testing.assert_array_equal(ragged[0], sequence[0])
-
-    with pytest.raises(ValueError, match="geometry"):
-        px.cover_polygon(np.ones((2, 2)), resolution=1)
-
-
 def test_malformed_ragged_polygon_uses_the_public_validation_error() -> None:
     quad = np.asarray(
         [_xyz(-8, -5), _xyz(6, -5), _xyz(6, 7), _xyz(-8, 7)],

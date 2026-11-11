@@ -45,7 +45,7 @@ pub(super) struct ScanRing {
 }
 
 impl ScanRing {
-    fn new(ring: Ring) -> Self {
+    pub(super) fn new(ring: Ring) -> Self {
         let step = TAU / ring.cells as f64;
         let (step_sine, step_cosine) = step.sin_cos();
         Self {
@@ -84,6 +84,8 @@ pub(crate) enum PreparedFootprint {
     Polygon(Polygon),
     General(GeneralPolygon),
 }
+
+pub(super) type LongitudeBounds = ([(f64, f64); 2], usize);
 
 pub(super) fn longitude_bounds(
     vertices: &[Vec3],
@@ -1025,6 +1027,64 @@ fn split_wrapped_interval(start: f64, end: f64, pieces: &mut [(f64, f64); 2]) ->
     1
 }
 
+/// The sorted, merged ring offsets a longitude envelope can reach on one ring.
+pub(super) fn ring_offset_windows<const WHOLE_CELL_MARGIN: bool>(
+    scan_ring: &ScanRing,
+    longitude_intervals: [(f64, f64); 2],
+    interval_count: usize,
+) -> ([(u64, u64); 4], usize) {
+    let ring = &scan_ring.ring;
+    let step = scan_ring.step;
+    // Widen each bound by what the containment tolerance spans in
+    // longitude on this ring, which grows towards the poles, plus the
+    // index rounding allowance. An accepted tie then cannot depend on
+    // whether a full scan or a candidate test reached it. Overlap scans
+    // also reach one whole cell further, since any part of a cell counts.
+    let reach = SCAN_TOLERANCE / ring.radial;
+    let margin = i64::from(WHOLE_CELL_MARGIN);
+    let mut ranges = [(0_u64, 0_u64); 4];
+    let mut range_count = 0;
+    let mut push_range = |range| {
+        ranges[range_count] = range;
+        range_count += 1;
+    };
+    for &(start, end) in longitude_intervals.iter().take(interval_count) {
+        // `interval_offsets` rounds by truncation, avoiding the libm
+        // `ceil`/`floor` calls that dominate small footprints' scans.
+        let (first, last, _) = interval_offsets(
+            (start - reach) / step - ring.shift,
+            (end + reach) / step - ring.shift,
+            ring.cells,
+        );
+        let (first, last) = (first - margin, last + margin);
+        let count = ring.cells as i64;
+        if first < 0 {
+            push_range((0, last.min(count - 1).max(0) as u64));
+            push_range(((first + count).max(0) as u64, ring.cells - 1));
+        } else if last >= count {
+            push_range((first.min(count - 1) as u64, ring.cells - 1));
+            push_range((0, (last - count).min(count - 1) as u64));
+        } else if first <= last {
+            push_range((first as u64, last as u64));
+        }
+    }
+    ranges[..range_count].sort_unstable();
+    let mut merged_count = 0;
+    for index in 0..range_count {
+        let (first, last) = ranges[index];
+        if merged_count > 0 {
+            let merged_last = &mut ranges[merged_count - 1].1;
+            if first <= merged_last.saturating_add(1) {
+                *merged_last = (*merged_last).max(last);
+                continue;
+            }
+        }
+        ranges[merged_count] = (first, last);
+        merged_count += 1;
+    }
+    (ranges, merged_count)
+}
+
 fn cover_cells_in_bounds<const WHOLE_CELL_MARGIN: bool>(
     minimum_z: f64,
     maximum_z: f64,
@@ -1076,53 +1136,11 @@ fn cover_cells_in_bounds<const WHOLE_CELL_MARGIN: bool>(
             Ok(())
         };
 
-        // Widen each bound by what the containment tolerance spans in
-        // longitude on this ring, which grows towards the poles, plus the
-        // index rounding allowance. An accepted tie then cannot depend on
-        // whether a full scan or a candidate test reached it. Overlap scans
-        // also reach one whole cell further, since any part of a cell counts.
-        let reach = SCAN_TOLERANCE / ring.radial;
-        let margin = i64::from(WHOLE_CELL_MARGIN);
-        let mut ranges = [(0_u64, 0_u64); 4];
-        let mut range_count = 0;
-        let mut push_range = |range| {
-            ranges[range_count] = range;
-            range_count += 1;
-        };
-        for &(start, end) in longitude_intervals.iter().take(interval_count) {
-            // `interval_offsets` rounds by truncation, avoiding the libm
-            // `ceil`/`floor` calls that dominate small footprints' scans.
-            let (first, last, _) = interval_offsets(
-                (start - reach) / step - ring.shift,
-                (end + reach) / step - ring.shift,
-                ring.cells,
-            );
-            let (first, last) = (first - margin, last + margin);
-            let count = ring.cells as i64;
-            if first < 0 {
-                push_range((0, last.min(count - 1).max(0) as u64));
-                push_range(((first + count).max(0) as u64, ring.cells - 1));
-            } else if last >= count {
-                push_range((first.min(count - 1) as u64, ring.cells - 1));
-                push_range((0, (last - count).min(count - 1) as u64));
-            } else if first <= last {
-                push_range((first as u64, last as u64));
-            }
-        }
-        ranges[..range_count].sort_unstable();
-        let mut merged_count = 0;
-        for index in 0..range_count {
-            let (first, last) = ranges[index];
-            if merged_count > 0 {
-                let merged_last = &mut ranges[merged_count - 1].1;
-                if first <= merged_last.saturating_add(1) {
-                    *merged_last = (*merged_last).max(last);
-                    continue;
-                }
-            }
-            ranges[merged_count] = (first, last);
-            merged_count += 1;
-        }
+        let (ranges, merged_count) = ring_offset_windows::<WHOLE_CELL_MARGIN>(
+            scan_ring,
+            longitude_intervals,
+            interval_count,
+        );
         for &(first, last) in &ranges[..merged_count] {
             scan_offsets(first, last)?;
         }
@@ -1156,16 +1174,40 @@ struct CellBoundary {
     x: i64,
     y: i64,
     nside: u64,
+    // Boundary points at quarter steps of each edge, filled on first use.
+    // A cell is tested against every footprint edge and each test starts
+    // from these same samples, so they are decoded once per cell. Edge `e`
+    // at parameter 1 is edge `e + 1` at 0, hence sixteen slots, not twenty.
+    quarters: [std::cell::Cell<Option<Vec3>>; 16],
 }
 
 impl CellBoundary {
     fn new(cell: u64, resolution: u8) -> Self {
         let nside = 1_u64 << resolution;
         let (face, x, y) = ring_to_face_xy(cell, nside);
-        Self { face, x, y, nside }
+        Self {
+            face,
+            x,
+            y,
+            nside,
+            quarters: Default::default(),
+        }
     }
 
     fn point(&self, edge: u8, parameter: f64) -> Vec3 {
+        let quarter = (4.0 * parameter) as usize;
+        if quarter as f64 != 4.0 * parameter {
+            return self.evaluate(edge, parameter);
+        }
+        let slot = &self.quarters[(4 * edge as usize + quarter) % 16];
+        slot.get().unwrap_or_else(|| {
+            let point = self.evaluate(edge, parameter);
+            slot.set(Some(point));
+            point
+        })
+    }
+
+    fn evaluate(&self, edge: u8, parameter: f64) -> Vec3 {
         let (dx, dy) = match edge {
             0 => (1.0 - parameter, 1.0),
             1 => (0.0, 1.0 - parameter),
@@ -1439,7 +1481,7 @@ fn cell_edge_cap_interval_intersects(
     budget: &mut u32,
 ) -> Intersection {
     let middle = 0.5 * (start + end);
-    let point = boundary.point(edge, middle);
+    let point = boundary.evaluate(edge, middle);
     let chord = cap.chord(point);
     if cap.contains_chord(chord) {
         return Intersection::Yes;
@@ -1644,26 +1686,38 @@ impl<T: std::borrow::Borrow<PreparedFootprint>> PreparedFootprintOverlap<T> {
         self.footprint.borrow().z_bounds()
     }
 
+    pub(super) fn longitude_bounds(&self) -> LongitudeBounds {
+        self.footprint.borrow().longitude_bounds()
+    }
+
     pub(super) fn overlaps_cell_at(&self, cell: u64, point: Vec3) -> bool {
         if self.footprint.borrow().contains(point) || self.vertex_cells.contains(&cell) {
-            return true;
-        }
-        let boundary = CellBoundary::new(cell, self.resolution);
-        if (0..4).any(|edge| self.footprint.borrow().contains(boundary.point(edge, 0.0))) {
             return true;
         }
         // From the face center to any boundary point, the two coordinate
         // displacements sum to at most one. The existing face-map speed
         // bound therefore bounds both the plane residual and arc-span change
         // over the entire cell. Reject distant arcs before decoding its edges.
-        let bound = CELL_EDGE_DOT_LIPSCHITZ / boundary.nside as f64
+        let bound = CELL_EDGE_DOT_LIPSCHITZ / (1_u64 << self.resolution) as f64
             + CELL_EDGE_CHORD_GUARD
             + CONTAINMENT_EPSILON;
-        self.arcs.iter().any(|&arc| {
-            dot(arc.normal, point).abs() <= bound
-                && arc.span_slack(point) >= -bound
-                && (0..4).any(|edge| cell_edge_intersects_arc(&boundary, edge, arc))
-        })
+        let near = |arc: &&MinorArc| {
+            dot(arc.normal, point).abs() <= bound && arc.span_slack(point) >= -bound
+        };
+        // With no footprint edge in reach, the boundary cannot cross the cell,
+        // so an outside center and no vertex inside leave the whole cell out.
+        // That also covers the corners, which cannot sit inside then either.
+        if !self.arcs.iter().any(|arc| near(&arc)) {
+            return false;
+        }
+        let boundary = CellBoundary::new(cell, self.resolution);
+        if (0..4).any(|edge| self.footprint.borrow().contains(boundary.point(edge, 0.0))) {
+            return true;
+        }
+        self.arcs
+            .iter()
+            .filter(near)
+            .any(|&arc| (0..4).any(|edge| cell_edge_intersects_arc(&boundary, edge, arc)))
     }
 
     pub(super) fn cover(&self, cells: &mut Vec<u64>) -> NativeResult<()> {
@@ -1761,6 +1815,18 @@ impl PreparedFootprint {
             }
             Self::Polygon(polygon) => polygon_z_bounds(&polygon.vertices, &polygon.edge_normals),
             Self::General(polygon) => general_polygon_z_bounds(polygon),
+        }
+    }
+
+    pub(super) fn longitude_bounds(&self) -> LongitudeBounds {
+        match self {
+            Self::Quad(quad) => {
+                longitude_bounds(&quad.vertices[..quad.len], &quad.edge_normals[..quad.len])
+            }
+            Self::Polygon(polygon) => longitude_bounds(&polygon.vertices, &polygon.edge_normals),
+            Self::General(polygon) => longitude_bounds_for(&polygon.outer.vertices, |point| {
+                ring_contains(&polygon.outer, point)
+            }),
         }
     }
 

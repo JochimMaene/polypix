@@ -62,6 +62,32 @@ def test_coverage_reductions_match_the_cell_lists_they_reduce() -> None:
     assert (empty).reduce(px.Sum(1.0), candidate_cells=[]).dtype == np.float64
 
 
+def test_fused_cap_counts_match_reducing_on_large_grids() -> None:
+    # Resolution 8 is past the size where caps are sorted before counting;
+    # the request is wide enough to take the bounded span path as well.
+    random = np.random.default_rng(7)
+    centers = random.normal(size=(400, 3))
+    radii = random.uniform(0.08, 0.12, size=400)
+    coverage = px.cover_cap(centers, radii, resolution=8, threads=1)
+    requested = np.arange(200_000, 500_000, 5, dtype=np.int64)
+
+    np.testing.assert_array_equal(
+        px.cover_cap(centers, radii, resolution=8, reduce=px.Count(), threads=1),
+        coverage.reduce(px.Count()),
+    )
+    np.testing.assert_array_equal(
+        px.cover_cap(
+            centers,
+            radii,
+            resolution=8,
+            candidate_cells=requested,
+            reduce=px.Count(),
+            threads=1,
+        ),
+        coverage.reduce(px.Count(), candidate_cells=requested),
+    )
+
+
 def test_fused_cap_counts_match_covering_then_reducing() -> None:
     centers = np.asarray([_xyz(-20, 10), _xyz(0, 0), _xyz(42, -12)], dtype=np.float64)
     radii = np.asarray([0.2, 0.3, 0.15])

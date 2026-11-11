@@ -421,3 +421,42 @@ def test_overlap_excludes_a_cell_inside_a_nearly_complete_caps_hole() -> None:
     )
     assert overlapping.cells.size == 0
     assert centered.cells.size == 0
+
+
+@pytest.mark.parametrize("mode", ["center", "overlap"])
+def test_candidate_longitude_windows_match_full_coverage(mode: str) -> None:
+    resolution = 4
+    all_cells = np.arange(px.cell_count(resolution))
+    polygons = [
+        xyz([178.0, -178.0, -178.0, 178.0], [-3.0, -3.0, 3.0, 3.0]),
+        xyz([-135.0, -45.0, 45.0, 135.0], [85.0] * 4),
+        xyz([12.0, 12.01, 12.01, 12.0], [8.0, 8.0, 8.01, 8.01]),
+    ]
+    centers = xyz([179.0, 0.0, 12.0, 0.0, 90.0], [0.0, 90.0, 8.0, 0.0, -90.0])
+    radii = np.radians([4.0, 0.0, 0.01, 170.0, 10.0])
+    calls = [
+        (px.cover_cap, (centers, radii)),
+        (px.cover_polygon, (polygons,)),
+        (px.cover_polygon, ([px.Polygon(polygon) for polygon in polygons],)),
+        (
+            px.cover_sweep,
+            (
+                xyz([178.0, 180.0, -178.0], [-2.0] * 3),
+                xyz([178.0, 180.0, -178.0], [2.0] * 3),
+            ),
+        ),
+    ]
+    for function, args in calls:
+        full = function(*args, resolution=resolution, mode=mode, threads=1)
+        for candidates in (all_cells, all_cells[::3][::-1]):
+            selected = function(
+                *args,
+                resolution=resolution,
+                mode=mode,
+                candidate_cells=candidates,
+                threads=1,
+            )
+            for index in range(len(full)):
+                np.testing.assert_array_equal(
+                    selected[index], np.intersect1d(full[index], candidates)
+                )

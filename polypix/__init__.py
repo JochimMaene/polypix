@@ -114,7 +114,7 @@ class Polygon:
                 np.cumsum([len(ring) for ring in rings], dtype=np.uint64),
             )
         )
-        vertices = np.concatenate(rings) if rings else np.empty((0, 3), np.float64)
+        vertices = np.concatenate(rings)
         prepared = _prepare_polygon(vertices, offsets)
         for ring in rings:
             _freeze_array(ring)
@@ -786,37 +786,38 @@ def _name_ragged_failure(values: Sequence[object]) -> None:
         _as_float_matrix(polygon, 3, f"geometry[{index}]")
 
 
-def _ragged_polygons(
-    values: Sequence[object],
-    shapes: Sequence[tuple[int, ...]],
-) -> tuple[np.ndarray, np.ndarray]:
-    """Pack a sequence of differing-length polygons into vertices and offsets.
+def _ragged_polygons(values: Sequence[Any]) -> tuple[np.ndarray, np.ndarray]:
+    """Pack a sequence of polygons into vertices and offsets.
 
-    There is no per-entry work left here: the shapes were already read to
-    choose this path, and the offsets follow from them. Converting, the dtype
+    Uniform and ragged batches take the same path. Converting, the dtype
     check, and the width check all happen once over the concatenated buffer.
     That is safe because the entries have to agree for ``concatenate`` to
     succeed at all - a wrong rank or width raises there, and a wrong dtype
-    survives to the whole-buffer check - so a shape that misreports its own
-    vertex count is one that fails anyway.
+    survives to the whole-buffer check. The only per-entry work is ``len``:
+    ``np.shape`` on every entry cost several times more, and on nested lists
+    it converted each entry a second time.
 
     Anything that does fail reruns the per-entry conversion to name the
     offending index exactly, which costs nothing on the path that succeeds.
-    Converting entry by entry up front instead cost about five microseconds
-    each, which on large batches exceeded the covering work.
     """
     try:
         vertices = _as_float_matrix(
-            np.concatenate(values, axis=0),  # type: ignore[arg-type]
+            np.concatenate(values, axis=0),
             3,
             "geometry",
         )
     except (TypeError, ValueError):
         _name_ragged_failure(values)
         raise
-    counts = np.fromiter(
-        (shape[0] for shape in shapes), dtype=np.uint64, count=len(shapes)
-    )
+    try:
+        counts = np.fromiter(map(len, values), dtype=np.uint64, count=len(values))
+    except TypeError:
+        # Array-likes without ``__len__`` still report a shape.
+        counts = np.fromiter(
+            (np.shape(polygon)[0] for polygon in values),
+            dtype=np.uint64,
+            count=len(values),
+        )
     if int(counts.sum()) != vertices.shape[0]:
         # No entry can hide vertices from ``concatenate``, so reaching this
         # means one reported a length its own data does not have.
@@ -854,17 +855,7 @@ def _as_polygons(
         return np.empty((0, 3), dtype=np.float64), np.zeros(1, dtype=np.uint64)
     if np.ndim(values[0]) != 2:
         return _require_dense_polygons(values)
-    # Identical shapes pack into one dense array. Anything else - differing
-    # vertex counts, and differing widths, which would otherwise reach
-    # ``np.asarray`` as a ragged nested sequence and leak its message - takes
-    # the per-entry path, where a failure can be named. Comparing against the
-    # first shape short-circuits on a ragged batch, where hashing every shape
-    # into a set would not.
-    shapes = [np.shape(polygon) for polygon in values]
-    first = shapes[0]
-    if len(first) == 2 and all(shape == first for shape in shapes):
-        return _require_dense_polygons(values)
-    return _ragged_polygons(values, shapes)
+    return _ragged_polygons(values)
 
 
 def _geo_mapping(value: object, name: str) -> Mapping[str, object] | None:
@@ -974,6 +965,10 @@ def _as_prepared_regions(
     elif isinstance(values, (Polygon, MultiPolygon)):
         regions = [values]
     elif isinstance(values, Sequence) and values:
+        # Raw coordinate containers dominate large ragged batches: one type
+        # pass is far cheaper than probing every entry below.
+        if set(map(type, values)) <= {np.ndarray, list, tuple}:
+            return None
         native_regions = []
         mappings = []
         unknown_index = None
