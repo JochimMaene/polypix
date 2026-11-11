@@ -115,7 +115,7 @@ slower than the plain loop there.
 
 ## Analyze only Germany
 
-Now, we take the same Starlink example, butj only want analyze the results for Germany.
+Now take the same Starlink example, but analyze only Germany.
 
 ```{literalinclude} ../../examples/communication_constellation.py
 :language: python
