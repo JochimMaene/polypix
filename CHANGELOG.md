@@ -26,6 +26,9 @@ omitted.
 - `Count` and `Sum` over sparse `candidate_cells` at high resolutions are up to
   3 times as fast.
 - Cap counts at resolution 9 and above are up to 1.7 times as fast.
+- Dense cap counts no longer skip threading when the output grid outgrows the
+  number of cap rings: about 3 times as fast at resolutions 8 and 9 on eight
+  logical CPUs.
 - `revisit()` calls with few hits no longer clear a whole grid first, which
   made them up to 50 times slower at resolutions 5 to 8.
 

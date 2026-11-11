@@ -97,9 +97,25 @@ the cap-cell pairs at all. Over the hour that is 657,031 caps and 137 million
 cap-cell hits, none of which is ever stored: the running total is one array of
 49,152 integers.
 
+The 61 timestamps are independent, so the example runs them side by side, each
+as a single-threaded count, instead of one internally threaded count after
+another:
+
+```{literalinclude} ../../examples/communication_constellation.py
+:language: python
+:caption: examples/communication_constellation.py
+:start-after: "--8<-- [start:communications-timestamps]"
+:end-before: "--8<-- [end:communications-timestamps]"
+:dedent: 4
+```
+
+On a four-core, eight-thread laptop this made the coverage stage about 2.5
+times as fast. Measure the worker count on your own machine: two workers were
+slower than the plain loop there.
+
 ## Analyze only Germany
 
-Now, we take the same Starlink example, butj only want analyze the results for Germany.
+Now take the same Starlink example, but analyze only Germany.
 
 ```{literalinclude} ../../examples/communication_constellation.py
 :language: python
