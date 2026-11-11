@@ -6,6 +6,10 @@ omitted.
 
 ## Unreleased
 
+### Features
+
+- Python 3.15 is supported.
+
 ### Fixes
 
 - A polygon list entry with the wrong width is named in the error.
