@@ -5,7 +5,9 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from io import BytesIO
@@ -64,7 +66,6 @@ class CommunicationsAnalysis:
     tle_parsing_elapsed_s: float
     propagation_elapsed_s: float
     coverage_elapsed_s: float
-    reduction_elapsed_s: float
     analysis_elapsed_s: float
 
 
@@ -74,6 +75,7 @@ def count_visible(
     *,
     resolution: int = HEALPIX_RESOLUTION,
     candidate_cells: npt.NDArray[np.int64] | None = None,
+    threads: int | None = None,
 ) -> npt.NDArray[np.int64]:
     """Count the objects in view of every cell, at one timestamp."""
     centers, radii_rad = service_caps(
@@ -87,6 +89,7 @@ def count_visible(
         resolution=resolution,
         candidate_cells=candidate_cells,
         reduce=px.Count(),
+        threads=threads,
     )
 
 
@@ -151,24 +154,29 @@ def analyze(
     )
     visible_sum = np.zeros(cell_count, dtype=np.int64)
     covered_pair_count = 0
-    coverage_elapsed_s = 0.0
-    reduction_elapsed_s = 0.0
 
-    # One timestamp at a time, so that the fused count never builds the much
-    # larger list of repeated cap-cell pairs.
-    for snapshot_positions_km in positions_km:
-        coverage_started = time.perf_counter()
-        visible = count_visible(
+    # --8<-- [start:communications-timestamps]
+    # Timestamps are independent, so run several single-threaded counts at once
+    # instead of one internally parallel count after another. Native calls
+    # release the GIL. Measure the worker count: two workers were slower than
+    # the serial loop on a four-core laptop, and one per logical CPU was best.
+    def count_snapshot(
+        snapshot_positions_km: npt.NDArray[np.float64],
+    ) -> npt.NDArray[np.int64]:
+        return count_visible(
             snapshot_positions_km,
             resolution=resolution,
             candidate_cells=candidate_cells,
+            threads=1,
         )
-        coverage_elapsed_s += time.perf_counter() - coverage_started
 
-        reduction_started = time.perf_counter()
-        covered_pair_count += int(visible.sum())
-        visible_sum += visible
-        reduction_elapsed_s += time.perf_counter() - reduction_started
+    coverage_started = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=os.cpu_count()) as pool:
+        for visible in pool.map(count_snapshot, positions_km):
+            covered_pair_count += int(visible.sum())
+            visible_sum += visible
+    coverage_elapsed_s = time.perf_counter() - coverage_started
+    # --8<-- [end:communications-timestamps]
 
     return CommunicationsAnalysis(
         mean_visible=visible_sum / times_min.size,
@@ -178,7 +186,6 @@ def analyze(
         tle_parsing_elapsed_s=tle_parsing_elapsed_s,
         propagation_elapsed_s=propagation_elapsed_s,
         coverage_elapsed_s=coverage_elapsed_s,
-        reduction_elapsed_s=reduction_elapsed_s,
         analysis_elapsed_s=time.perf_counter() - analysis_started,
     )
 

@@ -917,8 +917,7 @@ pub(crate) fn count_caps_per_cell(
     let ring_visits = sampled_total(caps.len(), |index| {
         cap_count_ring_visits(&caps[index], resolution)
     });
-    let parallel_worthwhile =
-        dense_accumulator_parallel_worthwhile(cell_count.saturating_add(1), ring_visits);
+    let parallel_worthwhile = ring_visits >= DENSE_ACCUMULATOR_PARALLEL_MIN_RING_VISITS;
     run_with_parallelism(caps.len(), parallel_worthwhile, threads, |parallel| {
         let worker_count = if parallel {
             rayon::current_num_threads().min(caps.len())
@@ -1353,20 +1352,11 @@ pub(super) fn compute_planned_candidates<const WHOLE_CELL_MARGIN: bool>(
     })
 }
 
-/// Parallelism partitions the output; scratch memory does not grow with workers.
-fn dense_accumulator_parallel_worthwhile(buffer_length: usize, ring_visits: usize) -> bool {
-    ring_visits >= DENSE_ACCUMULATOR_PARALLEL_MIN_RING_VISITS
-        && ring_visits >= buffer_length.saturating_mul(DENSE_ACCUMULATOR_PARALLEL_RING_VISIT_RATIO)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        count_caps_chunked, count_caps_in_cell_span, count_caps_per_cell,
-        dense_accumulator_parallel_worthwhile, raw_cell_count,
-    };
+    use super::{count_caps_chunked, count_caps_in_cell_span, count_caps_per_cell, raw_cell_count};
     use crate::ring::fixtures::caps_along_equator;
-    use crate::ring::shape::{cap_count_ring_visits, prepare_caps};
+    use crate::ring::shape::prepare_caps;
 
     #[test]
     fn merge_preserves_cells_and_empty_rows_across_parallel_threshold() {
@@ -1513,19 +1503,5 @@ mod tests {
                 assert_eq!(partitioned, sequential);
             }
         }
-    }
-
-    #[test]
-    fn full_sphere_cap_counts_do_not_parallelize_one_range_per_cap() {
-        let centers = [1.0, 0.0, 0.0].repeat(100);
-        let radii = vec![std::f64::consts::PI; 100];
-        let caps = prepare_caps(&centers, &radii).unwrap();
-        let ring_visits = caps.iter().map(|cap| cap_count_ring_visits(cap, 8)).sum();
-
-        assert_eq!(ring_visits, 100);
-        assert!(!dense_accumulator_parallel_worthwhile(
-            raw_cell_count(8) as usize + 1,
-            ring_visits,
-        ));
     }
 }

@@ -42,11 +42,10 @@ pub(super) const CANDIDATE_CENTER_CACHE_REUSE: usize = 3;
 pub(super) const CANDIDATE_CENTER_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
 
 // Dense cap counting touches two delta endpoints per emitted ring range; the
-// number of cells inside those ranges does not affect its work. Parallel scans
-// crossed over around one output-buffer length and 128K visited rings on the
-// reference eight-core workload.
+// number of cells inside those ranges does not affect its work. Workers write
+// disjoint ring partitions of one shared buffer, so its length does not gate
+// threading; parallel scans crossed over around 128K visited rings.
 pub(super) const DENSE_ACCUMULATOR_PARALLEL_MIN_RING_VISITS: usize = 1 << 17;
-pub(super) const DENSE_ACCUMULATOR_PARALLEL_RING_VISIT_RATIO: usize = 1;
 
 // The two ways to answer any selected query, priced in units of one
 // containment test. Testing every item against every selected cell also decodes
