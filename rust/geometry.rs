@@ -148,9 +148,10 @@ pub(crate) fn validate_polygon(
     }
     if orientation < 0.0 {
         vertices.reverse();
-        for index in 0..vertices.len() {
-            edge_normals[index] =
-                normalized_edge(vertices[index], vertices[(index + 1) % vertices.len()])?;
+        // Reversing the vertices reverses every edge. The closing edge stays last.
+        edge_normals[..vertices.len() - 1].reverse();
+        for normal in edge_normals.iter_mut() {
+            *normal = normal.map(|component| -component);
         }
     }
 

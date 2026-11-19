@@ -36,6 +36,13 @@ pub(super) struct Ring {
     pub(super) radial: f64,
 }
 
+impl Ring {
+    /// Match the rounding of the public cell center, including at a boundary tie.
+    pub(super) fn longitude_sin_cos(&self, offset: u64) -> (f64, f64) {
+        ((offset as f64 + self.shift) * TAU / self.cells as f64).sin_cos()
+    }
+}
+
 pub(super) fn ring_z(nside: u64, ring: u64) -> f64 {
     if ring < nside {
         let auxiliary = ring as f64 / (3.0_f64.sqrt() * nside as f64);
@@ -136,8 +143,7 @@ pub(crate) fn center(cell: u64, resolution: u8) -> Vec3 {
     let nside = 1_u64 << resolution;
     let ring = ring_info(nside, ring_of_cell(cell, nside));
     let offset = cell - ring.start;
-    let longitude = (offset as f64 + ring.shift) * TAU / ring.cells as f64;
-    let (sine, cosine) = longitude.sin_cos();
+    let (sine, cosine) = ring.longitude_sin_cos(offset);
     [ring.radial * cosine, ring.radial * sine, ring.z]
 }
 

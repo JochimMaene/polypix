@@ -768,20 +768,11 @@ pub(super) fn zeroed_cap_deltas(cell_count: usize) -> NativeResult<Vec<i64>> {
     Ok(deltas)
 }
 
-pub(super) fn count_cap_chunk(
-    caps: &[Cap],
-    range: Range<usize>,
-    resolution: u8,
-    cell_count: usize,
-) -> NativeResult<Vec<i64>> {
-    let mut deltas = zeroed_cap_deltas(cell_count)?;
-    for index in range {
-        visit_cap_ranges(&caps[index], resolution, |cells| {
-            deltas[cells.start as usize] += 1;
-            deltas[cells.end as usize] -= 1;
-        });
-    }
-    Ok(deltas)
+fn add_cap_deltas(deltas: &mut [i64], cap: &Cap, resolution: u8) {
+    visit_cap_ranges(cap, resolution, |cells| {
+        deltas[cells.start as usize] += 1;
+        deltas[cells.end as usize] -= 1;
+    });
 }
 
 /// Count how many caps contain each cell.
@@ -813,55 +804,60 @@ pub(crate) fn count_caps_per_cell(
             selected_span = Some(first..end);
         }
     }
-    let mut caps = prepare_caps(centers, radii)?;
     let raw_cells_total = raw_cell_count(resolution);
     let cell_count = usize::try_from(raw_cells_total).map_err(|_| {
         NativeError::out_of_memory("Dense cap-count result is too large to fit in memory.")
     })?;
-    if caps.len() > i64::MAX as usize {
+    if radii.len() > i64::MAX as usize {
         return Err("Too many caps to represent overlap counts as int64."
             .to_owned()
             .into());
     }
     if let Some(cells) = raw_cells {
         if let Some(span) = selected_span {
+            let mut caps = prepare_caps(centers, radii)?;
             sort_caps_for_deltas(&mut caps, (span.end - span.start) as usize);
             return count_caps_in_cell_span(&caps, resolution, cells, span).map(Some);
         }
-        validate_cell_range(cells, resolution, "cells")?;
+        if let Err(cell_error) = validate_cell_range(cells, resolution, "cells") {
+            // Direct counting has always reported invalid caps before invalid cells.
+            cap_inputs(centers, radii, 0).try_for_each(|input| input.map(|_| ()))?;
+            return Err(cell_error.into());
+        }
         // A regional selection cannot meet caps outside its Cartesian bounds.
         // Only pay for another center decode when enough tests can be saved.
-        if caps.len() as f64 > CELL_DECODE_TESTS {
-            let mut minimum = [f64::INFINITY; 3];
-            let mut maximum = [f64::NEG_INFINITY; 3];
+        let mut minimum = [f64::INFINITY; 3];
+        let mut maximum = [f64::NEG_INFINITY; 3];
+        let prune = radii.len() as f64 > CELL_DECODE_TESTS;
+        if prune {
             for point in cells.iter().map(|&cell| center(cell, resolution)) {
                 for axis in 0..3 {
                     minimum[axis] = minimum[axis].min(point[axis]);
                     maximum[axis] = maximum[axis].max(point[axis]);
                 }
             }
-            caps.retain(|cap| {
-                cap.complement || cap.full_sphere || {
-                    let mut distance = 0.0;
-                    for axis in 0..3 {
-                        let delta = (minimum[axis] - cap.axis[axis])
-                            .max(cap.axis[axis] - maximum[axis])
-                            .max(0.0);
-                        distance += delta * delta;
-                    }
-                    distance <= cap.squared_chord_radius + 16.0 * f64::EPSILON
-                }
-            });
         }
-        // Pack only the 32 bytes used by the inner loop so larger batches fit in cache.
         let mut tested_caps = Vec::new();
-        tested_caps.try_reserve_exact(caps.len()).map_err(|_| {
+        tested_caps.try_reserve_exact(radii.len()).map_err(|_| {
             NativeError::out_of_memory(
                 "Selected cap-count working data is too large to fit in memory.",
             )
         })?;
-        tested_caps.extend(caps.iter().map(packed_cap_center));
-        drop(caps);
+        for input in cap_inputs(centers, radii, 0) {
+            let (axis, radius) = input?;
+            if prune && radius <= std::f64::consts::FRAC_PI_2 {
+                let mut distance = 0.0;
+                for k in 0..3 {
+                    let delta = (minimum[k] - axis[k]).max(axis[k] - maximum[k]).max(0.0);
+                    distance += delta * delta;
+                }
+                // A chord is no longer than its arc.
+                if distance > radius * radius + 16.0 * f64::EPSILON {
+                    continue;
+                }
+            }
+            tested_caps.push(packed_cap_center(axis, radius));
+        }
         let work = cells.len().saturating_mul(tested_caps.len());
         let all_direct = tested_caps.iter().all(|cap| cap[3] >= 0.0);
         let mut counts = Vec::new();
@@ -904,6 +900,22 @@ pub(crate) fn count_caps_per_cell(
             },
         )));
     }
+    // For a large batch on a compact grid, give each worker its own deltas.
+    // It can then validate, prepare and consume each cap exactly once.
+    const MAX_DELTA_ENTRIES: usize = (8 << 20) / size_of::<i64>();
+    let max_workers =
+        (MAX_DELTA_ENTRIES / (cell_count + 1)).min(radii.len() / (cell_count / 64).max(1024));
+    if max_workers >= 2 {
+        return run_with_parallelism(max_workers, true, threads, |parallel| {
+            let workers = if parallel {
+                max_workers.min(rayon::current_num_threads())
+            } else {
+                1
+            };
+            count_caps_by_input(centers, radii, resolution, cell_count, workers).map(Some)
+        });
+    }
+    let mut caps = prepare_caps(centers, radii)?;
     if caps.is_empty() {
         let mut counts = zeroed_cap_deltas(cell_count)?;
         counts.pop();
@@ -911,9 +923,7 @@ pub(crate) fn count_caps_per_cell(
     }
 
     sort_caps_for_deltas(&mut caps, cell_count);
-    // Pricing every cap costs two binary searches each, which on a batch of
-    // ten thousand is itself a measurable share of the count. Sample instead,
-    // as every other planning estimate here does.
+    // Sample the ring visits so planning stays cheap even on a large batch.
     let ring_visits = sampled_total(caps.len(), |index| {
         cap_count_ring_visits(&caps[index], resolution)
     });
@@ -991,6 +1001,46 @@ fn count_caps_in_cell_span(
     Ok(counts)
 }
 
+fn count_caps_by_input(
+    centers: &[f64],
+    radii: &[f64],
+    resolution: u8,
+    cell_count: usize,
+    workers: usize,
+) -> NativeResult<Vec<i64>> {
+    let chunk_size = radii.len().div_ceil(workers);
+    let chunks = radii.len().div_ceil(chunk_size);
+    let parts = try_collect_indexed(chunks, workers > 1, |i| -> NativeResult<_> {
+        let start = i * chunk_size;
+        let end = (start + chunk_size).min(radii.len());
+        let mut deltas = zeroed_cap_deltas(cell_count)?;
+        for input in cap_inputs(&centers[3 * start..3 * end], &radii[start..end], start) {
+            let (axis, radius) = input?;
+            add_cap_deltas(&mut deltas, &scan_cap(axis, radius), resolution);
+        }
+        Ok(deltas)
+    })?;
+    let mut parts = parts.into_iter();
+    let mut counts = parts.next().expect("nonempty cap batch")?;
+    for part in parts {
+        for (sum, delta) in counts.iter_mut().zip(part?) {
+            *sum += delta;
+        }
+    }
+    counts.pop();
+    prefix_sum(&mut counts);
+    Ok(counts)
+}
+
+fn prefix_sum(values: &mut [i64]) {
+    let mut running = 0_i64;
+    for value in values {
+        running += *value;
+        debug_assert!(running >= 0);
+        *value = running;
+    }
+}
+
 /// Split the output at ring boundaries. Each worker owns disjoint cells, so
 /// counting needs one output buffer, with no per-worker grid or merge.
 fn count_caps_chunked(
@@ -999,16 +1049,11 @@ fn count_caps_chunked(
     cell_count: usize,
     worker_count: usize,
 ) -> NativeResult<Vec<i64>> {
-    let prefix_sum = |values: &mut [i64]| {
-        let mut running = 0_i64;
-        for value in values {
-            running += *value;
-            debug_assert!(running >= 0);
-            *value = running;
-        }
-    };
     if worker_count <= 1 {
-        let mut deltas = count_cap_chunk(caps, 0..caps.len(), resolution, cell_count)?;
+        let mut deltas = zeroed_cap_deltas(cell_count)?;
+        for cap in caps {
+            add_cap_deltas(&mut deltas, cap, resolution);
+        }
         prefix_sum(&mut deltas[..cell_count]);
         deltas.pop();
         return Ok(deltas);
@@ -1473,7 +1518,7 @@ mod tests {
 
     #[test]
     fn dense_cap_counts_agree_regardless_of_thread_count() {
-        // This batch is large enough to exercise the partitioned output on
+        // This batch is large enough to split the cap inputs on
         // a multi-core host.
         let (centers, radii) = caps_along_equator(12_000, 0.12);
         let sequential = count_caps_per_cell(&centers, &radii, 6, None, Some(1))
@@ -1485,6 +1530,31 @@ mod tests {
                 .expect("a dense cap count never declines");
             assert_eq!(actual, sequential, "threads={threads:?}");
         }
+    }
+
+    #[test]
+    fn direct_cap_count_reports_invalid_caps_before_invalid_cells() {
+        let centers = [1.0, 0.0, 0.0];
+        let invalid_cells = [raw_cell_count(6)];
+        let count =
+            |radius| count_caps_per_cell(&centers, &[radius], 6, Some(&invalid_cells), None);
+        assert!(count(-1.0)
+            .unwrap_err()
+            .to_string()
+            .contains("radii_rad[0]"));
+        assert!(count(1.0)
+            .unwrap_err()
+            .to_string()
+            .contains("valid RING indices"));
+    }
+
+    #[test]
+    fn cap_input_chunks_report_the_first_invalid_global_index() {
+        let (centers, mut radii) = caps_along_equator(4100, 0.12);
+        radii[1300] = -0.5;
+        radii[2400] = f64::NAN;
+        let error = super::count_caps_by_input(&centers, &radii, 4, 3072, 4).unwrap_err();
+        assert!(error.to_string().contains("radii_rad[1300]"));
     }
 
     #[test]
