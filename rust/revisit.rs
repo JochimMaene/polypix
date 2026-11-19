@@ -3,6 +3,8 @@
 use std::collections::HashMap;
 use std::mem::size_of;
 
+use rayon::prelude::*;
+
 use crate::error::{NativeError, NativeResult};
 use crate::ring;
 
@@ -322,6 +324,65 @@ fn empty_stats() -> RevisitStats {
     }
 }
 
+/// Replay the timeline in order, giving each worker a disjoint band of cells.
+fn observe_dense_union(
+    sources: SegmentedSources<'_>,
+    segment_count: usize,
+    states: &mut [StatsState],
+    resolution: u8,
+    workers: usize,
+) -> NativeResult<()> {
+    let cell_count = states.len() as u64;
+    let fill = |first: u64, states: &mut [StatsState]| -> NativeResult<()> {
+        let stop = first + states.len() as u64;
+        for segment in 0..segment_count {
+            for mut cells in sources.segment_slices(segment) {
+                if states.len() as u64 != cell_count {
+                    let (Some(&low), Some(&high)) = (cells.first(), cells.last()) else {
+                        continue;
+                    };
+                    if high < first || low >= stop {
+                        continue;
+                    }
+                    if low < first {
+                        cells = &cells[cells.partition_point(|&c| c < first)..];
+                    }
+                    if high >= stop {
+                        cells = &cells[..cells.partition_point(|&c| c < stop)];
+                    }
+                }
+                for &cell in cells {
+                    let index = usize::try_from(cell - first).ok();
+                    let Some(state) = index.and_then(|index| states.get_mut(index)) else {
+                        return Err(invalid_source_cell(cell, resolution));
+                    };
+                    if state.last_segment != segment as u32 {
+                        state.observe(segment as u32);
+                    }
+                }
+            }
+        }
+        Ok(())
+    };
+    // Native footprints are ordered. Imported rows may be unsorted, and an
+    // out-of-grid hit must reach the validating loop rather than be trimmed.
+    if workers > 1
+        && (0..segment_count).all(|i| {
+            sources.segment_slices(i).all(|cells| {
+                cells.last().is_none_or(|&last| last < cell_count) && cells.is_sorted()
+            })
+        })
+    {
+        let chunk_size = states.len().div_ceil(workers);
+        states
+            .par_chunks_mut(chunk_size)
+            .enumerate()
+            .try_for_each(|(i, states)| fill((i * chunk_size) as u64, states))
+    } else {
+        fill(0, states)
+    }
+}
+
 pub(crate) fn revisit_stats(
     cell_arrays: &[&[u64]],
     offset_arrays: &[&[u64]],
@@ -347,20 +408,28 @@ pub(crate) fn revisit_stats(
     if let Some(cell_count) = dense_state_length(resolution, total_hits, size_of::<StatsState>()) {
         if let Some(mut states) = try_dense_states(cell_count, StatsState::EMPTY) {
             if minimum_sources == 1 {
-                // One hit is enough, so observe cells without counting touched sources.
-                for segment_index in 0..segment_count {
-                    let segment = segment_index as u32;
-                    for cells in sources.segment_slices(segment_index) {
-                        for &cell in cells {
-                            let Some(state) = states.get_mut(cell as usize) else {
-                                return Err(invalid_source_cell(cell, resolution));
-                            };
-                            if state.last_segment != segment {
-                                state.observe(segment);
-                            }
-                        }
-                    }
-                }
+                // Each worker reads the offsets. Bound their number by the hits
+                // per row so tiny or mostly empty rows stay cheap to replay.
+                let hits_per_row = total_hits / segment_count / cell_arrays.len();
+                ring::run_with_parallelism(
+                    hits_per_row,
+                    total_hits >= 1 << 20 && hits_per_row >= 8,
+                    None,
+                    |parallel| {
+                        let workers = if parallel {
+                            rayon::current_num_threads().min(hits_per_row)
+                        } else {
+                            1
+                        };
+                        observe_dense_union(
+                            sources,
+                            segment_count,
+                            &mut states,
+                            resolution,
+                            workers,
+                        )
+                    },
+                )?;
             } else {
                 let mut touched: Vec<usize> = Vec::new();
                 for segment in 0..segment_count {
@@ -594,6 +663,33 @@ mod tests {
             offset_arrays.push(offsets);
         }
         (cell_arrays, offset_arrays)
+    }
+
+    #[test]
+    fn dense_union_bands_match_serial_for_ordered_and_imported_rows() {
+        let offsets: &[&[u64]] = &[&[0, 4, 4, 6], &[0, 1, 3, 4]];
+        let second = [4, 0, 11, 4];
+        for first in [[0, 3, 4, 11, 3, 4], [11, 3, 0, 4, 4, 3]] {
+            let cells: &[&[u64]] = &[&first, &second];
+            let sources = super::SegmentedSources::new(cells, offsets);
+            let expected = reference_stats(cells, offsets, 1);
+            for workers in [1, 3] {
+                let mut states = [StatsState::EMPTY; 12];
+                super::observe_dense_union(sources, 3, &mut states, 0, workers).unwrap();
+                let mut out = super::empty_stats();
+                for (cell, state) in states.iter().enumerate() {
+                    if state.run_count > 0 {
+                        super::push_stats(&mut out, cell as u64, state);
+                    }
+                }
+                assert_stats(&out, &expected);
+            }
+        }
+        let invalid: &[&[u64]] = &[&[0, 3, 4, 12, 3, 4], &second];
+        let sources = super::SegmentedSources::new(invalid, offsets);
+        assert!(
+            super::observe_dense_union(sources, 3, &mut [StatsState::EMPTY; 12], 0, 3).is_err()
+        );
     }
 
     #[test]

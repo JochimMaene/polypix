@@ -40,6 +40,7 @@ pub(super) const SCAN_TOLERANCE: f64 = 2.0e4 * CONTAINMENT_EPSILON;
 pub(super) struct ScanRing {
     pub(super) ring: Ring,
     pub(super) step: f64,
+    inverse_radial: f64,
     offsets_per_radian: f64,
     offset_padding: f64,
     pub(super) step_sine: f64,
@@ -58,11 +59,20 @@ impl ScanRing {
         Self {
             ring,
             step,
+            inverse_radial: ring.radial.recip(),
             offsets_per_radian,
             offset_padding,
             step_sine,
             step_cosine,
         }
+    }
+
+    fn offset_bounds(&self, start: f64, end: f64) -> (i64, i64) {
+        let west = start * self.offsets_per_radian - self.ring.shift - self.offset_padding;
+        let east = end * self.offsets_per_radian - self.ring.shift + self.offset_padding;
+        let first = west as i64 + i64::from(west > west as i64 as f64);
+        let last = east as i64 - i64::from(east < east as i64 as f64);
+        (first, last)
     }
 }
 
@@ -217,9 +227,9 @@ pub(super) fn quad_contains(quad: &Quad, x: f64, y: f64, z: f64) -> bool {
     let inside =
         |normal: Vec3| normal[0] * x + normal[1] * y + normal[2] * z >= -CONTAINMENT_EPSILON;
     inside(quad.edge_normals[0])
-        && inside(quad.edge_normals[1])
-        && inside(quad.edge_normals[2])
-        && inside(quad.edge_normals[3])
+        & inside(quad.edge_normals[1])
+        & inside(quad.edge_normals[2])
+        & inside(quad.edge_normals[3])
 }
 
 pub(super) fn cached_scan_rings(resolution: u8) -> Option<&'static [ScanRing]> {
@@ -670,127 +680,150 @@ pub(super) fn visit_cap_ranges_in_rings(
     last_ring: u64,
     mut visit: impl FnMut(Range<u64>),
 ) {
-    let nside = 1_u64 << resolution;
-    let ring_table = cached_scan_rings(resolution);
-
-    for ring_index in first_ring..=last_ring {
-        let uncached;
-        let scan_ring = if let Some(table) = ring_table {
-            &table[(ring_index - 1) as usize]
-        } else {
-            uncached = ScanRing::new(ring_info(nside, ring_index));
-            &uncached
-        };
+    if first_ring > last_ring {
+        return;
+    }
+    let inverse_amplitude = 0.25 / cap.radial;
+    let mut scan = |scan_ring: &ScanRing| {
         let ring = &scan_ring.ring;
-        let radial_difference = ring.radial - cap.radial;
-        let z_difference = ring.z - cap.axis[2];
-        let minimum_squared_distance =
-            radial_difference * radial_difference + z_difference * z_difference;
-        let longitude_amplitude = 4.0 * cap.radial * ring.radial;
-        // How much squared chord this ring has left to spend on longitude at
-        // its closest approach to the axis, and how much it is short by at
-        // its farthest. Their sum is the longitude amplitude, so either one
-        // determines the crossing; carrying both keeps every decision on the
-        // side that is a sum of squares. A cap past a quarter turn measures
-        // from `-axis`, because near pi the difference `4 - complement`
-        // loses the complement entirely and takes the antipode in with it.
-        let (available, deficit) = if cap.complement {
-            let z_sum = ring.z + cap.axis[2];
-            let squared_z_sum = z_sum * z_sum;
-            let radial_sum = ring.radial + cap.radial;
-            let farthest = radial_sum * radial_sum + squared_z_sum;
-            let closest = radial_difference * radial_difference + squared_z_sum;
-            (
-                farthest - cap.complement_squared_chord,
-                cap.complement_squared_chord - closest,
-            )
-        } else {
+        let dr = ring.radial - cap.radial;
+        let dz = ring.z - cap.axis[2];
+        let minimum_squared_distance = dr * dr + dz * dz;
+        if !cap.complement {
             let available = cap.squared_chord_radius - minimum_squared_distance;
-            (available, longitude_amplitude - available)
-        };
-        let numerical_guard = 64.0
-            * f64::EPSILON
-            * (1.0 + cap.squared_chord_radius + minimum_squared_distance + longitude_amplitude);
-        // A whole ring is in or out at once when the cap axis is a pole, or
-        // when the ring lies entirely inside. Within the guard of either
-        // boundary, test each cell as a candidate query would, so restricting
-        // a query cannot change a tie.
-        let whole_ring = if longitude_amplitude == 0.0 {
-            Some(available)
-        } else if deficit <= 0.0 {
-            Some(-deficit)
-        } else {
-            None
-        };
-        if let Some(margin) = whole_ring {
-            if margin.abs() <= numerical_guard {
-                visit_ring_cells_in_cap(cap, ring, &mut visit);
-            } else if margin > 0.0 {
-                visit(ring.start..ring.start + ring.cells);
+            // The squared chords and longitude amplitude are all at most four.
+            if available < -1024.0 * f64::EPSILON {
+                return;
             }
-            continue;
-        }
-        if available < -numerical_guard {
-            continue;
-        }
-
-        let bounded_available = available.max(0.0).min(longitude_amplitude);
-        let t = bounded_available / longitude_amplitude;
-        if t <= 1.0 / 16.0 {
-            // For x <= 1/4 the terms after x^5 in asin(x) sum to less
-            // than (5/112) * x^7 / (1 - x^2). Use the estimate only when
-            // that whole error interval rounds to the same pair of cells.
-            let x = t.sqrt();
-            let scale = ring.cells as f64 / TAU;
-            let width = (2.0 * x * scale) * (1.0 + t * (1.0 / 6.0 + t * (3.0 / 40.0)));
-            let axis = cap.longitude * scale - ring.shift;
-            let west = axis - width;
-            let east = axis + width;
-            let first = west as i64 + 1;
-            let last = east as i64;
-            let guard = 0.1 * x * t * t * t * scale
-                + 2.0 * INDEX_UNCERTAINTY_ULPS * f64::EPSILON * ring.cells as f64;
-            if west >= 0.0
-                && east < ring.cells as f64
-                && (west - (first - 1) as f64).min(first as f64 - west) > guard
-                && (east - last as f64).min((last + 1) as f64 - east) > guard
-            {
-                if first <= last {
-                    visit(ring.start + first as u64..ring.start + last as u64 + 1);
+            let t = available * (inverse_amplitude * scan_ring.inverse_radial);
+            if t > 0.0 && t <= 1.0 / 16.0 {
+                // For x <= 1/4 the omitted terms of asin(x) sum to less than
+                // (5/112) * x^7 / (1 - x^2). Both endpoints must be clear of a tie.
+                let x = t.sqrt();
+                let scale = scan_ring.offsets_per_radian;
+                let width = (2.0 * x * scale) * (1.0 + t * (1.0 / 6.0 + t * (3.0 / 40.0)));
+                let axis = cap.longitude * scale - ring.shift;
+                let west = axis - width;
+                let east = axis + width;
+                let west_bin = west as i32;
+                let east_bin = east as i32;
+                // The 256 ε × cells margin also covers rounding from the reciprocal products in t.
+                let guard = 0.1 * x * t * t * t * scale
+                    + 2.0 * INDEX_UNCERTAINTY_ULPS * f64::EPSILON * ring.cells as f64;
+                if west >= 0.0
+                    && east < ring.cells as f64
+                    && (west - (f64::from(west_bin) + 0.5))
+                        .abs()
+                        .max((east - (f64::from(east_bin) + 0.5)).abs())
+                        < 0.5 - guard
+                {
+                    if west_bin < east_bin {
+                        visit(ring.start + west_bin as u64 + 1..ring.start + east_bin as u64 + 1);
+                    }
+                    return;
                 }
-                continue;
             }
         }
-        // cap_interval_range checks the chord predicate when an endpoint is close to a cell center.
-        let half_width = if bounded_available <= 0.5 * longitude_amplitude {
-            2.0 * t.sqrt().asin()
-        } else {
-            2.0 * bounded_available.sqrt().atan2(deficit.max(0.0).sqrt())
-        };
-        let start = cap.longitude - half_width;
-        let end = cap.longitude + half_width;
-        // An inclusive end exactly at 2pi is longitude zero, so it wraps too.
-        let intervals = if start < 0.0 {
-            [(0.0, end), (start + TAU, TAU)]
-        } else if end >= TAU {
-            [(0.0, end - TAU), (start, TAU)]
-        } else {
-            [(start, end), (0.0, 0.0)]
-        };
-        let interval_count = if start < 0.0 || end >= TAU { 2 } else { 1 };
-        let step = scan_ring.step;
-        let mut next_unscanned = 0;
-        for &(interval_start, interval_end) in intervals.iter().take(interval_count) {
-            if let Some(range) = cap_interval_range(
-                cap,
-                ring,
-                step,
-                interval_start,
-                interval_end,
-                &mut next_unscanned,
-            ) {
-                visit(range);
-            }
+        visit_cap_ring(cap, scan_ring, dr, minimum_squared_distance, &mut visit);
+    };
+    if let Some(table) = cached_scan_rings(resolution) {
+        table[first_ring as usize - 1..last_ring as usize]
+            .iter()
+            .for_each(scan);
+    } else {
+        for index in first_ring..=last_ring {
+            scan(&ScanRing::new(ring_info(1 << resolution, index)));
+        }
+    }
+}
+
+fn visit_cap_ring(
+    cap: &Cap,
+    scan_ring: &ScanRing,
+    radial_difference: f64,
+    minimum_squared_distance: f64,
+    visit: &mut impl FnMut(Range<u64>),
+) {
+    let ring = &scan_ring.ring;
+    let longitude_amplitude = 4.0 * cap.radial * ring.radial;
+    // How much squared chord this ring has left to spend on longitude at
+    // its closest approach to the axis, and how much it is short by at
+    // its farthest. Their sum is the longitude amplitude, so either one
+    // determines the crossing; carrying both keeps every decision on the
+    // side that is a sum of squares. A cap past a quarter turn measures
+    // from `-axis`, because near pi the difference `4 - complement`
+    // loses the complement entirely and takes the antipode in with it.
+    let (available, deficit) = if cap.complement {
+        let z_sum = ring.z + cap.axis[2];
+        let squared_z_sum = z_sum * z_sum;
+        let radial_sum = ring.radial + cap.radial;
+        let farthest = radial_sum * radial_sum + squared_z_sum;
+        let closest = radial_difference * radial_difference + squared_z_sum;
+        (
+            farthest - cap.complement_squared_chord,
+            cap.complement_squared_chord - closest,
+        )
+    } else {
+        let available = cap.squared_chord_radius - minimum_squared_distance;
+        (available, longitude_amplitude - available)
+    };
+    let numerical_guard = 64.0
+        * f64::EPSILON
+        * (1.0 + cap.squared_chord_radius + minimum_squared_distance + longitude_amplitude);
+    // A whole ring is in or out at once when the cap axis is a pole, or
+    // when the ring lies entirely inside. Within the guard of either
+    // boundary, test each cell as a candidate query would, so restricting
+    // a query cannot change a tie.
+    let whole_ring = if longitude_amplitude == 0.0 {
+        Some(available)
+    } else if deficit <= 0.0 {
+        Some(-deficit)
+    } else {
+        None
+    };
+    if let Some(margin) = whole_ring {
+        if margin.abs() <= numerical_guard {
+            visit_ring_cells_in_cap(cap, ring, visit);
+        } else if margin > 0.0 {
+            visit(ring.start..ring.start + ring.cells);
+        }
+        return;
+    }
+    if available < -numerical_guard {
+        return;
+    }
+
+    let bounded_available = available.max(0.0).min(longitude_amplitude);
+    let t = bounded_available / longitude_amplitude;
+    // cap_interval_range checks the chord predicate when an endpoint is close to a cell center.
+    let half_width = if bounded_available <= 0.5 * longitude_amplitude {
+        2.0 * t.sqrt().asin()
+    } else {
+        2.0 * bounded_available.sqrt().atan2(deficit.max(0.0).sqrt())
+    };
+    let start = cap.longitude - half_width;
+    let end = cap.longitude + half_width;
+    // An inclusive end exactly at 2pi is longitude zero, so it wraps too.
+    let intervals = if start < 0.0 {
+        [(0.0, end), (start + TAU, TAU)]
+    } else if end >= TAU {
+        [(0.0, end - TAU), (start, TAU)]
+    } else {
+        [(start, end), (0.0, 0.0)]
+    };
+    let interval_count = if start < 0.0 || end >= TAU { 2 } else { 1 };
+    let step = scan_ring.step;
+    let mut next_unscanned = 0;
+    for &(interval_start, interval_end) in intervals.iter().take(interval_count) {
+        if let Some(range) = cap_interval_range(
+            cap,
+            ring,
+            step,
+            interval_start,
+            interval_end,
+            &mut next_unscanned,
+        ) {
+            visit(range);
         }
     }
 }
@@ -1107,10 +1140,7 @@ pub(super) fn ring_offset_windows<const WHOLE_CELL_MARGIN: bool>(
         range_count += 1;
     };
     for &(start, end) in longitude_intervals.iter().take(interval_count) {
-        let west = start * scan_ring.offsets_per_radian - ring.shift - scan_ring.offset_padding;
-        let east = end * scan_ring.offsets_per_radian - ring.shift + scan_ring.offset_padding;
-        let first = west as i64 + i64::from(west > west as i64 as f64);
-        let last = east as i64 - i64::from(east < east as i64 as f64);
+        let (first, last) = scan_ring.offset_bounds(start, end);
         let (first, last) = (first - margin, last + margin);
         let count = ring.cells as i64;
         if first < 0 {
@@ -1200,6 +1230,19 @@ fn cover_cells_in_bounds<const WHOLE_CELL_MARGIN: bool>(
         } else {
             None
         };
+        if let Some(directions) = directions.filter(|_| interval_count == 1) {
+            let (start, end) = longitude_intervals[0];
+            let (first, last) = scan_ring.offset_bounds(start, end);
+            if let Some(window) = directions.get(first as usize..(last + 1) as usize) {
+                for (offset, &(sine, cosine)) in window.iter().enumerate() {
+                    let cell = ring.start + first as u64 + offset as u64;
+                    if contains(cell, ring.radial * cosine, ring.radial * sine, ring.z) {
+                        visit(cell)?;
+                    }
+                }
+                continue;
+            }
+        }
         let mut scan_offsets = |first: u64, last: u64| -> NativeResult<()> {
             if use_directions {
                 for offset in first..=last {

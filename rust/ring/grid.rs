@@ -492,6 +492,28 @@ pub(crate) fn boundary(cell: u64, resolution: u8) -> [Vec3; 4] {
 pub(super) fn ring_range(nside: u64, minimum_z: f64, maximum_z: f64) -> (u64, u64) {
     let last_ring = 4 * nside - 1;
 
+    // At these resolutions the inverse latitude is accurate to well under
+    // half a ring, even at the poles. Resolve the tie using the forward z.
+    if nside <= 1 << 20 {
+        let north_of = |z: f64| {
+            let z = z + CONTAINMENT_EPSILON;
+            let side = nside as f64;
+            let position = if z.abs() <= 2.0 / 3.0 {
+                side * (2.0 - 1.5 * z)
+            } else {
+                let polar_ring = side * (3.0 * (1.0 - z.abs()).max(0.0)).sqrt();
+                if z > 0.0 {
+                    polar_ring
+                } else {
+                    4.0 * side - polar_ring
+                }
+            };
+            let nearest = ((position + 0.5) as u64).clamp(1, last_ring);
+            (nearest - u64::from(ring_z(nside, nearest) <= z)).max(1)
+        };
+        return (north_of(maximum_z), 4 * nside - north_of(-minimum_z));
+    }
+
     let mut low = 1;
     let mut high = last_ring + 1;
     while low < high {
@@ -674,6 +696,34 @@ mod tests {
             resolution,
             vectors.len() / 3 >= CELL_AT_PARALLEL_MIN_VECTORS,
         )
+    }
+
+    #[test]
+    fn latitude_bounds_keep_the_neighbor_on_both_sides_of_a_ring_tie() {
+        for nside in [1, 64, 128, 1 << 20] {
+            let last = 4 * nside - 1;
+            let stride = (nside / 128).max(1);
+            for index in (1..=last)
+                .step_by(stride as usize)
+                .chain([nside, 3 * nside, last])
+            {
+                let center = super::ring_z(nside, index);
+                for tie in [
+                    center - super::CONTAINMENT_EPSILON,
+                    center + super::CONTAINMENT_EPSILON,
+                ] {
+                    for z in [tie.next_down(), tie, tie.next_up()] {
+                        let (north, south) = super::ring_range(nside, z, z);
+                        let hi = z + super::CONTAINMENT_EPSILON;
+                        let lo = z - super::CONTAINMENT_EPSILON;
+                        assert!(north == 1 || super::ring_z(nside, north) > hi);
+                        assert!(north == last || super::ring_z(nside, north + 1) <= hi);
+                        assert!(south == last || super::ring_z(nside, south) < lo);
+                        assert!(south == 1 || super::ring_z(nside, south - 1) >= lo);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

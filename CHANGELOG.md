@@ -16,6 +16,9 @@ omitted.
 
 ### Performance
 
+- Global cap counts and swath coverage locate the intersecting latitude rings
+  directly at resolutions up to 20. Large, dense revisit timelines can now be
+  reduced in parallel.
 - Coverage over `candidate_cells` is up to 20 times as fast when the selection
   is much wider than each polygon or sweep.
 - Overlap coverage is 1.4 to 2.7 times as fast, and up to 2 times as fast

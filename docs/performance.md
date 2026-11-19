@@ -118,9 +118,13 @@ coverage = px.cover_polygon(batch, resolution=8)
 serial = px.cover_polygon(batch, resolution=8, threads=1)
 ```
 
-If your own executor is already running several Polypix calls, use
-`threads=1` inside each call so the workers don't compete with each other.
+If your executor runs several coverage calls concurrently, pass `threads=1`
+to each coverage call to keep its work on the calling thread.
 Threading doesn't change the cells or their order.
+
+`revisit()` chooses its thread count automatically. Concurrent calls share
+one process-wide worker pool. For large, dense timelines with ordered cell IDs
+in each segment, the default reduction can assign each worker a band of cells.
 
 Worker threads don't survive `fork()`. A process forked after Polypix started
 its worker threads, such as a `multiprocessing` worker started with the `fork`

@@ -128,8 +128,7 @@ pub(super) fn merge_coverages(chunks: Vec<Coverage>) -> NativeResult<Coverage> {
         .try_reserve_exact(cell_count)
         .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
     if cell_count >= PARALLEL_MERGE_MIN_CELLS {
-        cells.resize(cell_count, 0_u64);
-        let mut rest = cells.as_mut_slice();
+        let mut rest = &mut cells.spare_capacity_mut()[..cell_count];
         let mut pieces = Vec::new();
         pieces
             .try_reserve_exact(chunks.len())
@@ -139,9 +138,13 @@ pub(super) fn merge_coverages(chunks: Vec<Coverage>) -> NativeResult<Coverage> {
             pieces.push((head, &chunk.cells));
             rest = tail;
         }
-        pieces
-            .into_par_iter()
-            .for_each(|(target, source)| target.copy_from_slice(source));
+        pieces.into_par_iter().for_each(|(target, source)| {
+            for (out, &cell) in target.iter_mut().zip(source) {
+                out.write(cell);
+            }
+        });
+        // SAFETY: the disjoint pieces initialized all cell_count reserved slots.
+        unsafe { cells.set_len(cell_count) };
     } else {
         for chunk in &chunks {
             cells.extend_from_slice(&chunk.cells);
