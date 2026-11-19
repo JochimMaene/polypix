@@ -3,7 +3,6 @@
  "environment": {
   "commit": "35246a4a263ac15e935730ac3deb14b11e862b1d",
   "uncommitted_changes": false,
-  "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.39",
   "cpu_count": 8,
   "python": "3.14.5",
   "versions": {

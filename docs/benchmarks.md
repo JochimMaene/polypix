@@ -6,8 +6,7 @@ and S2, which cover shapes on their own grids. In short: on one thread, Polypix
 is 4 to 6 times faster than healpy at counting overlapping circles, and 20 to 40
 times faster at covering many small polygons.
 
-All numbers come from one laptop running Linux under WSL2. Ratios vary by
-machine.
+All numbers come from one machine. Ratios vary by machine.
 
 ## Two workloads
 

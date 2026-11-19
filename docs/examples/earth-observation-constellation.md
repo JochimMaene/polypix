@@ -34,18 +34,17 @@ reference workload at about **94 ms** in simulation mode. That deterministic
 this case study uses three sources and 2.7 million hits. It is a regression
 reference for the same operation, not a complete-analysis wall-clock estimate.
 
-An earlier [GitHub-hosted documentation build][docs-build-run] of the
-complete example produced this pipeline profile:
+The GitHub-hosted documentation build recorded these stage timings for the
+complete example. [Build log][docs-build-run]
 
 | Stage | Time |
 | --- | ---: |
-| SGP4 propagation and swath edges | 10 ms |
-| 3 `cover_sweep()` calls | **35 ms** |
-| `revisit()` and gap conversion | 22 ms |
-| Complete analysis | 67 ms |
+| SGP4 propagation and swath edges | 12 ms |
+| 3 `cover_sweep()` calls | **31 ms** |
+| `revisit()` and gap conversion | 12 ms |
+| Complete analysis | 55 ms |
 
-Those wall-clock figures show the relative cost of the end-to-end stages; they
-are pinned to that build and are not the regression benchmark.
+Times are rounded to the nearest millisecond and cover analysis before plotting.
 
 ## Method
 
@@ -113,4 +112,4 @@ python examples/earth_observation_constellation.py \
 
 [reference-benchmark]: https://github.com/JochimMaene/polypix/blob/573cac31880f1be79c2963e390058a5cbb369864/benchmarks/test_polypix_benchmarks.py#L1068
 [codspeed-run]: https://github.com/JochimMaene/polypix/runs/135533390069
-[docs-build-run]: https://github.com/JochimMaene/polypix/actions/runs/33249059091
+[docs-build-run]: https://github.com/JochimMaene/polypix/actions/runs/44518637415/job/135541164097#step:5:1
