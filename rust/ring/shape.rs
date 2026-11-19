@@ -40,6 +40,8 @@ pub(super) const SCAN_TOLERANCE: f64 = 2.0e4 * CONTAINMENT_EPSILON;
 pub(super) struct ScanRing {
     pub(super) ring: Ring,
     pub(super) step: f64,
+    offsets_per_radian: f64,
+    offset_padding: f64,
     pub(super) step_sine: f64,
     pub(super) step_cosine: f64,
 }
@@ -48,9 +50,16 @@ impl ScanRing {
     pub(super) fn new(ring: Ring) -> Self {
         let step = TAU / ring.cells as f64;
         let (step_sine, step_cosine) = step.sin_cos();
+        let offsets_per_radian = ring.cells as f64 / TAU;
+        // Near a pole the same angular tolerance spans more longitude.
+        // Include index rounding so a ring scan keeps the same boundary ties as a point test.
+        let offset_padding = SCAN_TOLERANCE / ring.radial * offsets_per_radian
+            + INDEX_UNCERTAINTY_ULPS * f64::EPSILON * ring.cells as f64;
         Self {
             ring,
             step,
+            offsets_per_radian,
+            offset_padding,
             step_sine,
             step_cosine,
         }
@@ -118,6 +127,23 @@ fn longitude_bounds_for(
     let (vertex_longitudes, sorted_longitudes) = scratch.split_at_mut(vertices.len());
     for (longitude, vertex) in vertex_longitudes.iter_mut().zip(vertices) {
         *longitude = vertex[1].atan2(vertex[0]).rem_euclid(TAU);
+    }
+
+    // Minor great-circle arcs between vertices in a longitude wedge narrower
+    // than pi stay in that wedge (each point is a positive linear combination
+    // of the endpoints). No sort or per-edge unwrapping is needed there.
+    let mut west = TAU;
+    let mut east: f64 = 0.0;
+    for &longitude in vertex_longitudes.iter() {
+        west = west.min(longitude);
+        east = east.max(longitude);
+    }
+    if east - west < std::f64::consts::PI - LONGITUDE_BOUNDS_EPSILON {
+        return if east < TAU - LONGITUDE_BOUNDS_EPSILON {
+            ([(west, east), (0.0, 0.0)], 1)
+        } else {
+            ([(0.0, 0.0), (west, TAU)], 2)
+        };
     }
 
     sorted_longitudes.copy_from_slice(vertex_longitudes);
@@ -321,16 +347,16 @@ fn complement_chord_contains(axis: Vec3, complement_squared_chord: f64, point: V
 /// negative value is the negated complementary chord, measured from
 /// `-axis`. A complement of exactly zero means a full sphere, which takes
 /// the infinite slot instead, so the sign stays unambiguous.
-pub(super) fn packed_cap_center(cap: &Cap) -> [f64; 4] {
-    let radius_slot = if cap.full_sphere {
+pub(super) fn packed_cap_center(axis: Vec3, radius: f64) -> [f64; 4] {
+    let (half_chord, half_complement) = (0.5 * radius).sin_cos();
+    let radius_slot = if radius == std::f64::consts::PI {
         f64::INFINITY
-    } else if cap.complement {
-        debug_assert!(cap.complement_squared_chord > 0.0);
-        -cap.complement_squared_chord
+    } else if radius > std::f64::consts::FRAC_PI_2 {
+        -4.0 * half_complement * half_complement
     } else {
-        cap.squared_chord_radius
+        4.0 * half_chord * half_chord
     };
-    [cap.axis[0], cap.axis[1], cap.axis[2], radius_slot]
+    [axis[0], axis[1], axis[2], radius_slot]
 }
 
 /// Test one point against a cap packed by [`packed_cap_center`].
@@ -363,8 +389,7 @@ impl Cap {
         // Match `grid::center` operation for operation: a candidate test
         // places the cell there, and a boundary tie must not depend on
         // which path asked; a precomputed TAU / cells step rounds differently.
-        let longitude = (offset as f64 + ring.shift) * TAU / ring.cells as f64;
-        let (sine, cosine) = longitude.sin_cos();
+        let (sine, cosine) = ring.longitude_sin_cos(offset);
         self.contains([ring.radial * cosine, ring.radial * sine, ring.z])
     }
 
@@ -488,57 +513,71 @@ impl<'cap> CapOverlap<'cap> {
     }
 }
 
+/// Validate shared inputs before preparing either a point test or a ring scan.
+pub(super) fn cap_inputs<'a>(
+    centers: &'a [f64],
+    radii: &'a [f64],
+    first_index: usize,
+) -> impl Iterator<Item = Result<(Vec3, f64), String>> + 'a {
+    debug_assert_eq!(centers.len(), 3 * radii.len());
+    centers
+        .chunks_exact(3)
+        .zip(radii)
+        .enumerate()
+        .map(move |(index, (values, &radius))| {
+            let index = first_index + index;
+            let axis = normalize([values[0], values[1], values[2]])
+                .map_err(|error| format!("centers_xyz[{index}] {error}"))?;
+            if !radius.is_finite() || !(0.0..=std::f64::consts::PI).contains(&radius) {
+                return Err(format!(
+                    "radii_rad[{index}] must be finite and between 0 and pi."
+                ));
+            }
+            let effective_radius = (radius + CONTAINMENT_EPSILON).min(std::f64::consts::PI);
+            Ok((axis, effective_radius))
+        })
+}
+
+pub(super) fn scan_cap(axis: Vec3, effective_radius: f64) -> Cap {
+    let (sine_radius, cosine_radius) = effective_radius.sin_cos();
+    let (half_chord, half_complement_chord) = (0.5 * effective_radius).sin_cos();
+    let radial = axis[0].hypot(axis[1]);
+    // A cap reaches a pole exactly when the axis-to-pole dot product
+    // satisfies the same cosine predicate as any other point.
+    let maximum_z = if axis[2] >= cosine_radius {
+        1.0
+    } else {
+        axis[2] * cosine_radius + radial * sine_radius
+    };
+    let minimum_z = if -axis[2] >= cosine_radius {
+        -1.0
+    } else {
+        axis[2] * cosine_radius - radial * sine_radius
+    };
+    Cap {
+        axis,
+        sine_radius,
+        cosine_radius,
+        squared_chord_radius: 4.0 * half_chord * half_chord,
+        complement_squared_chord: 4.0 * half_complement_chord * half_complement_chord,
+        complement: effective_radius > std::f64::consts::FRAC_PI_2,
+        full_sphere: effective_radius == std::f64::consts::PI,
+        minimum_z: minimum_z.clamp(-1.0, 1.0),
+        maximum_z: maximum_z.clamp(-1.0, 1.0),
+        longitude: axis[1].atan2(axis[0]).rem_euclid(TAU),
+        radial,
+    }
+}
+
 pub(super) fn prepare_caps(centers: &[f64], radii: &[f64]) -> NativeResult<Vec<Cap>> {
     debug_assert!(centers.len().is_multiple_of(3));
     debug_assert_eq!(centers.len() / 3, radii.len());
     let mut caps = Vec::new();
     caps.try_reserve_exact(radii.len())
         .map_err(|_| NativeError::out_of_memory("Cap batch is too large to fit in memory."))?;
-    let prepared =
-        centers
-            .chunks_exact(3)
-            .zip(radii)
-            .enumerate()
-            .map(|(index, (values, &radius))| {
-                let axis = normalize([values[0], values[1], values[2]])
-                    .map_err(|error| format!("centers_xyz[{index}] {error}"))?;
-                if !radius.is_finite() || !(0.0..=std::f64::consts::PI).contains(&radius) {
-                    return Err(format!(
-                        "radii_rad[{index}] must be finite and between 0 and pi."
-                    ));
-                }
-                let effective_radius = (radius + CONTAINMENT_EPSILON).min(std::f64::consts::PI);
-                let (sine_radius, cosine_radius) = effective_radius.sin_cos();
-                let (half_chord, half_complement_chord) = (0.5 * effective_radius).sin_cos();
-                let radial = axis[0].hypot(axis[1]);
-                // A cap reaches a pole exactly when the axis-to-pole dot product
-                // satisfies the same cosine predicate as any other point.
-                let maximum_z = if axis[2] >= cosine_radius {
-                    1.0
-                } else {
-                    axis[2] * cosine_radius + radial * sine_radius
-                };
-                let minimum_z = if -axis[2] >= cosine_radius {
-                    -1.0
-                } else {
-                    axis[2] * cosine_radius - radial * sine_radius
-                };
-                Ok(Cap {
-                    axis,
-                    sine_radius,
-                    cosine_radius,
-                    squared_chord_radius: 4.0 * half_chord * half_chord,
-                    complement_squared_chord: 4.0 * half_complement_chord * half_complement_chord,
-                    complement: effective_radius > std::f64::consts::FRAC_PI_2,
-                    full_sphere: effective_radius == std::f64::consts::PI,
-                    minimum_z: minimum_z.clamp(-1.0, 1.0),
-                    maximum_z: maximum_z.clamp(-1.0, 1.0),
-                    longitude: axis[1].atan2(axis[0]).rem_euclid(TAU),
-                    radial,
-                })
-            });
-    for cap in prepared {
-        caps.push(cap?);
+    for input in cap_inputs(centers, radii, 0) {
+        let (axis, radius) = input?;
+        caps.push(scan_cap(axis, radius));
     }
     Ok(caps)
 }
@@ -695,12 +734,36 @@ pub(super) fn visit_cap_ranges_in_rings(
             continue;
         }
 
-        // The continuous intersection is only an endpoint estimate. The
-        // definitive chord predicate below corrects the neighboring discrete
-        // centers, including a last-bit tangency.
         let bounded_available = available.max(0.0).min(longitude_amplitude);
+        let t = bounded_available / longitude_amplitude;
+        if t <= 1.0 / 16.0 {
+            // For x <= 1/4 the terms after x^5 in asin(x) sum to less
+            // than (5/112) * x^7 / (1 - x^2). Use the estimate only when
+            // that whole error interval rounds to the same pair of cells.
+            let x = t.sqrt();
+            let scale = ring.cells as f64 / TAU;
+            let width = (2.0 * x * scale) * (1.0 + t * (1.0 / 6.0 + t * (3.0 / 40.0)));
+            let axis = cap.longitude * scale - ring.shift;
+            let west = axis - width;
+            let east = axis + width;
+            let first = west as i64 + 1;
+            let last = east as i64;
+            let guard = 0.1 * x * t * t * t * scale
+                + 2.0 * INDEX_UNCERTAINTY_ULPS * f64::EPSILON * ring.cells as f64;
+            if west >= 0.0
+                && east < ring.cells as f64
+                && (west - (first - 1) as f64).min(first as f64 - west) > guard
+                && (east - last as f64).min((last + 1) as f64 - east) > guard
+            {
+                if first <= last {
+                    visit(ring.start + first as u64..ring.start + last as u64 + 1);
+                }
+                continue;
+            }
+        }
+        // cap_interval_range checks the chord predicate when an endpoint is close to a cell center.
         let half_width = if bounded_available <= 0.5 * longitude_amplitude {
-            2.0 * (bounded_available / longitude_amplitude).sqrt().asin()
+            2.0 * t.sqrt().asin()
         } else {
             2.0 * bounded_available.sqrt().atan2(deficit.max(0.0).sqrt())
         };
@@ -1034,13 +1097,8 @@ pub(super) fn ring_offset_windows<const WHOLE_CELL_MARGIN: bool>(
     interval_count: usize,
 ) -> ([(u64, u64); 4], usize) {
     let ring = &scan_ring.ring;
-    let step = scan_ring.step;
-    // Widen each bound by what the containment tolerance spans in
-    // longitude on this ring, which grows towards the poles, plus the
-    // index rounding allowance. An accepted tie then cannot depend on
-    // whether a full scan or a candidate test reached it. Overlap scans
-    // also reach one whole cell further, since any part of a cell counts.
-    let reach = SCAN_TOLERANCE / ring.radial;
+
+    // An overlap scan reaches one more cell because any part of the cell can intersect.
     let margin = i64::from(WHOLE_CELL_MARGIN);
     let mut ranges = [(0_u64, 0_u64); 4];
     let mut range_count = 0;
@@ -1049,13 +1107,10 @@ pub(super) fn ring_offset_windows<const WHOLE_CELL_MARGIN: bool>(
         range_count += 1;
     };
     for &(start, end) in longitude_intervals.iter().take(interval_count) {
-        // `interval_offsets` rounds by truncation, avoiding the libm
-        // `ceil`/`floor` calls that dominate small footprints' scans.
-        let (first, last, _) = interval_offsets(
-            (start - reach) / step - ring.shift,
-            (end + reach) / step - ring.shift,
-            ring.cells,
-        );
+        let west = start * scan_ring.offsets_per_radian - ring.shift - scan_ring.offset_padding;
+        let east = end * scan_ring.offsets_per_radian - ring.shift + scan_ring.offset_padding;
+        let first = west as i64 + i64::from(west > west as i64 as f64);
+        let last = east as i64 - i64::from(east < east as i64 as f64);
         let (first, last) = (first - margin, last + margin);
         let count = ring.cells as i64;
         if first < 0 {
@@ -1067,6 +1122,9 @@ pub(super) fn ring_offset_windows<const WHOLE_CELL_MARGIN: bool>(
         } else if first <= last {
             push_range((first as u64, last as u64));
         }
+    }
+    if range_count <= 1 {
+        return (ranges, range_count);
     }
     ranges[..range_count].sort_unstable();
     let mut merged_count = 0;
@@ -1083,6 +1141,31 @@ pub(super) fn ring_offset_windows<const WHOLE_CELL_MARGIN: bool>(
         merged_count += 1;
     }
     (ranges, merged_count)
+}
+
+// All shifted polar rings through nside 256 and the unshifted equatorial
+// rings together use just over 2 MiB when every length has been visited.
+const MAX_DIRECTION_RING_CELLS: usize = 1024;
+
+/// Rings of the same length and phase have identical longitudes at every
+/// resolution. A small shared table lets narrow sweeps test adjacent cells
+/// without a sin_cos per ring or a loop-carried rotation per cell.
+fn ring_directions(ring: &Ring) -> Option<&'static [(f64, f64)]> {
+    const MAX_SIDE: usize = MAX_DIRECTION_RING_CELLS / 4;
+    static TABLES: [OnceLock<Vec<(f64, f64)>>; 2 * MAX_SIDE] =
+        [const { OnceLock::new() }; 2 * MAX_SIDE];
+    let side = (ring.cells / 4) as usize;
+    let table = TABLES.get(2 * (side - 1) + usize::from(ring.shift != 0.0))?;
+    if let Some(directions) = table.get() {
+        return Some(directions);
+    }
+    if crate::forked() {
+        return None;
+    }
+    let mut directions = Vec::new();
+    directions.try_reserve_exact(ring.cells as usize).ok()?;
+    directions.extend((0..ring.cells).map(|i| ring.longitude_sin_cos(i)));
+    Some(table.get_or_init(|| directions))
 }
 
 fn cover_cells_in_bounds<const WHOLE_CELL_MARGIN: bool>(
@@ -1111,7 +1194,26 @@ fn cover_cells_in_bounds<const WHOLE_CELL_MARGIN: bool>(
         let step_sine = scan_ring.step_sine;
         let step_cosine = scan_ring.step_cosine;
 
+        let use_directions = !WHOLE_CELL_MARGIN && ring.cells <= MAX_DIRECTION_RING_CELLS as u64;
+        let directions = if use_directions {
+            ring_directions(ring)
+        } else {
+            None
+        };
         let mut scan_offsets = |first: u64, last: u64| -> NativeResult<()> {
+            if use_directions {
+                for offset in first..=last {
+                    let (sine, cosine) = directions.map_or_else(
+                        || ring.longitude_sin_cos(offset),
+                        |table| table[offset as usize],
+                    );
+                    let cell = ring.start + offset;
+                    if contains(cell, ring.radial * cosine, ring.radial * sine, ring.z) {
+                        visit(cell)?;
+                    }
+                }
+                return Ok(());
+            }
             let first_longitude = (first as f64 + ring.shift) * step;
             let (sine, cosine) = first_longitude.sin_cos();
             let mut x = ring.radial * cosine;
@@ -1923,6 +2025,29 @@ mod tests {
         CONTAINMENT_EPSILON,
     };
     use crate::ring::grid::{center, raw_cell_count, ring_range};
+
+    #[test]
+    fn narrow_cap_spans_resolve_both_sides_of_cell_boundaries() {
+        let resolution = 6;
+        let nside = 1 << resolution;
+        let index = 2 * nside;
+        let ring = ring_info(nside, index);
+        let step = TAU / ring.cells as f64;
+        for bins in [0.5, 8.5, 19.5, 20.5, 21.5] {
+            for delta in [-1e-8, 1e-8] {
+                let cap = super::scan_cap([0.0, 1.0, 0.0], bins * step + delta);
+                let mut cells = Vec::new();
+                super::visit_cap_ranges_in_rings(&cap, resolution, index, index, |range| {
+                    cells.extend(range)
+                });
+                let expected: Vec<_> = (0..ring.cells)
+                    .filter(|&i| cap.contains_on_ring(&ring, i))
+                    .map(|i| ring.start + i)
+                    .collect();
+                assert_eq!(cells, expected, "{bins} bins, delta {delta}");
+            }
+        }
+    }
 
     #[test]
     fn interval_rounding_matches_libm_at_cell_boundaries() {

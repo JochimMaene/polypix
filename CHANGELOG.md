@@ -31,6 +31,11 @@ omitted.
   logical CPUs.
 - `revisit()` calls with few hits no longer clear a whole grid first, which
   made them up to 50 times slower at resolutions 5 to 8.
+- `cover_cap(..., reduce=Count())` over a few `candidate_cells` is up to 20
+  times as fast for a large batch of caps, and about 4 times as fast over a
+  regional selection.
+- Cap coverage and dense cap counts are about 1.25 times as fast.
+- Small polygons and sweeps are covered 1.2 to 1.7 times as fast.
 
 ## [1.0.0] — 2026-11-04
 
