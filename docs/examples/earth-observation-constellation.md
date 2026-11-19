@@ -28,24 +28,25 @@ inclined 98.6° and the swath is only 290 km wide.
 
 ## Performance
 
-The [pinned CodSpeed run][codspeed-run] measures the EO-shaped `revisit()`
-reference workload at about **75 ms** in simulation mode. That deterministic
-[benchmark][reference-benchmark] processes ten sources and 9.28 million hits;
-this case study uses three sources and 2.7 million hits. It is a regression
-reference for the same operation, not a complete-analysis wall-clock estimate.
+The complete 14-day Sentinel-2 analysis took **46.1 ms**, down from
+**60.6 ms** (24% less wall time). Both builds produced identical visit counts
+and gap maps. [Example source][example-source] · [Code comparison][comparison]
 
-For context, one [GitHub-hosted documentation build][docs-build-run] of the
-complete example at the same commit produced this pipeline profile:
+| Operation | Before | After |
+| --- | ---: | ---: |
+| Swath coverage for all three spacecraft (`cover_sweep()`) | 26.1 ms | 17.3 ms |
+| Revisit statistics from the three coverages (`revisit()`) | 13.9 ms | 9.5 ms |
+| **Complete analysis**, including propagation and gap-map calculation | **60.6 ms** | **46.1 ms** |
 
-| Stage | Time |
-| --- | ---: |
-| SGP4 propagation and swath edges | 10 ms |
-| 3 `cover_sweep()` calls | **35 ms** |
-| `revisit()` and gap conversion | 22 ms |
-| Complete analysis | 67 ms |
+Times are medians of 21 runs per release build, alternating the two builds on
+an Intel Core i7-1165G7 with eight logical CPUs. The first two rows time each
+operation with its inputs already prepared. The complete analysis starts with
+the pinned TLEs and ends with the map arrays, before plotting.
 
-Those wall-clock figures show the relative cost of the end-to-end stages; they
-are pinned to that build and are not the regression benchmark.
+CodSpeed also measured the ten-source revisit benchmark (9.2 million hits) at
+about **123 ms before and 94 ms after** in simulation mode. The example above
+uses three sources and 2.7 million hits. [Benchmark source][reference-benchmark] ·
+[CodSpeed report][codspeed-report]
 
 ## Method
 
@@ -96,9 +97,9 @@ count as one overflight:
 :end-before: "--8<-- [end:eo-reduce]"
 ```
 
-That walks the 2.7 million interval-cell hits once, keeping one accumulator per
-cell and never building the individual overflights. It counts in bins, not
-seconds, so we convert to hours ourselves.
+The reduction keeps one accumulator per cell as it processes the 2.7 million
+interval-cell hits in time order. It reports gaps in one-minute bins, which
+the example converts to hours.
 
 
 ## Run the example
@@ -111,6 +112,7 @@ python examples/earth_observation_constellation.py \
 
 [Full source](https://github.com/JochimMaene/polypix/blob/main/examples/earth_observation_constellation.py)
 
-[reference-benchmark]: https://github.com/JochimMaene/polypix/blob/bf26c009e6529367e1165cecbe7dbda486b5479c/benchmarks/test_polypix_benchmarks.py#L956
-[codspeed-run]: https://app.codspeed.io/JochimMaene/polypix/runs/compare/6a91b972915aa37294773c71..6a92bc48fd5591856db14fc8?q=revisit
-[docs-build-run]: https://github.com/JochimMaene/polypix/actions/runs/33249059091
+[example-source]: https://github.com/JochimMaene/polypix/blob/573cac31880f1be79c2963e390058a5cbb369864/examples/earth_observation_constellation.py#L124
+[reference-benchmark]: https://github.com/JochimMaene/polypix/blob/573cac31880f1be79c2963e390058a5cbb369864/benchmarks/test_polypix_benchmarks.py#L1068
+[codspeed-report]: https://github.com/JochimMaene/polypix/runs/135533390069
+[comparison]: https://github.com/JochimMaene/polypix/compare/40f9b3cd38f1100ab0d43fee5b2e7fa282efd524...573cac31880f1be79c2963e390058a5cbb369864

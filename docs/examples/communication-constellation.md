@@ -22,25 +22,24 @@ gateways, terrain, and the atmosphere are all outside the scope of the example.
 
 ## Performance
 
-The [pinned CodSpeed run][codspeed-run] measures one single-threaded timestamp
-of this workload—10,771 caps at resolution 6 with dense `Count()` reduction—at
-about **32 ms** in simulation mode. The case study repeats that public call for
-61 timestamps. This is a stable regression reference, not wall-clock time
-promised for a particular machine; propagation and plotting are outside the
-[benchmark definition][reference-benchmark].
+The complete one-hour global Starlink analysis took **146.6 ms**, down from
+**160.5 ms** (9% less wall time). Counting the caps for all 61 timestamps
+took **23% less time** and produced identical per-cell counts.
+[Example source][example-source] · [Code comparison][comparison]
 
-For context, one [GitHub-hosted documentation build][docs-build-run] of the
-complete example at the same commit produced this pipeline profile:
+| Operation | Before | After |
+| --- | ---: | ---: |
+| Global per-cell counts for 61 timestamps (`cover_cap(reduce=Count())`) | 94.4 ms | 72.9 ms |
+| **Complete global analysis**, including TLE parsing, propagation, and cap construction | **160.5 ms** | **146.6 ms** |
 
-| Stage | Time |
-| --- | ---: |
-| Parse pinned TLE snapshot | 23 ms |
-| SGP4 propagation | 9 ms |
-| 61 cap builds and `cover_cap(reduce=Count())` calls | **261 ms** |
-| Complete analysis | 296 ms |
+Times are medians of 21 runs per release build, alternating the two builds on
+an Intel Core i7-1165G7 with eight logical CPUs. The first row starts with the
+cap centres and radii already prepared. Timestamps run concurrently, with one
+thread per count. The complete analysis ends with the global mean visibility
+array, before plotting.
 
-Those wall-clock figures show where the end-to-end work goes; they are pinned
-to that build for reproducibility and are not the regression benchmark.
+CodSpeed tracks a single-threaded count for one timestamp with 10,771 caps at
+resolution 6. [Benchmark source][reference-benchmark] · [CodSpeed history][codspeed-history]
 
 ## Method
 
@@ -160,9 +159,10 @@ python examples/communication_constellation.py --output PATH
 
 [Full example source](https://github.com/JochimMaene/polypix/blob/main/examples/communication_constellation.py)
 
-[reference-benchmark]: https://github.com/JochimMaene/polypix/blob/bf26c009e6529367e1165cecbe7dbda486b5479c/benchmarks/test_polypix_benchmarks.py#L733
-[codspeed-run]: https://app.codspeed.io/JochimMaene/polypix/runs/compare/6a91b972915aa37294773c71..6a92bc48fd5591856db14fc8
-[docs-build-run]: https://github.com/JochimMaene/polypix/actions/runs/33249059091
+[example-source]: https://github.com/JochimMaene/polypix/blob/573cac31880f1be79c2963e390058a5cbb369864/examples/communication_constellation.py#L122
+[reference-benchmark]: https://github.com/JochimMaene/polypix/blob/573cac31880f1be79c2963e390058a5cbb369864/benchmarks/test_polypix_benchmarks.py#L787
+[codspeed-history]: https://codspeed.io/JochimMaene/polypix
+[comparison]: https://github.com/JochimMaene/polypix/compare/40f9b3cd38f1100ab0d43fee5b2e7fa282efd524...573cac31880f1be79c2963e390058a5cbb369864
 
 ## Adapting it
 
