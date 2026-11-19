@@ -673,6 +673,41 @@ fn visit_ring_cells_in_cap(cap: &Cap, ring: &Ring, visit: &mut impl FnMut(Range<
     }
 }
 
+/// Integer longitude bins for a narrow cap crossing. The validity flag keeps
+/// the four independent solves vectorizable, including their boundary guards.
+#[inline(always)]
+fn narrow_cap_bins(cap: &Cap, ring: &ScanRing, inverse_amplitude: f64) -> (i64, i64, bool) {
+    let dr = ring.ring.radial - cap.radial;
+    let dz = ring.ring.z - cap.axis[2];
+    let available = cap.squared_chord_radius - (dr * dr + dz * dz);
+    let t = available * (inverse_amplitude * ring.inverse_radial);
+    let narrow = (t > 0.0) & (t <= 1.0 / 16.0);
+    // Keep speculative lanes finite, including zero-amplitude polar rings.
+    let t = if narrow { t } else { 0.0 };
+    let x = t.sqrt();
+    let scale = ring.offsets_per_radian;
+    let width = (2.0 * x * scale) * (1.0 + t * (1.0 / 6.0 + t * (3.0 / 40.0)));
+    let axis = cap.longitude * scale - ring.ring.shift;
+    let west = axis - width;
+    let east = axis + width;
+    // At 1.5 * 2^52 one ULP is one bin. Rounding v - 1/2 gives floor(v)
+    // away from ties, with the signed bin offset in the significand.
+    const BIAS: f64 = (3_u64 << 51) as f64;
+    let first = (west - 0.5) + BIAS;
+    let last = (east - 0.5) + BIAS;
+    // For x <= 1/4 the omitted asin terms sum to less than (5/112) x^7 / (1-x^2).
+    let guard = scale * (0.1 * x * t * t * t + 2.0 * INDEX_UNCERTAINTY_ULPS * f64::EPSILON * TAU);
+    let clear = ((west - 0.5) - (first - BIAS))
+        .abs()
+        .max(((east - 0.5) - (last - BIAS)).abs())
+        < 0.5 - guard;
+    (
+        first.to_bits() as i64 - BIAS.to_bits() as i64 + 1,
+        last.to_bits() as i64 - BIAS.to_bits() as i64 + 1,
+        narrow & clear,
+    )
+}
+
 pub(super) fn visit_cap_ranges_in_rings(
     cap: &Cap,
     resolution: u8,
@@ -684,67 +719,77 @@ pub(super) fn visit_cap_ranges_in_rings(
         return;
     }
     let inverse_amplitude = 0.25 / cap.radial;
-    let mut scan = |scan_ring: &ScanRing| {
+    let mut emit = |scan_ring: &ScanRing, (first, end, valid): (i64, i64, bool)| {
         let ring = &scan_ring.ring;
-        let dr = ring.radial - cap.radial;
-        let dz = ring.z - cap.axis[2];
-        let minimum_squared_distance = dr * dr + dz * dz;
-        if !cap.complement {
-            let available = cap.squared_chord_radius - minimum_squared_distance;
-            // The squared chords and longitude amplitude are all at most four.
-            if available < -1024.0 * f64::EPSILON {
-                return;
-            }
-            let t = available * (inverse_amplitude * scan_ring.inverse_radial);
-            if t > 0.0 && t <= 1.0 / 16.0 {
-                // For x <= 1/4 the omitted terms of asin(x) sum to less than
-                // (5/112) * x^7 / (1 - x^2). Both endpoints must be clear of a tie.
-                let x = t.sqrt();
-                let scale = scan_ring.offsets_per_radian;
-                let width = (2.0 * x * scale) * (1.0 + t * (1.0 / 6.0 + t * (3.0 / 40.0)));
-                let axis = cap.longitude * scale - ring.shift;
-                let west = axis - width;
-                let east = axis + width;
-                let west_bin = west as i32;
-                let east_bin = east as i32;
-                // The 256 ε × cells margin also covers rounding from the reciprocal products in t.
-                let guard = 0.1 * x * t * t * t * scale
-                    + 2.0 * INDEX_UNCERTAINTY_ULPS * f64::EPSILON * ring.cells as f64;
-                if west >= 0.0
-                    && east < ring.cells as f64
-                    && (west - (f64::from(west_bin) + 0.5))
-                        .abs()
-                        .max((east - (f64::from(east_bin) + 0.5)).abs())
-                        < 0.5 - guard
-                {
-                    if west_bin < east_bin {
-                        visit(ring.start + west_bin as u64 + 1..ring.start + east_bin as u64 + 1);
-                    }
-                    return;
+        if !valid {
+            visit_cap_ring(cap, scan_ring, &mut visit);
+        } else if first < end {
+            let count = ring.cells as i64;
+            // longitude in [0, TAU), shift <= 1/2 and t <= 1/16 keep the span
+            // under a twelfth of the ring, so at most one end leaves [0, count].
+            debug_assert!(first > -count && end < 2 * count);
+            if first >= 0 && end <= count {
+                visit(ring.start + first as u64..ring.start + end as u64);
+            } else {
+                // Emit the two sides of the longitude seam in ring order.
+                let (west, east) = if first < 0 {
+                    (first + count, end)
+                } else {
+                    (first, end - count)
+                };
+                if east > 0 {
+                    visit(ring.start..ring.start + east as u64);
+                }
+                if west < count {
+                    visit(ring.start + west as u64..ring.start + ring.cells);
                 }
             }
         }
-        visit_cap_ring(cap, scan_ring, dr, minimum_squared_distance, &mut visit);
     };
     if let Some(table) = cached_scan_rings(resolution) {
-        table[first_ring as usize - 1..last_ring as usize]
-            .iter()
-            .for_each(scan);
+        let rings = &table[first_ring as usize - 1..last_ring as usize];
+        if cap.complement {
+            for ring in rings {
+                emit(ring, (0, 0, false));
+            }
+            return;
+        }
+        let mut groups = rings.chunks_exact(4);
+        for group in &mut groups {
+            let bins = std::array::from_fn::<_, 4, _>(|i| {
+                narrow_cap_bins(cap, &group[i], inverse_amplitude)
+            });
+            for (ring, span) in group.iter().zip(bins) {
+                emit(ring, span);
+            }
+        }
+        for ring in groups.remainder() {
+            emit(ring, narrow_cap_bins(cap, ring, inverse_amplitude));
+        }
     } else {
         for index in first_ring..=last_ring {
-            scan(&ScanRing::new(ring_info(1 << resolution, index)));
+            let ring = ScanRing::new(ring_info(1 << resolution, index));
+            let span = if cap.complement {
+                (0, 0, false)
+            } else {
+                narrow_cap_bins(cap, &ring, inverse_amplitude)
+            };
+            emit(&ring, span);
         }
     }
 }
 
-fn visit_cap_ring(
-    cap: &Cap,
-    scan_ring: &ScanRing,
-    radial_difference: f64,
-    minimum_squared_distance: f64,
-    visit: &mut impl FnMut(Range<u64>),
-) {
+#[inline(never)]
+fn visit_cap_ring(cap: &Cap, scan_ring: &ScanRing, visit: &mut impl FnMut(Range<u64>)) {
     let ring = &scan_ring.ring;
+    let radial_difference = ring.radial - cap.radial;
+    let dz = ring.z - cap.axis[2];
+    let minimum_squared_distance = radial_difference * radial_difference + dz * dz;
+    if !cap.complement
+        && cap.squared_chord_radius - minimum_squared_distance < -1024.0 * f64::EPSILON
+    {
+        return;
+    }
     let longitude_amplitude = 4.0 * cap.radial * ring.radial;
     // How much squared chord this ring has left to spend on longitude at
     // its closest approach to the axis, and how much it is short by at
@@ -2078,16 +2123,31 @@ mod tests {
         let step = TAU / ring.cells as f64;
         for bins in [0.5, 8.5, 19.5, 20.5, 21.5] {
             for delta in [-1e-8, 1e-8] {
-                let cap = super::scan_cap([0.0, 1.0, 0.0], bins * step + delta);
-                let mut cells = Vec::new();
-                super::visit_cap_ranges_in_rings(&cap, resolution, index, index, |range| {
-                    cells.extend(range)
-                });
-                let expected: Vec<_> = (0..ring.cells)
-                    .filter(|&i| cap.contains_on_ring(&ring, i))
-                    .map(|i| ring.start + i)
-                    .collect();
-                assert_eq!(cells, expected, "{bins} bins, delta {delta}");
+                for axis in [
+                    [0.0, 1.0, 0.0],
+                    [step.cos(), step.sin(), 0.0],
+                    [step.cos(), -step.sin(), 0.0],
+                ] {
+                    let cap = super::scan_cap(axis, bins * step + delta);
+                    let mut cells = Vec::new();
+                    super::visit_cap_ranges_in_rings(
+                        &cap,
+                        resolution,
+                        index - 3,
+                        index + 3,
+                        |range| cells.extend(range),
+                    );
+                    let mut expected = Vec::new();
+                    for i in index - 3..=index + 3 {
+                        let ring = ring_info(nside, i);
+                        expected.extend(
+                            (0..ring.cells)
+                                .filter(|&j| cap.contains_on_ring(&ring, j))
+                                .map(|j| ring.start + j),
+                        );
+                    }
+                    assert_eq!(cells, expected, "{bins} bins, delta {delta}");
+                }
             }
         }
     }

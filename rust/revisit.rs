@@ -367,11 +367,14 @@ fn observe_dense_union(
     // Native footprints are ordered. Imported rows may be unsorted, and an
     // out-of-grid hit must reach the validating loop rather than be trimmed.
     if workers > 1
-        && (0..segment_count).all(|i| {
-            sources.segment_slices(i).all(|cells| {
-                cells.last().is_none_or(|&last| last < cell_count) && cells.is_sorted()
+        && (0..segment_count)
+            .into_par_iter()
+            .with_min_len(256)
+            .all(|i| {
+                sources.segment_slices(i).all(|cells| {
+                    cells.last().is_none_or(|&last| last < cell_count) && cells.is_sorted()
+                })
             })
-        })
     {
         let chunk_size = states.len().div_ceil(workers);
         states
