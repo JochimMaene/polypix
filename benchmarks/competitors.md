@@ -83,8 +83,8 @@ can see that the touch rule over-counts.
 
 ## Things to keep in mind
 
-- These are numbers from one laptop, an Intel i7-1165G7 under WSL2. Expect
-  different ratios on other hardware.
+- These numbers come from one laptop running Linux under WSL2. Ratios vary
+  by machine.
 - H3 draws polygon edges as straight lines in latitude and longitude, not great
   circles. The edges here are short enough that the difference is far below
   one cell.

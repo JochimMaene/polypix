@@ -267,6 +267,13 @@ def plot_visits(
 def build_documentation_assets() -> str:
     """Run the scenario, write the maps, and return its documentation page."""
     result = analyze()
+    print(
+        f"Sentinel-2 docs timings (ms) | propagation and swath edges {result.swath_elapsed_s * 1000:.1f}"
+        f" | coverage {result.coverage_elapsed_s * 1000:.1f}"
+        f" | revisit and gap conversion {result.reduction_elapsed_s * 1000:.1f}"
+        f" | complete analysis {result.analysis_elapsed_s * 1000:.1f}",
+        flush=True,
+    )
     coordinates = map_coordinates(resolution=HEALPIX_RESOLUTION)
     plot_mean_gap(result, MEAN_GAP_FIGURE_PATH, coordinates=coordinates, dpi=170)
     plot_worst_gap(result, WORST_GAP_FIGURE_PATH, coordinates=coordinates, dpi=170)

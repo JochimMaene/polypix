@@ -290,6 +290,13 @@ def plot_germany_availability(
 def build_documentation_assets() -> str:
     """Run the scenario, write its map, and return its documentation page."""
     result = analyze()
+    print(
+        f"Starlink docs timings (ms) | TLE parsing {result.tle_parsing_elapsed_s * 1000:.1f}"
+        f" | propagation {result.propagation_elapsed_s * 1000:.1f}"
+        f" | coverage {result.coverage_elapsed_s * 1000:.1f}"
+        f" | complete analysis {result.analysis_elapsed_s * 1000:.1f}",
+        flush=True,
+    )
     coordinates = map_coordinates(resolution=HEALPIX_RESOLUTION)
     plot_availability(result, FIGURE_PATH, coordinates=coordinates, dpi=100)
     aoi_cells = germany_cells()
