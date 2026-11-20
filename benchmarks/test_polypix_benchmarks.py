@@ -895,6 +895,23 @@ def test_cover_cap_selected_count_small_request(
     )
 
 
+def test_cover_cap_constellation_ground_sites(benchmark, constellation_caps) -> None:
+    """One constellation timestamp at 1,024 ground sites spread across the globe."""
+    centers, radii = constellation_caps
+    sites = np.random.default_rng(71883).integers(0, px.cell_count(12), size=1024)
+    counts = benchmark(
+        px.cover_cap,
+        centers,
+        radii,
+        resolution=12,
+        candidate_cells=sites,
+        reduce=px.Count(),
+        threads=1,
+    )
+    assert counts.shape == sites.shape
+    assert int(counts.sum()) == 34_031
+
+
 def test_cover_cap_regional_constellation_count(benchmark, constellation_caps) -> None:
     centers, radii = constellation_caps
     requested = px.cover_cap(_lonlat_to_xyz(10.0, 51.0), 0.06, resolution=9).cells

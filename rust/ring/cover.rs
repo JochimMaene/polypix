@@ -867,6 +867,41 @@ fn regional_cap_counts(
     })
 }
 
+// A cap's axis lies within one chord radius of every site it covers.
+const CAP_BINS_PER_AXIS: usize = 8;
+
+fn cap_bin(coordinate: f64) -> usize {
+    (((coordinate + 1.0) * (CAP_BINS_PER_AXIS as f64 / 2.0)) as usize).min(CAP_BINS_PER_AXIS - 1)
+}
+
+fn count_direct_caps(caps: &[[f64; 4]], point: Vec3) -> i64 {
+    caps.iter()
+        .filter(|cap| squared_chord_contains([cap[0], cap[1], cap[2]], cap[3], point))
+        .count() as i64
+}
+
+struct CapBins {
+    bins: Vec<Vec<[f64; 4]>>,
+    reach: f64,
+}
+
+impl CapBins {
+    fn count(&self, point: Vec3) -> i64 {
+        let [x, y, z] = point
+            .map(|coordinate| cap_bin(coordinate - self.reach)..=cap_bin(coordinate + self.reach));
+        let mut count = 0;
+        for i in x {
+            for j in y.clone() {
+                let base = (i * CAP_BINS_PER_AXIS + j) * CAP_BINS_PER_AXIS;
+                for bin in &self.bins[base + z.start()..=base + z.end()] {
+                    count += count_direct_caps(bin, point);
+                }
+            }
+        }
+        count
+    }
+}
+
 /// Count how many caps contain each cell.
 ///
 /// Returns `None` for a selected query when building coverage once and counting
@@ -932,12 +967,31 @@ pub(crate) fn count_caps_per_cell(
                 }
             }
         }
-        let mut tested_caps = Vec::new();
-        tested_caps.try_reserve_exact(radii.len()).map_err(|_| {
+        let memory_error = |_| {
             NativeError::out_of_memory(
                 "Selected cap-count working data is too large to fit in memory.",
             )
-        })?;
+        };
+        // A compact selection already prunes against its bounding box. For
+        // scattered sites, bin narrow caps once and reuse the bins at each site.
+        let mut bins = None;
+        if cells.len() >= 64 && radii.len() >= 1024 && (0..3).any(|k| maximum[k] - minimum[k] > 0.5)
+        {
+            let radius = radii.iter().copied().fold(0.0, f64::max);
+            if radius <= 0.5 {
+                bins = Some(CapBins {
+                    bins: try_collect_indexed(CAP_BINS_PER_AXIS.pow(3), false, |_| Vec::new())?,
+                    // An arc bounds its chord. Include the tolerance applied by cap_input.
+                    reach: radius + CONTAINMENT_EPSILON + 32.0 * f64::EPSILON,
+                });
+            }
+        }
+        let mut tested_caps = Vec::new();
+        if bins.is_none() {
+            tested_caps
+                .try_reserve_exact(radii.len())
+                .map_err(memory_error)?;
+        }
         for input in cap_inputs(centers, radii, 0) {
             let (axis, radius) = input?;
             if prune && radius <= std::f64::consts::FRAC_PI_2 {
@@ -951,9 +1005,21 @@ pub(crate) fn count_caps_per_cell(
                     continue;
                 }
             }
-            tested_caps.push(packed_cap_center(axis, radius));
+            let packed = packed_cap_center(axis, radius);
+            if let Some(bins) = &mut bins {
+                let [x, y, z] = axis.map(cap_bin);
+                let bin = &mut bins.bins[(x * CAP_BINS_PER_AXIS + y) * CAP_BINS_PER_AXIS + z];
+                bin.try_reserve(1).map_err(memory_error)?;
+                bin.push(packed);
+            } else {
+                tested_caps.push(packed);
+            }
         }
-        let work = cells.len().saturating_mul(tested_caps.len());
+        let work = cells.len().saturating_mul(if bins.is_some() {
+            radii.len() / CAP_BINS_PER_AXIS
+        } else {
+            tested_caps.len()
+        });
         let all_direct = tested_caps.iter().all(|cap| cap[3] >= 0.0);
         let mut counts = Vec::new();
         counts.try_reserve_exact(cells.len()).map_err(|_| {
@@ -967,13 +1033,11 @@ pub(crate) fn count_caps_per_cell(
             |parallel| {
                 let count = |cell: u64| {
                     let point = center(cell, resolution);
+                    if let Some(bins) = &bins {
+                        return bins.count(point);
+                    }
                     if all_direct {
-                        tested_caps
-                            .iter()
-                            .filter(|cap| {
-                                squared_chord_contains([cap[0], cap[1], cap[2]], cap[3], point)
-                            })
-                            .count() as i64
+                        count_direct_caps(&tested_caps, point)
                     } else {
                         tested_caps
                             .iter()

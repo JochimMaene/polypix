@@ -134,6 +134,15 @@ The selected-cell path is covered by the same public CodSpeed suite. Its exact
 cost depends on how many cells are requested, so this example makes no separate
 wall-clock claim for Germany.
 
+For a network of ground stations, put their Earth-fixed Cartesian directions
+in an array `station_xyz` of shape `(stations, 3)`. Each station receives its
+hourly mean in input order, including stations that share a cell.
+
+```python
+site_cells = px.cell_at(station_xyz, resolution=12)
+mean_visible = analyze(resolution=12, candidate_cells=site_cells).mean_visible
+```
+
 ## Run the example
 
 ```bash

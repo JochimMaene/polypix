@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::mem::size_of;
+use std::ops::Range;
 
 use rayon::prelude::*;
 
@@ -71,7 +72,7 @@ fn validate_run_sources(
 // headroom for the touched-cell indices (at most one per cell).
 const DENSE_STATE_MAX_BYTES: usize = 128 * 1024 * 1024;
 const DENSE_MINIMUM_WORK_DIVISOR: usize = 8;
-const NEVER_SEGMENT: u32 = u32::MAX;
+const MAX_CACHED_ROWS: usize = 1 << 17;
 
 fn dense_state_length(resolution: u8, total_hits: usize, element_bytes: usize) -> Option<usize> {
     let cell_count = usize::try_from(ring::raw_cell_count(resolution)).ok()?;
@@ -236,8 +237,8 @@ pub(crate) struct RevisitStats {
 
 /// Per-cell accumulator for one streaming pass over the segment axis.
 ///
-/// `last_segment + 1` is the current run's stop, so no separate stop field is
-/// needed. `run_count == 0` marks a cell that has not qualified yet.
+/// `last_stop` is the exclusive end of the most recent visit. Zero marks a
+/// cell that has not qualified yet.
 ///
 /// Every counter is 32-bit because `validate_run_sources` rejects more than
 /// `u32::MAX` segments: a cell cannot hold more runs than there are segments,
@@ -247,7 +248,7 @@ pub(crate) struct RevisitStats {
 #[derive(Clone, Copy)]
 struct StatsState {
     interval_count: u32,
-    last_segment: u32,
+    last_stop: u32,
     run_count: u32,
     first_start: u32,
     gap_sum: u32,
@@ -257,7 +258,7 @@ struct StatsState {
 impl StatsState {
     const EMPTY: Self = Self {
         interval_count: 0,
-        last_segment: NEVER_SEGMENT,
+        last_stop: 0,
         run_count: 0,
         first_start: 0,
         gap_sum: 0,
@@ -266,17 +267,20 @@ impl StatsState {
 
     /// Fold one qualifying segment into the cell, opening or extending a run.
     fn observe(&mut self, segment: u32) {
-        if self.last_segment == NEVER_SEGMENT || self.last_segment + 1 != segment {
-            if self.run_count == 0 {
-                self.first_start = segment;
-            } else {
-                let gap = segment - (self.last_segment + 1);
-                self.gap_sum += gap;
-                self.max_gap = self.max_gap.max(gap);
-            }
+        let stop = segment + 1;
+        if self.last_stop == stop {
+            return;
+        }
+        if self.last_stop == 0 {
+            self.first_start = segment;
+            self.run_count = 1;
+        } else if self.last_stop < segment {
+            let gap = segment - self.last_stop;
+            self.gap_sum += gap;
+            self.max_gap = self.max_gap.max(gap);
             self.run_count += 1;
         }
-        self.last_segment = segment;
+        self.last_stop = stop;
     }
 }
 
@@ -291,7 +295,7 @@ fn push_stats(out: &mut RevisitStats, cell: u64, state: &StatsState) {
     out.maximum_internal_gap_steps
         .push(u64::from(state.max_gap));
     out.first_start.push(u64::from(state.first_start));
-    out.last_stop.push(u64::from(state.last_segment) + 1);
+    out.last_stop.push(u64::from(state.last_stop));
 }
 
 /// Statistics output sized for the exact number of observed cells, so the
@@ -324,6 +328,36 @@ fn empty_stats() -> RevisitStats {
     }
 }
 
+/// Cache row endpoints together so workers can skip distant footprints
+/// without reading two cache lines from their cell lists.
+fn cache_sorted_row_bounds(
+    sources: SegmentedSources<'_>,
+    start_segment: usize,
+    cell_count: u32,
+    bounds: &mut [(u32, u32)],
+) -> bool {
+    let source_count = sources.cell_arrays.len();
+    bounds
+        .par_chunks_mut(source_count)
+        .enumerate()
+        .all(|(i, rows)| {
+            for (bounds, cells) in rows
+                .iter_mut()
+                .zip(sources.segment_slices(start_segment + i))
+            {
+                if let (Some(&first), Some(&last)) = (cells.first(), cells.last()) {
+                    if last >= u64::from(cell_count) || !cells.is_sorted() {
+                        return false;
+                    }
+                    *bounds = (first as u32, last as u32);
+                } else {
+                    *bounds = (u32::MAX, 0);
+                }
+            }
+            true
+        })
+}
+
 /// Replay the timeline in order, giving each worker a disjoint band of cells.
 fn observe_dense_union(
     sources: SegmentedSources<'_>,
@@ -332,22 +366,24 @@ fn observe_dense_union(
     resolution: u8,
     workers: usize,
 ) -> NativeResult<()> {
-    let cell_count = states.len() as u64;
-    let fill = |first: u64, states: &mut [StatsState]| -> NativeResult<()> {
+    let source_count = sources.cell_arrays.len();
+    let fill = |first: u64,
+                states: &mut [StatsState],
+                segments: Range<usize>,
+                bounds: Option<&[(u32, u32)]>|
+     -> NativeResult<()> {
         let stop = first + states.len() as u64;
-        for segment in 0..segment_count {
-            for mut cells in sources.segment_slices(segment) {
-                if states.len() as u64 != cell_count {
-                    let (Some(&low), Some(&high)) = (cells.first(), cells.last()) else {
-                        continue;
-                    };
-                    if high < first || low >= stop {
+        for (row, segment) in segments.enumerate() {
+            for (source, mut cells) in sources.segment_slices(segment).enumerate() {
+                if let Some(bounds) = bounds {
+                    let (low, high) = bounds[row * source_count + source];
+                    if u64::from(high) < first || u64::from(low) >= stop {
                         continue;
                     }
-                    if low < first {
+                    if u64::from(low) < first {
                         cells = &cells[cells.partition_point(|&c| c < first)..];
                     }
-                    if high >= stop {
+                    if u64::from(high) >= stop {
                         cells = &cells[..cells.partition_point(|&c| c < stop)];
                     }
                 }
@@ -356,9 +392,7 @@ fn observe_dense_union(
                     let Some(state) = index.and_then(|index| states.get_mut(index)) else {
                         return Err(invalid_source_cell(cell, resolution));
                     };
-                    if state.last_segment != segment as u32 {
-                        state.observe(segment as u32);
-                    }
+                    state.observe(segment as u32);
                 }
             }
         }
@@ -366,24 +400,36 @@ fn observe_dense_union(
     };
     // Native footprints are ordered. Imported rows may be unsorted, and an
     // out-of-grid hit must reach the validating loop rather than be trimmed.
-    if workers > 1
-        && (0..segment_count)
-            .into_par_iter()
-            .with_min_len(256)
-            .all(|i| {
-                sources.segment_slices(i).all(|cells| {
-                    cells.last().is_none_or(|&last| last < cell_count) && cells.is_sorted()
-                })
-            })
-    {
-        let chunk_size = states.len().div_ceil(workers);
-        states
-            .par_chunks_mut(chunk_size)
-            .enumerate()
-            .try_for_each(|(i, states)| fill((i * chunk_size) as u64, states))
-    } else {
-        fill(0, states)
+    if workers <= 1 || segment_count == 0 {
+        return fill(0, states, 0..segment_count, None);
     }
+    // Limit the endpoint cache to 1 MiB, or one segment for very many sources.
+    let block_size = (MAX_CACHED_ROWS / source_count).max(1).min(segment_count);
+    let Some(mut bounds) = try_dense_states(block_size * source_count, (0, 0)) else {
+        return fill(0, states, 0..segment_count, None);
+    };
+    let cell_count = u32::try_from(states.len()).expect("dense grid fits in u32");
+    let chunk_size = states.len().div_ceil(workers);
+    for start in (0..segment_count).step_by(block_size) {
+        let segments = start..start.saturating_add(block_size).min(segment_count);
+        let rows = &mut bounds[..segments.len() * source_count];
+        if cache_sorted_row_bounds(sources, start, cell_count, rows) {
+            states
+                .par_chunks_mut(chunk_size)
+                .enumerate()
+                .try_for_each(|(i, states)| {
+                    fill(
+                        (i * chunk_size) as u64,
+                        states,
+                        segments.clone(),
+                        Some(rows),
+                    )
+                })?;
+        } else {
+            fill(0, states, segments, None)?;
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn revisit_stats(
@@ -483,9 +529,7 @@ pub(crate) fn revisit_stats(
                             .map_err(|_| stats_out_of_memory_error())?;
                     }
                     let state = states.entry(cell).or_insert(StatsState::EMPTY);
-                    if state.last_segment != segment {
-                        state.observe(segment);
-                    }
+                    state.observe(segment);
                 }
             }
         }
@@ -693,6 +737,26 @@ mod tests {
         assert!(
             super::observe_dense_union(sources, 3, &mut [StatsState::EMPTY; 12], 0, 3).is_err()
         );
+    }
+
+    #[test]
+    fn dense_union_carries_visits_across_sorted_and_unsorted_blocks() {
+        let split = super::MAX_CACHED_ROWS;
+        let mut cells = vec![3; split];
+        cells.extend([3, 2, 3]);
+        let mut offsets: Vec<u64> = (0..=split as u64).collect();
+        offsets.extend([split as u64 + 2, split as u64 + 2, split as u64 + 3]);
+        let cell_arrays = [cells.as_slice()];
+        let offset_arrays = [offsets.as_slice()];
+        let sources = super::SegmentedSources::new(&cell_arrays, &offset_arrays);
+        let mut states = [StatsState::EMPTY; 12];
+        super::observe_dense_union(sources, split + 3, &mut states, 0, 3).unwrap();
+
+        assert_eq!(states[2].first_start, split as u32);
+        assert_eq!(states[2].last_stop, split as u32 + 1);
+        assert_eq!(states[3].run_count, 2);
+        assert_eq!(states[3].gap_sum, 1);
+        assert_eq!(states[3].last_stop, split as u32 + 3);
     }
 
     #[test]

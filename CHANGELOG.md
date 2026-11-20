@@ -16,6 +16,11 @@ omitted.
 
 ### Performance
 
+- Counting constellation visibility at geographically dispersed ground sites
+  now searches nearby cap centers.
+- Dense revisit analyses share each footprint's cell range across workers so
+  they can skip swaths outside their part of the grid.
+
 - Center-sampled sweeps and quadrilaterals emit contiguous runs of interior
   cells directly. Cap counts skip latitude rings outside the cap.
 
