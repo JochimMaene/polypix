@@ -218,6 +218,40 @@ def test_allocation_failures_raise_instead_of_aborting() -> None:
     assert result.stdout.strip() == "survived"
 
 
+_LATE_INVALID_SWEEP = """
+import resource
+import numpy as np
+import polypix as px
+
+with open("/proc/self/status") as status:
+    size = next(int(line.split()[1]) << 10 for line in status if line.startswith("VmSize:"))
+left = np.array([[1.0, 0.0, 0.0], [0.99, 0.1, 0.0], [0.0, 0.0, 0.0]])
+right = np.array([[1.0, 0.0, 0.05], [0.99, 0.1, 0.05], [0.98, 0.2, 0.05]])
+_, hard = resource.getrlimit(resource.RLIMIT_AS)
+resource.setrlimit(resource.RLIMIT_AS, (size + (64 << 20), hard))
+try:
+    px.cover_sweep(left, right, resolution=16, threads=1)
+except ValueError as error:
+    print(error)
+"""
+
+
+@pytest.mark.skipif(
+    not sys.platform.startswith("linux"), reason="needs RLIMIT_AS, /proc"
+)
+def test_sweep_reports_a_late_invalid_sample_before_covering() -> None:
+    # The valid first segment alone needs over 100 MiB at resolution 16, so a
+    # sample check that waits for the scan runs out of memory first.
+    result = subprocess.run(
+        [sys.executable, "-c", _LATE_INVALID_SWEEP],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert result.stdout.strip() == "left_edge_xyz[2] must not be zero-length."
+
+
 def test_cap_ending_exactly_at_longitude_zero_includes_that_cell() -> None:
     # The cap's longitude span ends exactly at 2 pi, the center of cell 4.
     axis = [math.cos(0.1), -math.sin(0.1), 0.0]

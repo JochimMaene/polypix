@@ -10,7 +10,7 @@ use std::ops::Range;
 use rayon::prelude::*;
 
 use crate::error::{NativeError, NativeResult, COVERAGE_OUT_OF_MEMORY};
-use crate::geometry::{dot, normalize, Vec3, CONTAINMENT_EPSILON};
+use crate::geometry::{dot, normalize, vector_scale, Vec3, CONTAINMENT_EPSILON};
 
 use super::grid::{
     self, center, neighboring_cells, raw_cell_count, ring_of_cell, ring_start, validate_cell_range,
@@ -771,7 +771,7 @@ pub(super) fn zeroed_cap_deltas(cell_count: usize) -> NativeResult<Vec<i64>> {
     Ok(deltas)
 }
 
-fn add_cap_deltas(deltas: &mut [i64], cap: &Cap, resolution: u8) {
+pub(super) fn add_cap_deltas(deltas: &mut [i64], cap: &Cap, resolution: u8) {
     visit_cap_ranges(cap, resolution, |cells| {
         deltas[cells.start as usize] += 1;
         deltas[cells.end as usize] -= 1;
@@ -1174,10 +1174,13 @@ fn count_caps_by_input(
         let start = range.start;
         let end = range.end;
         let mut deltas = zeroed_cap_deltas(cell_count)?;
-        for input in cap_inputs(&centers[3 * start..3 * end], &radii[start..end], start) {
-            let (axis, radius) = input?;
-            add_cap_deltas(&mut deltas, &scan_cap(axis, radius), resolution);
-        }
+        add_cap_batch(
+            &centers[3 * start..3 * end],
+            &radii[start..end],
+            start,
+            resolution,
+            &mut deltas,
+        )?;
         Ok(deltas)
     })?;
     counts.pop();
@@ -1287,9 +1290,14 @@ fn count_caps_chunked(
     Ok(deltas)
 }
 
+fn edge_sample(edge: &[f64], i: usize, name: &str) -> NativeResult<Vec3> {
+    let v = &edge[i * 3..i * 3 + 3];
+    Ok(normalize([v[0], v[1], v[2]]).map_err(|error| format!("{name}[{i}] {error}"))?)
+}
+
 pub(super) fn compute_sweep_chunk(
-    left: &[Vec3],
-    right: &[Vec3],
+    left: &[f64],
+    right: &[f64],
     range: Range<usize>,
     resolution: u8,
     overlap: bool,
@@ -1311,8 +1319,14 @@ pub(super) fn compute_sweep_chunk(
         .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
     let mut coverage = Coverage { cells, offsets };
     coverage.offsets.push(0);
+    let mut l = edge_sample(left, range.start, "left_edge_xyz")?;
+    let mut r = edge_sample(right, range.start, "right_edge_xyz")?;
     for index in range {
-        let footprint = prepare_sweep_footprint(left, right, index)?;
+        let next_l = edge_sample(left, index + 1, "left_edge_xyz")?;
+        let next_r = edge_sample(right, index + 1, "right_edge_xyz")?;
+        let footprint = prepare_sweep_footprint([l, r, next_r, next_l], index)?;
+        l = next_l;
+        r = next_r;
         if overlap {
             footprint.cover_overlap(resolution, &mut coverage.cells)?;
         } else {
@@ -1351,8 +1365,15 @@ pub(crate) fn cover_sweep(
         }
         Ok(samples)
     };
-    let normalized_left = normalize_samples(left, "left_edge_xyz")?;
-    let normalized_right = normalize_samples(right, "right_edge_xyz")?;
+    // Check every sample before any segment allocates, so a bad late sample
+    // is reported as such rather than after a large partial coverage. The
+    // chunks then normalize each sample as they reach it.
+    for (values, name) in [(left, "left_edge_xyz"), (right, "right_edge_xyz")] {
+        for (index, value) in values.chunks_exact(3).enumerate() {
+            vector_scale([value[0], value[1], value[2]])
+                .map_err(|error| format!("{name}[{index}] {error}"))?;
+        }
+    }
     if sample_count < 2 {
         return Ok(Coverage {
             cells: Vec::new(),
@@ -1370,7 +1391,9 @@ pub(crate) fn cover_sweep(
             candidates.len(),
         )
     }) {
-        let prepare = |index| prepare_sweep_footprint(&normalized_left, &normalized_right, index);
+        let l = normalize_samples(left, "left_edge_xyz")?;
+        let r = normalize_samples(right, "right_edge_xyz")?;
+        let prepare = |i: usize| prepare_sweep_footprint([l[i], r[i], r[i + 1], l[i + 1]], i);
         return if overlap {
             compute_candidate_coverage::<true, _>(
                 segment_count,
@@ -1403,15 +1426,7 @@ pub(crate) fn cover_sweep(
         segment_count,
         parallel_work >= SCAN_PARALLEL_MIN_WORK,
         threads,
-        |range| {
-            compute_sweep_chunk(
-                &normalized_left,
-                &normalized_right,
-                range,
-                resolution,
-                overlap,
-            )
-        },
+        |range| compute_sweep_chunk(left, right, range, resolution, overlap),
     )
 }
 

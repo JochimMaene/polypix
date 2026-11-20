@@ -56,7 +56,9 @@ pub(crate) fn norm(vector: Vec3) -> f64 {
     (vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]).sqrt()
 }
 
-pub(crate) fn normalize(vector: Vec3) -> Result<Vec3, String> {
+/// The largest absolute component, after the checks `normalize` makes. A
+/// vector that passes always normalizes, so callers can validate up front.
+pub(crate) fn vector_scale(vector: Vec3) -> Result<f64, String> {
     if !vector.iter().all(|value| value.is_finite()) {
         return Err("must contain only finite values.".to_owned());
     }
@@ -67,6 +69,11 @@ pub(crate) fn normalize(vector: Vec3) -> Result<Vec3, String> {
     if scale == 0.0 {
         return Err("must not be zero-length.".to_owned());
     }
+    Ok(scale)
+}
+
+pub(crate) fn normalize(vector: Vec3) -> Result<Vec3, String> {
+    let scale = vector_scale(vector)?;
     let scaled = [vector[0] / scale, vector[1] / scale, vector[2] / scale];
     let inverse_length = (scaled[0] * scaled[0] + scaled[1] * scaled[1] + scaled[2] * scaled[2])
         .sqrt()

@@ -317,6 +317,81 @@ fn stats_with_capacity(cell_count: usize) -> NativeResult<RevisitStats> {
     Ok(out)
 }
 
+const STATS_BAND_CELLS: usize = 1 << 14;
+
+/// Gather the observed cells of a dense grid, one band of cells per task.
+/// The six outputs are fresh memory, so most of the cost is first-touch page
+/// faults, which only overlap when the bands are written in parallel.
+fn dense_stats(states: &[StatsState], parallel: bool) -> NativeResult<RevisitStats> {
+    let observed = |band: &[StatsState]| band.iter().filter(|s| s.run_count != 0).count();
+    let mut counts = Vec::new();
+    counts
+        .try_reserve_exact(states.len().div_ceil(STATS_BAND_CELLS))
+        .map_err(|_| stats_out_of_memory_error())?;
+    if parallel {
+        counts.par_extend(states.par_chunks(STATS_BAND_CELLS).map(observed));
+    } else {
+        counts.extend(states.chunks(STATS_BAND_CELLS).map(observed));
+    }
+    let total = counts.iter().sum();
+    let mut out = stats_with_capacity(total)?;
+    let mut rest = [
+        &mut out.cells,
+        &mut out.run_counts,
+        &mut out.internal_gap_steps_sum,
+        &mut out.maximum_internal_gap_steps,
+        &mut out.first_start,
+        &mut out.last_stop,
+    ]
+    .map(|values| &mut values.spare_capacity_mut()[..total]);
+    let mut pieces = Vec::new();
+    pieces
+        .try_reserve_exact(counts.len())
+        .map_err(|_| stats_out_of_memory_error())?;
+    for (band, (states, &count)) in states.chunks(STATS_BAND_CELLS).zip(&counts).enumerate() {
+        let outputs = rest.each_mut().map(|values| {
+            let (head, tail) = std::mem::take(values).split_at_mut(count);
+            *values = tail;
+            head
+        });
+        pieces.push((band * STATS_BAND_CELLS, states, outputs));
+    }
+    let write = |(first, states, mut outputs): (usize, &[StatsState], [&mut [_]; 6])| {
+        let observed = states.iter().enumerate().filter(|(_, s)| s.run_count != 0);
+        for (slot, (offset, s)) in observed.enumerate() {
+            let values = [
+                (first + offset) as u64,
+                u64::from(s.run_count),
+                u64::from(s.gap_sum),
+                u64::from(s.max_gap),
+                u64::from(s.first_start),
+                u64::from(s.last_stop),
+            ];
+            for (output, value) in outputs.iter_mut().zip(values) {
+                output[slot] = std::mem::MaybeUninit::new(value);
+            }
+        }
+    };
+    if parallel {
+        pieces.into_par_iter().for_each(write);
+    } else {
+        pieces.into_iter().for_each(write);
+    }
+    for values in [
+        &mut out.cells,
+        &mut out.run_counts,
+        &mut out.internal_gap_steps_sum,
+        &mut out.maximum_internal_gap_steps,
+        &mut out.first_start,
+        &mut out.last_stop,
+    ] {
+        // SAFETY: each band wrote one value per observed cell to its own
+        // disjoint piece, and the pieces tile the `total` reserved slots.
+        unsafe { values.set_len(total) };
+    }
+    Ok(out)
+}
+
 fn empty_stats() -> RevisitStats {
     RevisitStats {
         cells: Vec::new(),
@@ -502,14 +577,10 @@ pub(crate) fn revisit_stats(
                     touched.clear();
                 }
             }
-            let observed = states.iter().filter(|state| state.run_count != 0).count();
-            let mut out = stats_with_capacity(observed)?;
-            for (cell, state) in states.iter().enumerate() {
-                if state.run_count != 0 {
-                    push_stats(&mut out, cell as u64, state);
-                }
-            }
-            return Ok(out);
+            let bands = states.len().div_ceil(STATS_BAND_CELLS);
+            return ring::run_with_parallelism(bands, bands >= 4, None, |parallel| {
+                dense_stats(&states, parallel)
+            });
         }
     }
 
@@ -805,6 +876,53 @@ mod tests {
         let both = revisit_stats(&cells, &offsets, 6, 2).unwrap();
         assert!(both.run_counts.iter().all(|&count| count == 1));
         assert!(both.internal_gap_steps_sum.iter().all(|&sum| sum == 0));
+    }
+
+    #[test]
+    fn dense_stats_bands_keep_cells_and_fields_aligned() {
+        // Resolution 7 splits the gather into twelve bands. Hits straddle the
+        // first band boundary and fill the last band, with empty bands between.
+        let boundary = super::STATS_BAND_CELLS as u64;
+        let last = ring::raw_cell_count(7);
+        let mut cells = [Vec::new(), Vec::new()];
+        let mut offsets = [vec![0], vec![0]];
+        for segment in 0..40_u64 {
+            cells[0].extend((boundary - 300..boundary + 300).filter(|c| (c + segment) % 4 != 0));
+            if segment % 2 == 0 {
+                cells[1].extend(last - 500..last);
+            }
+            for (cells, offsets) in cells.iter().zip(&mut offsets) {
+                offsets.push(cells.len() as u64);
+            }
+        }
+        let cells: Vec<&[u64]> = cells.iter().map(Vec::as_slice).collect();
+        let offsets: Vec<&[u64]> = offsets.iter().map(Vec::as_slice).collect();
+        let actual = revisit_stats(&cells, &offsets, 7, 1).unwrap();
+        assert_stats(&actual, &reference_stats(&cells, &offsets, 1));
+        assert!(actual.cells.contains(&(boundary - 1)) && actual.cells.contains(&boundary));
+
+        // Run the parallel gather directly, whatever this host's core count.
+        let mut states = vec![StatsState::EMPTY; last as usize];
+        let observed = [0, boundary - 1, boundary, 3 * boundary + 7, last - 1];
+        for (i, &cell) in observed.iter().enumerate() {
+            let i = i as u32;
+            states[cell as usize] = StatsState {
+                interval_count: 0,
+                last_stop: 10 * i + 6,
+                run_count: 10 * i + 1,
+                first_start: 10 * i + 5,
+                gap_sum: 10 * i + 2,
+                max_gap: 10 * i + 3,
+            };
+        }
+        let gathered = super::dense_stats(&states, true).unwrap();
+        let field = |offset: u64| (0..5).map(|i| 10 * i + offset).collect::<Vec<_>>();
+        assert_eq!(gathered.cells, observed);
+        assert_eq!(gathered.run_counts, field(1));
+        assert_eq!(gathered.internal_gap_steps_sum, field(2));
+        assert_eq!(gathered.maximum_internal_gap_steps, field(3));
+        assert_eq!(gathered.first_start, field(5));
+        assert_eq!(gathered.last_stop, field(6));
     }
 
     #[test]

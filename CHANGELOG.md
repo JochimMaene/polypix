@@ -16,6 +16,9 @@ omitted.
 
 ### Performance
 
+- Global cap counts at resolutions up to 7 solve the ring crossings of eight
+  caps at once. Revisit statistics on large grids are gathered in parallel.
+
 - Counting constellation visibility at geographically dispersed ground sites
   now searches nearby cap centers.
 - Dense revisit analyses share each footprint's cell range across workers so
