@@ -537,18 +537,20 @@ pub(super) fn cap_inputs<'a>(
         .chunks_exact(3)
         .zip(radii)
         .enumerate()
-        .map(move |(index, (values, &radius))| {
-            let index = first_index + index;
-            let axis = normalize([values[0], values[1], values[2]])
-                .map_err(|error| format!("centers_xyz[{index}] {error}"))?;
-            if !radius.is_finite() || !(0.0..=std::f64::consts::PI).contains(&radius) {
-                return Err(format!(
-                    "radii_rad[{index}] must be finite and between 0 and pi."
-                ));
-            }
-            let effective_radius = (radius + CONTAINMENT_EPSILON).min(std::f64::consts::PI);
-            Ok((axis, effective_radius))
-        })
+        .map(move |(i, (v, &radius))| cap_input([v[0], v[1], v[2]], radius, first_index + i))
+}
+
+pub(super) fn cap_input(values: Vec3, radius: f64, index: usize) -> Result<(Vec3, f64), String> {
+    let axis = normalize(values).map_err(|error| format!("centers_xyz[{index}] {error}"))?;
+    if !(0.0..=std::f64::consts::PI).contains(&radius) {
+        return Err(format!(
+            "radii_rad[{index}] must be finite and between 0 and pi."
+        ));
+    }
+    Ok((
+        axis,
+        (radius + CONTAINMENT_EPSILON).min(std::f64::consts::PI),
+    ))
 }
 
 pub(super) fn scan_cap(axis: Vec3, effective_radius: f64) -> Cap {

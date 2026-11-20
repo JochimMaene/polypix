@@ -10,7 +10,7 @@ use std::ops::Range;
 use rayon::prelude::*;
 
 use crate::error::{NativeError, NativeResult, COVERAGE_OUT_OF_MEMORY};
-use crate::geometry::{normalize, Vec3};
+use crate::geometry::{dot, normalize, Vec3, CONTAINMENT_EPSILON};
 
 use super::grid::{
     self, center, neighboring_cells, raw_cell_count, ring_of_cell, ring_start, validate_cell_range,
@@ -778,6 +778,95 @@ fn add_cap_deltas(deltas: &mut [i64], cap: &Cap, resolution: u8) {
     });
 }
 
+const MAX_DELTA_ENTRIES: usize = (8 << 20) / size_of::<i64>();
+
+/// Count a dense regional selection by rejecting distant caps before preparing
+/// their geometry, then scanning just the latitude rings that reach the region.
+fn regional_cap_counts(
+    centers: &[f64],
+    radii: &[f64],
+    cells: &[u64],
+    resolution: u8,
+    threads: Option<usize>,
+) -> NativeResult<Option<Vec<i64>>> {
+    if cells.len() < 128 || radii.len() < 128 || resolution > MAX_CACHED_SCAN_RING_RESOLUTION {
+        return Ok(None);
+    }
+    let first = *cells.iter().min().unwrap();
+    let last = *cells.iter().max().unwrap();
+    // Leave invalid selections to the usual validation and error ordering.
+    if last >= raw_cell_count(resolution) {
+        return Ok(None);
+    }
+    let span = first..last + 1;
+    let length = span.end - first;
+    // Bound the cost of zeroing and prefix-summing scratch, even for sparse
+    // selections near a pole or on a very high resolution grid.
+    if length > (1 << 20) || length > (radii.len() as u64).saturating_mul(32) {
+        return Ok(None);
+    }
+    let nside = 1 << resolution;
+    let rings = ring_of_cell(last, nside) - ring_of_cell(first, nside) + 1;
+    if cells.len() as u64 / rings < 16 {
+        return Ok(None);
+    }
+
+    // Any selected center lies within reach of this anchor. Stop constructing
+    // the bound as soon as the selection proves too wide for regional pruning.
+    let anchor = center(first, resolution);
+    let mut reach_squared: f64 = 0.0;
+    for &cell in cells {
+        let point = center(cell, resolution);
+        let offset = std::array::from_fn(|k| point[k] - anchor[k]);
+        reach_squared = reach_squared.max(dot(offset, offset));
+        if reach_squared > 0.25 {
+            return Ok(None);
+        }
+    }
+    let reach = reach_squared.sqrt() + CONTAINMENT_EPSILON;
+    let chunk = |range: Range<usize>| {
+        let caps = centers[3 * range.start..3 * range.end]
+            .chunks_exact(3)
+            .zip(&radii[range.clone()])
+            .enumerate()
+            .filter_map(|(i, (v, &radius))| {
+                let axis = [v[0], v[1], v[2]];
+                // A hit requires |unit(axis) - anchor| <= radius + reach (chord <= arc).
+                // Square the dot-product bound to avoid normalizing distant directions.
+                let extent = radius + reach;
+                let threshold = 1.0 - 0.5 * extent * extent - 64.0 * f64::EPSILON;
+                let length_squared = dot(axis, axis);
+                if (0.0..=std::f64::consts::PI).contains(&radius)
+                    && length_squared.is_normal()
+                    && threshold > 0.0
+                    && dot(axis, anchor).max(0.0).powi(2) < threshold * threshold * length_squared
+                {
+                    return None;
+                }
+                Some(
+                    cap_input(axis, radius, range.start + i)
+                        .map(|(axis, radius)| scan_cap(axis, radius))
+                        .map_err(NativeError::from),
+                )
+            });
+        count_caps_in_cell_span(caps, resolution, cells, span.clone())
+    };
+    // Each worker owns one span and its selected counts. Share the same
+    // scratch budget as the dense counter and amortize each new span.
+    let entries = length as usize + 1;
+    let max_workers = (MAX_DELTA_ENTRIES / entries.saturating_add(cells.len()))
+        .min(radii.len() / (entries / 8).max(4096))
+        .max(1);
+    run_with_parallelism(max_workers, max_workers > 1, threads, |parallel| {
+        let workers = if parallel {
+            max_workers.min(rayon::current_num_threads())
+        } else {
+            1
+        };
+        sum_cap_chunks(radii.len(), workers, chunk).map(Some)
+    })
+}
+
 /// Count how many caps contain each cell.
 ///
 /// Returns `None` for a selected query when building coverage once and counting
@@ -790,10 +879,18 @@ pub(crate) fn count_caps_per_cell(
     threads: Option<usize>,
 ) -> NativeResult<Option<Vec<i64>>> {
     debug_assert!(resolution <= MAX_RESOLUTION);
+    if radii.len() > i64::MAX as usize {
+        return Err("Too many caps to represent overlap counts as int64."
+            .to_owned()
+            .into());
+    }
     // Choose before preparing geometry: a compact selection can accumulate
     // ring spans directly; wider selections can still fall back to coverage.
     let mut selected_span = None;
     if let Some(cells) = raw_cells {
+        if let Some(counts) = regional_cap_counts(centers, radii, cells, resolution, threads)? {
+            return Ok(Some(counts));
+        }
         let expected_hits = expected_total_hits(radii, resolution);
         if scanning_beats_testing(expected_hits, radii.len(), cells.len()) {
             validate_cell_range(cells, resolution, "cells")?;
@@ -811,16 +908,11 @@ pub(crate) fn count_caps_per_cell(
     let cell_count = usize::try_from(raw_cells_total).map_err(|_| {
         NativeError::out_of_memory("Dense cap-count result is too large to fit in memory.")
     })?;
-    if radii.len() > i64::MAX as usize {
-        return Err("Too many caps to represent overlap counts as int64."
-            .to_owned()
-            .into());
-    }
     if let Some(cells) = raw_cells {
         if let Some(span) = selected_span {
             let mut caps = prepare_caps(centers, radii)?;
             sort_caps_for_deltas(&mut caps, (span.end - span.start) as usize);
-            return count_caps_in_cell_span(&caps, resolution, cells, span).map(Some);
+            return count_caps_in_cell_span(caps.iter().map(Ok), resolution, cells, span).map(Some);
         }
         if let Err(cell_error) = validate_cell_range(cells, resolution, "cells") {
             // Direct counting has always reported invalid caps before invalid cells.
@@ -905,7 +997,6 @@ pub(crate) fn count_caps_per_cell(
     }
     // For a large batch on a compact grid, give each worker its own deltas.
     // It can then validate, prepare and consume each cap exactly once.
-    const MAX_DELTA_ENTRIES: usize = (8 << 20) / size_of::<i64>();
     let max_workers =
         (MAX_DELTA_ENTRIES / (cell_count + 1)).min(radii.len() / (cell_count / 64).max(1024));
     if max_workers >= 2 {
@@ -953,8 +1044,8 @@ fn sort_caps_for_deltas(caps: &mut [Cap], delta_cells: usize) {
 }
 
 /// Count only the bounded RING span containing a selection, without cell hits.
-fn count_caps_in_cell_span(
-    caps: &[Cap],
+fn count_caps_in_cell_span<T: Borrow<Cap>>(
+    caps: impl IntoIterator<Item = NativeResult<T>>,
     resolution: u8,
     cells: &[u64],
     span: Range<u64>,
@@ -965,6 +1056,8 @@ fn count_caps_in_cell_span(
         let first_ring = ring_of_cell(span.start, nside);
         let last_ring = ring_of_cell(span.end - 1, nside);
         for cap in caps {
+            let cap = cap?;
+            let cap = cap.borrow();
             let mut count_range = |range: Range<u64>| {
                 let start = range.start.max(span.start);
                 let end = range.end.min(span.end);
@@ -1011,11 +1104,9 @@ fn count_caps_by_input(
     cell_count: usize,
     workers: usize,
 ) -> NativeResult<Vec<i64>> {
-    let chunk_size = radii.len().div_ceil(workers);
-    let chunks = radii.len().div_ceil(chunk_size);
-    let parts = try_collect_indexed(chunks, workers > 1, |i| -> NativeResult<_> {
-        let start = i * chunk_size;
-        let end = (start + chunk_size).min(radii.len());
+    let mut counts = sum_cap_chunks(radii.len(), workers, |range| {
+        let start = range.start;
+        let end = range.end;
         let mut deltas = zeroed_cap_deltas(cell_count)?;
         for input in cap_inputs(&centers[3 * start..3 * end], &radii[start..end], start) {
             let (axis, radius) = input?;
@@ -1023,15 +1114,30 @@ fn count_caps_by_input(
         }
         Ok(deltas)
     })?;
+    counts.pop();
+    prefix_sum(&mut counts);
+    Ok(counts)
+}
+
+fn sum_cap_chunks(
+    cap_count: usize,
+    workers: usize,
+    chunk: impl Fn(Range<usize>) -> NativeResult<Vec<i64>> + Sync,
+) -> NativeResult<Vec<i64>> {
+    if workers == 1 {
+        return chunk(0..cap_count);
+    }
+    let size = cap_count.div_ceil(workers);
+    let parts = try_collect_indexed(cap_count.div_ceil(size), true, |i| {
+        chunk(i * size..((i + 1) * size).min(cap_count))
+    })?;
     let mut parts = parts.into_iter();
     let mut counts = parts.next().expect("nonempty cap batch")?;
     for part in parts {
-        for (sum, delta) in counts.iter_mut().zip(part?) {
-            *sum += delta;
+        for (sum, value) in counts.iter_mut().zip(part?) {
+            *sum += value;
         }
     }
-    counts.pop();
-    prefix_sum(&mut counts);
     Ok(counts)
 }
 
@@ -1489,6 +1595,48 @@ mod tests {
     }
 
     #[test]
+    fn regional_counts_match_point_tests_and_validate_distant_inputs() {
+        let (mut axes, mut radii) = caps_along_equator(512, 0.14);
+        let resolution = 6;
+        // Eight partial rings across the longitude seam, with repeated cells.
+        let mut cells = Vec::new();
+        for ring in 125..133 {
+            let start = super::ring_start(64, ring);
+            cells.extend(start..start + 12);
+            cells.extend(start + 248..start + 256);
+        }
+        cells.reverse();
+        cells.extend_from_within(..8);
+        for (i, axis) in axes.chunks_exact_mut(3).enumerate() {
+            let scale = [1.0, 7000.0, 1e-300, 1e300][i % 4];
+            axis.iter_mut().for_each(|v| *v *= scale);
+        }
+        radii[..4].copy_from_slice(&[0.0, 0.5, 2.0, std::f64::consts::PI]);
+        let prepared = prepare_caps(&axes, &radii).unwrap();
+        let expected: Vec<_> = cells
+            .iter()
+            .map(|&cell| {
+                let point = super::center(cell, resolution);
+                prepared.iter().filter(|cap| cap.contains(point)).count() as i64
+            })
+            .collect();
+        let count = |axes: &[f64], radii: &[f64]| {
+            super::regional_cap_counts(axes, radii, &cells, resolution, Some(1))
+        };
+        assert_eq!(count(&axes, &radii).unwrap().unwrap(), expected);
+        radii[256] = -0.1;
+        assert!(count(&axes, &radii)
+            .unwrap_err()
+            .to_string()
+            .contains("radii_rad[256]"));
+        axes[256 * 3] = f64::NAN;
+        assert!(count(&axes, &radii)
+            .unwrap_err()
+            .to_string()
+            .contains("centers_xyz[256]"));
+    }
+
+    #[test]
     fn selected_cap_spans_match_full_counts_at_partial_rings_and_poles() {
         let (centers, _) = caps_along_equator(6, 0.0);
         let radii = [0.0, 0.2, 1.0, 2.0, std::f64::consts::PI, 0.01];
@@ -1499,7 +1647,8 @@ mod tests {
             for span in [0..total, 1..total - 1, total / 2..total / 2 + 1, 0..0] {
                 let mut cells = span.clone().rev().step_by(3).collect::<Vec<_>>();
                 cells.extend(cells.first().copied());
-                let actual = count_caps_in_cell_span(&caps, resolution, &cells, span).unwrap();
+                let actual =
+                    count_caps_in_cell_span(caps.iter().map(Ok), resolution, &cells, span).unwrap();
                 let expected = cells
                     .iter()
                     .map(|&cell| dense[cell as usize])

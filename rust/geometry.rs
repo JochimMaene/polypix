@@ -718,19 +718,31 @@ fn prepare_ring(raw_vertices: &[[f64; 3]]) -> Result<Ring, String> {
     if maximum_turn <= VALIDATION_TRIPLE_EPSILON {
         return Err("Ring is degenerate.".to_owned());
     }
-    for first in 0..projected.len() {
-        let first_next = (first + 1) % projected.len();
-        for second in (first + 1)..projected.len() {
-            let second_next = (second + 1) % projected.len();
-            if first == second || first_next == second || second_next == first {
-                continue;
+    // Disjoint x intervals cannot cross. Expand by the same endpoint tolerance
+    // as between() so touching edges still reach the full predicate.
+    let count = projected.len();
+    let mut edges: Vec<_> = (0..count).collect();
+    let x_min = |i: usize| projected[i][0].min(projected[(i + 1) % count][0]);
+    edges.sort_unstable_by(|&a, &b| x_min(a).total_cmp(&x_min(b)));
+    let max_x = projected.iter().map(|p| p[0].abs()).fold(0.0, f64::max);
+    let guard = 2.0 * CONTAINMENT_EPSILON * (1.0 + max_x);
+    for (i, &first) in edges.iter().enumerate() {
+        let first_next = (first + 1) % count;
+        let stop = projected[first][0].max(projected[first_next][0]) + guard;
+        for &second in &edges[i + 1..] {
+            if x_min(second) > stop {
+                break;
             }
-            if segments_touch_or_cross(
-                projected[first],
-                projected[first_next],
-                projected[second],
-                projected[second_next],
-            ) {
+            let second_next = (second + 1) % count;
+            if first_next != second
+                && second_next != first
+                && segments_touch_or_cross(
+                    projected[first],
+                    projected[first_next],
+                    projected[second],
+                    projected[second_next],
+                )
+            {
                 return Err("Ring must not cross or touch itself.".to_owned());
             }
         }
