@@ -41,6 +41,8 @@ pub(super) struct ScanRing {
     pub(super) ring: Ring,
     pub(super) step: f64,
     inverse_radial: f64,
+    /// sqrt(inverse_radial), the ring's share of the tangent rounding bound.
+    root_inverse_radial: f64,
     offsets_per_radian: f64,
     offset_padding: f64,
     pub(super) step_sine: f64,
@@ -60,6 +62,7 @@ impl ScanRing {
             ring,
             step,
             inverse_radial: ring.radial.recip(),
+            root_inverse_radial: ring.radial.recip().sqrt(),
             offsets_per_radian,
             offset_padding,
             step_sine,
@@ -600,12 +603,12 @@ pub(super) fn prepare_caps(centers: &[f64], radii: &[f64]) -> NativeResult<Vec<C
 /// Inclusive integer endpoints, widened only at a floating-point tie. Ring
 /// coordinates are finite and bounded by [-1, 2^31], so truncation is exact
 /// here and avoids four libm rounding calls per interval on baseline x86-64.
-fn interval_offsets(first: f64, last: f64, cells: u64) -> (i64, i64, bool) {
+fn interval_offsets(first: f64, last: f64, cells: u64, slack: f64) -> (i64, i64, bool) {
     let first_integer = first as i64;
     let last_integer = last as i64;
     let first_fraction = first - first_integer as f64;
     let last_fraction = last - last_integer as f64;
-    let uncertainty = INDEX_UNCERTAINTY_ULPS * f64::EPSILON * cells as f64;
+    let uncertainty = INDEX_UNCERTAINTY_ULPS * f64::EPSILON * cells as f64 + slack;
     let ambiguous =
         |fraction: f64| fraction.abs() <= uncertainty || 1.0 - fraction.abs() <= uncertainty;
     let ambiguous_first = ambiguous(first_fraction);
@@ -624,11 +627,13 @@ pub(super) fn cap_interval_range(
     step: f64,
     start: f64,
     end: f64,
+    slack: f64,
     next_unscanned: &mut i64,
 ) -> Option<Range<u64>> {
     let first_value = start / step - ring.shift;
     let last_value = end / step - ring.shift;
-    let (mut first, mut last, ambiguous) = interval_offsets(first_value, last_value, ring.cells);
+    let (mut first, mut last, ambiguous) =
+        interval_offsets(first_value, last_value, ring.cells, slack);
     first = first.max(0).max(*next_unscanned);
     last = last.min((ring.cells - 1) as i64);
     // The continuous solve is already much more precise than one discrete
@@ -681,7 +686,12 @@ fn visit_ring_cells_in_cap(cap: &Cap, ring: &Ring, visit: &mut impl FnMut(Range<
 /// Integer longitude bins for a narrow cap crossing. The validity flag keeps
 /// the four independent solves vectorizable, including their boundary guards.
 #[inline(always)]
-fn narrow_cap_bins(cap: &Cap, ring: &ScanRing, inverse_amplitude: f64) -> (i64, i64, bool) {
+fn narrow_cap_bins(
+    cap: &Cap,
+    ring: &ScanRing,
+    inverse_amplitude: f64,
+    cap_rounding: f64,
+) -> (i64, i64, bool) {
     let dr = ring.ring.radial - cap.radial;
     let dz = ring.ring.z - cap.axis[2];
     let available = cap.squared_chord_radius - (dr * dr + dz * dz);
@@ -701,7 +711,14 @@ fn narrow_cap_bins(cap: &Cap, ring: &ScanRing, inverse_amplitude: f64) -> (i64, 
     let first = (west - 0.5) + BIAS;
     let last = (east - 0.5) + BIAS;
     // For x <= 1/4 the omitted asin terms sum to less than (5/112) x^7 / (1-x^2).
-    let guard = scale * (0.1 * x * t * t * t + 2.0 * INDEX_UNCERTAINTY_ULPS * f64::EPSILON * TAU);
+    // Near a tangent, sqrt magnifies the rounding in `available`. Since
+    // |sqrt(a) - sqrt(b)| <= sqrt(|a - b|), x is off by at most
+    // sqrt(1024 eps * inverse_amplitude * inverse_radial), split per cap and ring.
+    let rounding = cap_rounding * ring.root_inverse_radial;
+    let guard = scale
+        * (0.1 * x * t * t * t
+            + 2.0 * rounding
+            + 2.0 * INDEX_UNCERTAINTY_ULPS * f64::EPSILON * TAU);
     let clear = (((west - 0.5) - (first - BIAS)).abs() < 0.5 - guard)
         & (((east - 0.5) - (last - BIAS)).abs() < 0.5 - guard);
     (
@@ -722,6 +739,7 @@ pub(super) fn visit_cap_ranges_in_rings(
         return;
     }
     let inverse_amplitude = 0.25 / cap.radial;
+    let cap_rounding = (1024.0 * f64::EPSILON * inverse_amplitude).sqrt();
     let mut emit = |scan_ring: &ScanRing, (first, end, valid): (i64, i64, bool)| {
         let ring = &scan_ring.ring;
         if !valid {
@@ -760,14 +778,17 @@ pub(super) fn visit_cap_ranges_in_rings(
         let mut groups = rings.chunks_exact(4);
         for group in &mut groups {
             let bins = std::array::from_fn::<_, 4, _>(|i| {
-                narrow_cap_bins(cap, &group[i], inverse_amplitude)
+                narrow_cap_bins(cap, &group[i], inverse_amplitude, cap_rounding)
             });
             for (ring, span) in group.iter().zip(bins) {
                 emit(ring, span);
             }
         }
         for ring in groups.remainder() {
-            emit(ring, narrow_cap_bins(cap, ring, inverse_amplitude));
+            emit(
+                ring,
+                narrow_cap_bins(cap, ring, inverse_amplitude, cap_rounding),
+            );
         }
     } else {
         for index in first_ring..=last_ring {
@@ -775,7 +796,7 @@ pub(super) fn visit_cap_ranges_in_rings(
             let span = if cap.complement {
                 (0, 0, false)
             } else {
-                narrow_cap_bins(cap, &ring, inverse_amplitude)
+                narrow_cap_bins(cap, &ring, inverse_amplitude, cap_rounding)
             };
             emit(&ring, span);
         }
@@ -861,6 +882,11 @@ fn visit_cap_ring(cap: &Cap, scan_ring: &ScanRing, visit: &mut impl FnMut(Range<
     };
     let interval_count = if start < 0.0 || end >= TAU { 2 } else { 1 };
     let step = scan_ring.step;
+    // Both half-width forms move by at most 4 sqrt(guard / amplitude) radians
+    // when `available` or `deficit` is off by the guard, since
+    // |sqrt(a) - sqrt(b)| <= sqrt(|a - b|). Near a tangent that dwarfs the
+    // index uncertainty, so test the cell centers there.
+    let slack = 4.0 * (numerical_guard / longitude_amplitude).sqrt() * scan_ring.offsets_per_radian;
     let mut next_unscanned = 0;
     for &(interval_start, interval_end) in intervals.iter().take(interval_count) {
         if let Some(range) = cap_interval_range(
@@ -869,6 +895,7 @@ fn visit_cap_ring(cap: &Cap, scan_ring: &ScanRing, visit: &mut impl FnMut(Range<
             step,
             interval_start,
             interval_end,
+            slack,
             &mut next_unscanned,
         ) {
             visit(range);
@@ -2299,7 +2326,7 @@ mod tests {
                     let ambiguous_first = (first - first.round()).abs() <= uncertainty;
                     let ambiguous_last = (last - last.round()).abs() <= uncertainty;
                     assert_eq!(
-                        super::interval_offsets(first, last, cells),
+                        super::interval_offsets(first, last, cells, 0.0),
                         (
                             first.ceil() as i64 - i64::from(ambiguous_first),
                             last.floor() as i64 + i64::from(ambiguous_last),
@@ -2642,6 +2669,74 @@ mod tests {
             &[6],
             "128-gon",
         );
+    }
+
+    #[test]
+    fn tangent_caps_match_center_tests_under_libm_rounding() {
+        // A cap tangent to a ring at a cell center leaves almost no squared
+        // chord for longitude, where sqrt magnifies any rounding. Nudge the
+        // libm-derived fields by a few ulps, as another platform might.
+        let ulps = |mut value: f64, k: i64| {
+            for _ in 0..k.unsigned_abs() {
+                value = if k < 0 {
+                    value.next_down()
+                } else {
+                    value.next_up()
+                };
+            }
+            value
+        };
+        let mut seed = 0x7A46_E417_u64;
+        for resolution in [2, 6, 9] {
+            let nside = 1_u64 << resolution;
+            for _ in 0..24 {
+                let index =
+                    (1 + (uniform(&mut seed) * (4 * nside - 1) as f64) as u64).min(4 * nside - 1);
+                let ring = ring_info(nside, index);
+                let offset = (uniform(&mut seed) * ring.cells as f64) as u64;
+                let point = center(ring.start + offset, resolution);
+                // Same longitude, so the closest approach is this cell center.
+                let latitude = point[2].asin() + 0.3 * (uniform(&mut seed) - 0.5);
+                let axis = normalize([
+                    point[0] * latitude.cos(),
+                    point[1] * latitude.cos(),
+                    latitude.sin() * (point[0].hypot(point[1])),
+                ])
+                .unwrap();
+                let chord = norm(std::array::from_fn(|k| axis[k] - point[k]));
+                let radius = 2.0 * (0.5 * chord).asin();
+                for radius in [radius.next_down(), radius, radius.next_up()] {
+                    let base = super::scan_cap(axis, radius);
+                    for (dr, dl) in (-3..=3).flat_map(|dr| (-3..=3).map(move |dl| (dr, dl))) {
+                        let mut cap = super::scan_cap(axis, radius);
+                        cap.radial = ulps(base.radial, dr);
+                        cap.longitude = ulps(base.longitude, dl);
+                        if !(0.0..TAU).contains(&cap.longitude) {
+                            continue;
+                        }
+                        let first = index.saturating_sub(1).max(1);
+                        let last = (index + 1).min(4 * nside - 1);
+                        let mut actual = Vec::new();
+                        super::visit_cap_ranges_in_rings(&cap, resolution, first, last, |r| {
+                            actual.extend(r)
+                        });
+                        let mut expected = Vec::new();
+                        for i in first..=last {
+                            let ring = ring_info(nside, i);
+                            expected.extend(
+                                (0..ring.cells)
+                                    .filter(|&j| cap.contains_on_ring(&ring, j))
+                                    .map(|j| ring.start + j),
+                            );
+                        }
+                        assert_eq!(
+                            actual, expected,
+                            "res {resolution} ring {index} dr {dr} dl {dl}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
