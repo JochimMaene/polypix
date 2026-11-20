@@ -815,7 +815,9 @@ fn regional_cap_counts(
     // the bound as soon as the selection proves too wide for regional pruning.
     let anchor = center(first, resolution);
     let mut reach_squared: f64 = 0.0;
-    for &cell in cells {
+    // The last cell is often the farthest. Testing it first lets a wide
+    // selection bail out before decoding every center.
+    for &cell in std::iter::once(&last).chain(cells) {
         let point = center(cell, resolution);
         let offset = std::array::from_fn(|k| point[k] - anchor[k]);
         reach_squared = reach_squared.max(dot(offset, offset));
