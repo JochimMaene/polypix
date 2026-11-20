@@ -2114,6 +2114,23 @@ impl<T: std::borrow::Borrow<PreparedFootprint>> PreparedFootprintOverlap<T> {
     }
 }
 
+/// Interior cells a short quad writes as one fixed block per ring.
+const RUN_BLOCK: usize = 8;
+
+/// The widest short quad, as transverse over radial reach. The bounds hold at
+/// any width but loosen with it, and the fringe they leave doubles in cells
+/// with each resolution. Through resolution 10, about 17 degrees either side
+/// still beats the general path, which takes in Sentinel-2 swaths at high
+/// latitude. Above that, polar rings also outgrow the direction table, and
+/// the interval solver wins beyond about ten degrees.
+fn max_short_quad_ratio(resolution: u8) -> f64 {
+    if resolution <= 10 {
+        0.3
+    } else {
+        0.18
+    }
+}
+
 /// Over a short longitude interval, bound each edge plane by two straight
 /// lines. Emit the certain interior as a run and test only its fringe.
 fn cover_short_quad(quad: &Quad, resolution: u8, cells: &mut Vec<u64>) -> NativeResult<bool> {
@@ -2138,8 +2155,7 @@ fn cover_short_quad(quad: &Quad, resolution: u8, cells: &mut Vec<u64>) -> Native
     }
     // Positive combinations of these vertices stay in their longitude
     // wedge. |atan(t)| <= |t|, including between vertices on a minor arc.
-    // Beyond about ten degrees either side, the linear bounds get loose.
-    if nearest < MIN_RADIAL || transverse > 0.18 * nearest {
+    if nearest < MIN_RADIAL || transverse > max_short_quad_ratio(resolution) * nearest {
         return Ok(false);
     }
     let half_width = transverse / nearest + SCAN_TOLERANCE / MIN_RADIAL + 128.0 * f64::EPSILON;
@@ -2227,8 +2243,9 @@ fn cover_short_quad(quad: &Quad, resolution: u8, cells: &mut Vec<u64>) -> Native
         let end = after(outer_east);
         let inner_first = after(max(west, max(w1.1, w2.1))).min(end);
         let inner_end = after(min(east, min(e1.0, e2.0))).max(inner_first);
+        // Room for this ring's cells plus a fixed-width interior write.
         cells
-            .try_reserve((end - first) as usize)
+            .try_reserve((end - first) as usize + RUN_BLOCK)
             .map_err(|_| NativeError::out_of_memory(crate::error::COVERAGE_OUT_OF_MEMORY))?;
         let fringe = |offsets: Range<u32>, cells: &mut Vec<u64>| {
             let directions = ring_directions(ring);
@@ -2237,16 +2254,38 @@ fn cover_short_quad(quad: &Quad, resolution: u8, cells: &mut Vec<u64>) -> Native
                     || ring.longitude_sin_cos(u64::from(offset)),
                     |d| d[offset as usize],
                 );
-                if quad_contains(quad, ring.radial * c, ring.radial * s, ring.z) {
-                    cells.push(ring.start + u64::from(offset));
-                }
+                // Keep the candidate only if it is inside, without a branch
+                // on a test that goes either way.
+                let inside = quad_contains(quad, ring.radial * c, ring.radial * s, ring.z);
+                let length = cells.len();
+                cells.spare_capacity_mut()[0].write(ring.start + u64::from(offset));
+                // SAFETY: the reservation covers every fringe cell, and the
+                // slot past the length was just initialized.
+                unsafe { cells.set_len(length + usize::from(inside)) };
             }
         };
         // Most rings have no fringe; skip the call and its register spills.
         if first < inner_first {
             fringe(first..inner_first, cells);
         }
-        cells.extend(ring.start + u64::from(inner_first)..ring.start + u64::from(inner_end));
+        let run = (inner_end - inner_first) as usize;
+        let run_start = ring.start + u64::from(inner_first);
+        if run <= RUN_BLOCK {
+            // A swath crosses a ring in a few cells. Write a whole block and
+            // keep the run, instead of a loop whose length mispredicts.
+            let length = cells.len();
+            for (offset, slot) in cells.spare_capacity_mut()[..RUN_BLOCK]
+                .iter_mut()
+                .enumerate()
+            {
+                slot.write(run_start + offset as u64);
+            }
+            // SAFETY: the reservation above left at least RUN_BLOCK spare
+            // slots, and the first `run` of them were just initialized.
+            unsafe { cells.set_len(length + run) };
+        } else {
+            cells.extend(run_start..run_start + run as u64);
+        }
         if inner_end < end {
             fringe(inner_end..end, cells);
         }
@@ -2981,7 +3020,7 @@ mod tests {
 
     #[test]
     fn short_quad_ranges_match_cover_centers_across_resolutions_and_cutoffs() {
-        let check = |resolution, axis: Vec3, angle: f64, along, across, eligible| {
+        let check = |resolution, axis: Vec3, angle: f64, along, across, eligible: Option<bool>| {
             let east = normalize(cross([0.0, 0.0, 1.0], axis)).unwrap();
             let north = cross(axis, east);
             let (sin, cos) = angle.sin_cos();
@@ -3001,7 +3040,9 @@ mod tests {
             let mut actual = Vec::new();
             let used = super::cover_short_quad(&quad, resolution, &mut actual).unwrap();
             let case = (resolution, axis, angle, along, across);
-            assert_eq!(used, eligible, "short quad dispatch for {case:?}");
+            if let Some(eligible) = eligible {
+                assert_eq!(used, eligible, "short quad dispatch for {case:?}");
+            }
             if !used {
                 assert!(actual.is_empty());
                 return;
@@ -3018,7 +3059,10 @@ mod tests {
                 },
             )
             .unwrap();
-            assert!(!expected.is_empty(), "empty reference for {case:?}");
+            assert!(
+                eligible.is_none() || !expected.is_empty(),
+                "empty reference for {case:?}"
+            );
             assert_eq!(actual, expected, "cell IDs for {case:?}");
         };
 
@@ -3033,7 +3077,21 @@ mod tests {
                 let angle = 0.2 + 1.12 * uniform(&mut seed);
                 let along = (0.02 + 0.06 * uniform(&mut seed)).min(40.0 / nside as f64);
                 let across = along * (0.1 + 0.8 * uniform(&mut seed));
-                check(resolution, axis, angle, along, across, true);
+                check(resolution, axis, angle, along, across, Some(true));
+            }
+        }
+
+        // Near the poles a swath interval spans many degrees of longitude.
+        // Compare every such quad the short path accepts.
+        for resolution in 4..=9 {
+            for _ in 0..300 {
+                let latitude = 50.0 + 32.0 * uniform(&mut seed);
+                let hemisphere = if uniform(&mut seed) < 0.5 { 1.0 } else { -1.0 };
+                let axis = lonlat(360.0 * uniform(&mut seed), hemisphere * latitude);
+                let angle = 3.0 * uniform(&mut seed);
+                let along = 0.01 + 0.06 * uniform(&mut seed);
+                let across = along * (0.2 + 0.8 * uniform(&mut seed));
+                check(resolution, axis, angle, along, across, None);
             }
         }
 
@@ -3041,9 +3099,13 @@ mod tests {
         // is along*cos(angle) + across*sin(angle).
         let axis = lonlat(90.0, 0.0);
         let angle = 0.65_f64;
-        for (ratio, eligible) in [(0.18 - 1e-10, true), (0.18 + 1e-10, false)] {
-            let along = ratio / (angle.cos() + 0.25 * angle.sin());
-            check(7, axis, angle, along, 0.25 * along, eligible);
+        // The cutoff narrows above resolution 10; check both sides of that.
+        for resolution in [10, 11] {
+            let cutoff = super::max_short_quad_ratio(resolution);
+            for (ratio, eligible) in [(cutoff - 1e-10, true), (cutoff + 1e-10, false)] {
+                let along = ratio / (angle.cos() + 0.25 * angle.sin());
+                check(resolution, axis, angle, along, 0.25 * along, Some(eligible));
+            }
         }
 
         // Resolution-12 polar rings 156 and 157 straddle radial = 1/32. A quad
@@ -3052,7 +3114,7 @@ mod tests {
             for index in [index, 4 * 4096 - index] {
                 let ring = ring_info(4096, index);
                 let axis = center(ring.start + ring.cells / 3, 12);
-                check(12, axis, angle, 3e-5, 1e-5, eligible);
+                check(12, axis, angle, 3e-5, 1e-5, Some(eligible));
             }
         }
     }

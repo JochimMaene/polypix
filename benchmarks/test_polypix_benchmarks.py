@@ -642,6 +642,41 @@ def test_cover_sweep_eo_day(benchmark, monkeypatch) -> None:
     assert coverage.cells.size == 64_831
 
 
+@pytest.mark.parametrize(
+    ("resolution", "cell_count"),
+    [(10, 5_753), (11, 22_996)],
+    ids=["resolution_10", "resolution_11"],
+)
+def test_cover_sweep_eo_turn(benchmark, monkeypatch, resolution, cell_count) -> None:
+    """Two one-minute intervals where the swath turns at its northernmost point.
+
+    Here an interval spans many degrees of longitude. The short-quad cutoff
+    widens through resolution 10 and narrows above it, so a misplaced
+    threshold slows one of these cases several times over.
+    """
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1]))
+    from examples.constellation import (
+        EARTH_RADIUS_KM,
+        constellation_centers,
+        swath_edges,
+    )
+
+    track = constellation_centers(
+        np.arange(1_441) * 60.0,
+        satellite_count=1,
+        plane_count=1,
+        altitude_km=786.0,
+        inclination_rad=math.radians(98.6),
+    )[:, 0]
+    left, right = swath_edges(track, half_width_rad=145.0 / EARTH_RADIUS_KM)
+    peak = int(np.argmax(track[:, 2]))
+    turn = slice(peak - 1, peak + 2)
+    coverage = benchmark(
+        px.cover_sweep, left[turn], right[turn], resolution=resolution, threads=1
+    )
+    assert coverage.cells.size == cell_count
+
+
 def test_cover_sweep_overlap(
     benchmark, strip_edges: tuple[np.ndarray, np.ndarray]
 ) -> None:

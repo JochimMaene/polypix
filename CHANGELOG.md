@@ -18,6 +18,8 @@ omitted.
 
 - Global cap counts at resolutions up to 7 solve the ring crossings of eight
   caps at once. Revisit statistics on large grids are gathered in parallel.
+- Center-sampled sweeps are up to 1.2 times as fast on one thread, and
+  high-latitude intervals through resolution 10 up to 1.9 times.
 
 - Counting constellation visibility at geographically dispersed ground sites
   now searches nearby cap centers.
