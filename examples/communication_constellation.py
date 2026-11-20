@@ -77,7 +77,7 @@ def count_visible(
     candidate_cells: npt.NDArray[np.int64] | None = None,
     threads: int | None = None,
 ) -> npt.NDArray[np.int64]:
-    """Count the objects in view of every cell, at one timestamp."""
+    """Count visible satellite positions at each cell across the supplied samples."""
     centers, radii_rad = service_caps(
         snapshot_positions_km,
         body_radius_km=EARTH_RADIUS_KM,
@@ -153,28 +153,26 @@ def analyze(
         px.cell_count(resolution) if candidate_cells is None else candidate_cells.size
     )
     visible_sum = np.zeros(cell_count, dtype=np.int64)
-    covered_pair_count = 0
 
     # --8<-- [start:communications-timestamps]
-    # Timestamps are independent, so run several single-threaded counts at once
-    # instead of one internally parallel count after another. Native calls
-    # release the GIL. Measure the worker count: two workers were slower than
-    # the serial loop on a four-core laptop, and one per logical CPU was best.
-    def count_snapshot(
-        snapshot_positions_km: npt.NDArray[np.float64],
-    ) -> npt.NDArray[np.int64]:
+    # Count is additive across timestamps. One subtotal covers every
+    # satellite at every sample in the batch.
+    def count_batch(batch: npt.NDArray[np.float64]) -> npt.NDArray[np.int64]:
         return count_visible(
-            snapshot_positions_km,
+            batch.reshape(-1, 3),
             resolution=resolution,
             candidate_cells=candidate_cells,
             threads=1,
         )
 
     coverage_started = time.perf_counter()
-    with ThreadPoolExecutor(max_workers=os.cpu_count()) as pool:
-        for visible in pool.map(count_snapshot, positions_km):
-            covered_pair_count += int(visible.sum())
-            visible_sum += visible
+    workers = min(os.cpu_count() or 1, times_min.size)
+    # Bound each worker's temporary cap arrays to eight snapshots on long runs.
+    batches = np.array_split(positions_km, max(workers, math.ceil(times_min.size / 8)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for subtotal in pool.map(count_batch, batches):
+            visible_sum += subtotal
+    covered_pair_count = int(visible_sum.sum())
     coverage_elapsed_s = time.perf_counter() - coverage_started
     # --8<-- [end:communications-timestamps]
 

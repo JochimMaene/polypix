@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -619,6 +620,28 @@ def test_cover_sweep(benchmark, strip_edges: tuple[np.ndarray, np.ndarray]) -> N
     assert coverage.cells.dtype == np.int64
 
 
+def test_cover_sweep_eo_day(benchmark, monkeypatch) -> None:
+    """One day's 290 km swath at the case study's one-minute cadence."""
+    # CI runs the installed extension from outside the examples checkout.
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1]))
+    from examples.constellation import (
+        EARTH_RADIUS_KM,
+        constellation_centers,
+        swath_edges,
+    )
+
+    track = constellation_centers(
+        np.arange(1_441) * 60.0,
+        satellite_count=1,
+        plane_count=1,
+        altitude_km=786.0,
+        inclination_rad=math.radians(98.6),
+    )
+    left, right = swath_edges(track[:, 0], half_width_rad=145.0 / EARTH_RADIUS_KM)
+    coverage = benchmark(px.cover_sweep, left, right, resolution=7, threads=1)
+    assert coverage.cells.size == 64_831
+
+
 def test_cover_sweep_overlap(
     benchmark, strip_edges: tuple[np.ndarray, np.ndarray]
 ) -> None:
@@ -792,9 +815,9 @@ def test_cover_cap_dense_count_constellation_batch(
     """Reference workload for the communications documentation example.
 
     One invocation represents one timestamp: 10,771 catalogued objects,
-    resolution 6, and dense Count reduction. The example repeats this same
-    public call once per minute; propagation is intentionally outside this
-    benchmark because this suite measures Polypix.
+    resolution 6, and dense Count reduction. The example batches several
+    timestamps per call to compute the hourly mean. This benchmark measures
+    the public kernel on one timestamp's worth of caps.
     """
     centers, radii = constellation_caps
     counts = benchmark(

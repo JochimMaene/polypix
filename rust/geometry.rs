@@ -97,11 +97,49 @@ fn normalized_edge(left: Vec3, right: Vec3) -> Result<Vec3, String> {
     ])
 }
 
+fn reverse_winding(vertices: &mut [Vec3], edge_normals: &mut [Vec3]) {
+    vertices.reverse();
+    // Reversing the vertices reverses every edge. The closing edge stays last.
+    edge_normals[..vertices.len() - 1].reverse();
+    for normal in edge_normals {
+        *normal = normal.map(|component| -component);
+    }
+}
+
 pub(crate) fn validate_polygon(
     vertices: &mut [Vec3],
     edge_normals: &mut [Vec3],
 ) -> Result<(), String> {
     debug_assert_eq!(vertices.len(), edge_normals.len());
+    if let &[a, b, c, d] = &*vertices {
+        let raw = [
+            stable_cross(a, b),
+            stable_cross(b, c),
+            stable_cross(c, d),
+            stable_cross(d, a),
+        ];
+        let turns = [
+            dot(raw[0], c),
+            dot(raw[1], d),
+            dot(raw[2], a),
+            dot(raw[3], b),
+        ];
+        // The two nonincident vertices of each edge use two of these same
+        // four determinants (cyclic permutations). A strict common sign
+        // proves convexity and winding. Duplicates, including near-duplicates,
+        // cannot clear this guard since all vertices are unit directions.
+        let guard = 4.0 * VERTEX_EQUALITY_EPSILON;
+        if turns.iter().all(|&t| t > guard) || turns.iter().all(|&t| t < -guard) {
+            for (normal, raw) in edge_normals.iter_mut().zip(raw) {
+                let length = norm(raw);
+                *normal = raw.map(|component| component / length);
+            }
+            if turns[0] < 0.0 {
+                reverse_winding(vertices, edge_normals);
+            }
+            return Ok(());
+        }
+    }
     for left in 0..vertices.len() {
         for other in (left + 1)..vertices.len() {
             if nearly_equal(vertices[left], vertices[other]) {
@@ -147,12 +185,7 @@ pub(crate) fn validate_polygon(
         return Err("Polygon is degenerate or numerically ambiguous.".to_owned());
     }
     if orientation < 0.0 {
-        vertices.reverse();
-        // Reversing the vertices reverses every edge. The closing edge stays last.
-        edge_normals[..vertices.len() - 1].reverse();
-        for normal in edge_normals.iter_mut() {
-            *normal = normal.map(|component| -component);
-        }
+        reverse_winding(vertices, edge_normals);
     }
 
     for index in 0..edge_normals.len() {

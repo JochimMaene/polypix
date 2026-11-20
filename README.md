@@ -36,8 +36,8 @@ Polygon coverage also accepts GeoJSON-like mappings and objects implementing
 All 10,771 catalogued Starlink objects, propagated for an hour and counted cell
 by cell. Two dense bands around 40° north and south see 70 to 90 objects at
 once, the equator about 37, the poles about 20. Behind it are 137 million
-cap-cell hits, counted by one `cover_cap()` call per timestamp, never stored, and
-done in well under a second.
+cap-cell hits. Batched `cover_cap()` calls count them in well under a second
+without storing the individual hits.
 
 [Read the case study](https://jochimmaene.github.io/polypix/examples/communication-constellation.html) for the
 propagation, the service-cap geometry, and the timings.

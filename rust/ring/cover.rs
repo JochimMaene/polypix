@@ -13,9 +13,9 @@ use crate::error::{NativeError, NativeResult, COVERAGE_OUT_OF_MEMORY};
 use crate::geometry::{normalize, Vec3};
 
 use super::grid::{
-    self, center, neighboring_cells, raw_cell_count, ring_of_cell, ring_range, ring_start,
-    validate_cell_range, BOUNDARY_PARALLEL_MIN_CELLS, CELL_AT_PARALLEL_MIN_VECTORS,
-    CENTER_PARALLEL_MIN_CELLS, MAX_RESOLUTION,
+    self, center, neighboring_cells, raw_cell_count, ring_of_cell, ring_start, validate_cell_range,
+    BOUNDARY_PARALLEL_MIN_CELLS, CELL_AT_PARALLEL_MIN_VECTORS, CENTER_PARALLEL_MIN_CELLS,
+    MAX_RESOLUTION,
 };
 use super::parallel::run_with_parallelism;
 use super::plan::*;
@@ -976,7 +976,7 @@ fn count_caps_in_cell_span(
             if cap.full_sphere {
                 count_range(span.clone());
             } else {
-                let (first, last) = ring_range(nside, cap.minimum_z, cap.maximum_z);
+                let (first, last) = grid::cap_ring_range(nside, cap.minimum_z, cap.maximum_z);
                 visit_cap_ranges_in_rings(
                     cap,
                     resolution,
@@ -1072,7 +1072,7 @@ fn count_caps_chunked(
         .map_err(|_| NativeError::out_of_memory(COVERAGE_OUT_OF_MEMORY))?;
     bands.extend(
         caps.iter()
-            .map(|cap| ring_range(nside, cap.minimum_z, cap.maximum_z)),
+            .map(|cap| grid::cap_ring_range(nside, cap.minimum_z, cap.maximum_z)),
     );
     let mut deltas = zeroed_cap_deltas(cell_count)?;
     deltas.pop();

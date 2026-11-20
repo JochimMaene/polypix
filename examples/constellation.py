@@ -112,7 +112,7 @@ def service_caps(
     minimum_elevation_rad: float,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Return ground-service cap centers and altitude-dependent radii."""
-    orbit_radii_km = np.linalg.norm(positions_km, axis=1)
+    orbit_radii_km = np.sqrt(np.einsum("ij,ij->i", positions_km, positions_km))
     centers = positions_km / orbit_radii_km[:, np.newaxis]
     radii = (
         np.arccos(

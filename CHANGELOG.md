@@ -16,6 +16,9 @@ omitted.
 
 ### Performance
 
+- Center-sampled sweeps and quadrilaterals emit contiguous runs of interior
+  cells directly. Cap counts skip latitude rings outside the cap.
+
 - Global cap counts and swath coverage locate the intersecting latitude rings
   directly at resolutions up to 20. Large, dense revisit timelines can now be
   reduced in parallel.

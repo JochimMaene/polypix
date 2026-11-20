@@ -18,8 +18,8 @@ use crate::geometry::{
 
 use super::cover::push_coverage_cell;
 use super::grid::{
-    face_coordinate, normalized_cell_at, raw_cell_count, ring_info, ring_range, ring_to_face_xy,
-    Ring,
+    cap_ring_range, face_coordinate, normalized_cell_at, raw_cell_count, ring_info, ring_range,
+    ring_to_face_xy, Ring,
 };
 
 pub(super) const ROTATION_RESYNC_STEPS: u64 = 64;
@@ -552,6 +552,7 @@ pub(super) fn scan_cap(axis: Vec3, effective_radius: f64) -> Cap {
     let (sine_radius, cosine_radius) = effective_radius.sin_cos();
     let (half_chord, half_complement_chord) = (0.5 * effective_radius).sin_cos();
     let radial = axis[0].hypot(axis[1]);
+    let longitude = axis[1].atan2(axis[0]);
     // A cap reaches a pole exactly when the axis-to-pole dot product
     // satisfies the same cosine predicate as any other point.
     let maximum_z = if axis[2] >= cosine_radius {
@@ -574,7 +575,11 @@ pub(super) fn scan_cap(axis: Vec3, effective_radius: f64) -> Cap {
         full_sphere: effective_radius == std::f64::consts::PI,
         minimum_z: minimum_z.clamp(-1.0, 1.0),
         maximum_z: maximum_z.clamp(-1.0, 1.0),
-        longitude: axis[1].atan2(axis[0]).rem_euclid(TAU),
+        longitude: if longitude < 0.0 {
+            longitude + TAU
+        } else {
+            longitude
+        },
         radial,
     }
 }
@@ -651,7 +656,7 @@ pub(super) fn visit_cap_ranges(cap: &Cap, resolution: u8, mut visit: impl FnMut(
         visit(0..raw_cell_count(resolution));
         return;
     }
-    let (first_ring, last_ring) = ring_range(nside, cap.minimum_z, cap.maximum_z);
+    let (first_ring, last_ring) = cap_ring_range(nside, cap.minimum_z, cap.maximum_z);
     visit_cap_ranges_in_rings(cap, resolution, first_ring, last_ring, visit);
 }
 
@@ -697,10 +702,8 @@ fn narrow_cap_bins(cap: &Cap, ring: &ScanRing, inverse_amplitude: f64) -> (i64, 
     let last = (east - 0.5) + BIAS;
     // For x <= 1/4 the omitted asin terms sum to less than (5/112) x^7 / (1-x^2).
     let guard = scale * (0.1 * x * t * t * t + 2.0 * INDEX_UNCERTAINTY_ULPS * f64::EPSILON * TAU);
-    let clear = ((west - 0.5) - (first - BIAS))
-        .abs()
-        .max(((east - 0.5) - (last - BIAS)).abs())
-        < 0.5 - guard;
+    let clear = (((west - 0.5) - (first - BIAS)).abs() < 0.5 - guard)
+        & (((east - 0.5) - (last - BIAS)).abs() < 0.5 - guard);
     (
         first.to_bits() as i64 - BIAS.to_bits() as i64 + 1,
         last.to_bits() as i64 - BIAS.to_bits() as i64 + 1,
@@ -878,8 +881,8 @@ pub(super) fn cap_count_ring_visits(cap: &Cap, resolution: u8) -> usize {
         return 1;
     }
     let nside = 1_u64 << resolution;
-    let (first, last) = ring_range(nside, cap.minimum_z, cap.maximum_z);
-    (last - first + 1) as usize
+    let (first, last) = cap_ring_range(nside, cap.minimum_z, cap.maximum_z);
+    (last + 1).saturating_sub(first) as usize
 }
 
 pub(super) fn cover_centers(
@@ -1948,6 +1951,130 @@ impl<T: std::borrow::Borrow<PreparedFootprint>> PreparedFootprintOverlap<T> {
     }
 }
 
+/// Over a short longitude interval, bound each edge plane by two straight
+/// lines. Emit the certain interior as a run and test only its fringe.
+fn cover_short_quad(quad: &Quad, resolution: u8, cells: &mut Vec<u64>) -> NativeResult<bool> {
+    const MIN_RADIAL: f64 = 1.0 / 32.0;
+    if quad.len != 4 || resolution > MAX_CACHED_SCAN_RING_RESOLUTION {
+        return Ok(false);
+    }
+    let (x, y) = quad
+        .vertices
+        .iter()
+        .fold((0.0, 0.0), |(x, y), v| (x + v[0], y + v[1]));
+    let radial = (x * x + y * y).sqrt();
+    if radial < MIN_RADIAL {
+        return Ok(false);
+    }
+    let (cos, sin) = (x / radial, y / radial);
+    let mut nearest: f64 = 1.0;
+    let mut transverse: f64 = 0.0;
+    for &[x, y, _] in &quad.vertices {
+        nearest = nearest.min(x * cos + y * sin);
+        transverse = transverse.max((y * cos - x * sin).abs());
+    }
+    // Positive combinations of these vertices stay in their longitude
+    // wedge. |atan(t)| <= |t|, including between vertices on a minor arc.
+    // Beyond about ten degrees either side, the linear bounds get loose.
+    if nearest < MIN_RADIAL || transverse > 0.18 * nearest {
+        return Ok(false);
+    }
+    let half_width = transverse / nearest + SCAN_TOLERANCE / MIN_RADIAL + 128.0 * f64::EPSILON;
+    let origin = y.atan2(x).rem_euclid(TAU);
+    let west = origin - half_width;
+    let east = origin + half_width;
+    if west <= 0.0 || east >= TAU {
+        return Ok(false);
+    }
+
+    let mut lower = [(0.0, 0.0, 0.0); 2];
+    let mut upper = lower;
+    let mut west_edges = lower.iter_mut();
+    let mut east_edges = upper.iter_mut();
+    for &[nx, ny, nz] in &quad.edge_normals {
+        let a = nx * cos + ny * sin;
+        let b = ny * cos - nx * sin;
+        // Dividing the edge predicate by ring.radial gives
+        // a*cos(d) + b*sin(d) + nz*tan(latitude), d = longitude - origin.
+        // Bound the error of replacing cos(d) by 1 and sin(d) by d,
+        // including the inclusive plane tolerance and floating-point error.
+        let plane_error = half_width * half_width * (a.abs() * 0.5 + b.abs() * half_width / 6.0)
+            + (CONTAINMENT_EPSILON + 128.0 * f64::EPSILON) / MIN_RADIAL;
+        if b.abs() * half_width <= plane_error {
+            return Ok(false);
+        }
+        let edge = if b > 0.0 {
+            west_edges.next()
+        } else {
+            east_edges.next()
+        };
+        let Some(edge) = edge else { return Ok(false) };
+        let inverse = b.recip();
+        *edge = (
+            origin - a * inverse,
+            -nz * inverse,
+            plane_error * inverse.abs(),
+        );
+    }
+
+    let Some(table) = cached_scan_rings(resolution) else {
+        return Ok(false);
+    };
+    let (z_min, z_max) = polygon_z_bounds(&quad.vertices, &quad.edge_normals);
+    let (first, last) = ring_range(1 << resolution, z_min, z_max);
+    let rings = &table[first as usize - 1..last as usize];
+    if rings[0].ring.radial.min(rings[rings.len() - 1].ring.radial) < MIN_RADIAL {
+        return Ok(false);
+    }
+    for scan in rings {
+        let ring = &scan.ring;
+        let tangent = ring.z * scan.inverse_radial;
+        let bounds = |(intercept, slope, error): (f64, f64, f64)| {
+            let crossing = intercept + slope * tangent;
+            (crossing - error, crossing + error)
+        };
+        let [w1, w2] = lower.map(bounds);
+        let [e1, e2] = upper.map(bounds);
+        let outer_west = west.max(w1.0).max(w2.0);
+        let outer_east = east.min(e1.1).min(e2.1);
+        if outer_west >= outer_east {
+            continue;
+        }
+        // Both linear bounds have a strict rounding margin. The index just
+        // after each bound yields a half-open range, also on shifted rings.
+        let after = |longitude: f64| {
+            ((longitude * scan.offsets_per_radian + (1.0 - ring.shift)) as u32)
+                .min(ring.cells as u32)
+        };
+        let first = after(outer_west);
+        let end = after(outer_east);
+        let inner_first = after(west.max(w1.1).max(w2.1)).min(end);
+        let inner_end = after(east.min(e1.0).min(e2.0)).max(inner_first);
+        cells
+            .try_reserve((end - first) as usize)
+            .map_err(|_| NativeError::out_of_memory(crate::error::COVERAGE_OUT_OF_MEMORY))?;
+        let fringe = |offsets: Range<u32>, cells: &mut Vec<u64>| {
+            if offsets.is_empty() {
+                return;
+            }
+            let directions = ring_directions(ring);
+            for offset in offsets {
+                let (s, c) = directions.map_or_else(
+                    || ring.longitude_sin_cos(u64::from(offset)),
+                    |d| d[offset as usize],
+                );
+                if quad_contains(quad, ring.radial * c, ring.radial * s, ring.z) {
+                    cells.push(ring.start + u64::from(offset));
+                }
+            }
+        };
+        fringe(first..inner_first, cells);
+        cells.extend(ring.start + u64::from(inner_first)..ring.start + u64::from(inner_end));
+        fringe(inner_end..end, cells);
+    }
+    Ok(true)
+}
+
 impl PreparedFootprint {
     pub(super) fn from_rings(raw_rings: &[Vec<Vec3>]) -> Result<Self, String> {
         if raw_rings.len() == 1 {
@@ -2029,21 +2156,21 @@ impl PreparedFootprint {
     }
 
     pub(super) fn cover(&self, resolution: u8, cells: &mut Vec<u64>) -> NativeResult<()> {
-        let visit = |cell| push_coverage_cell(cells, cell, 1024);
         match self {
+            Self::Quad(quad) if cover_short_quad(quad, resolution, cells)? => Ok(()),
             Self::Quad(quad) => cover_centers(
                 &quad.vertices[..quad.len],
                 &quad.edge_normals[..quad.len],
                 resolution,
                 |x, y, z| quad_contains(quad, x, y, z),
-                visit,
+                |cell| push_coverage_cell(cells, cell, 1024),
             ),
             Self::Polygon(polygon) => cover_centers(
                 &polygon.vertices,
                 &polygon.edge_normals,
                 resolution,
                 |x, y, z| polygon_contains(polygon, [x, y, z]),
-                visit,
+                |cell| push_coverage_cell(cells, cell, 1024),
             ),
             Self::General(polygon) => cover_general_polygon(polygon, resolution, cells),
         }
@@ -2364,21 +2491,15 @@ mod tests {
         }
     }
 
+    fn uniform(state: &mut u64) -> f64 {
+        *state ^= *state << 13;
+        *state ^= *state >> 7;
+        *state ^= *state << 17;
+        ((*state >> 11) as f64) / 9_007_199_254_740_992.0
+    }
+
     #[test]
     fn convex_interval_cover_matches_brute_force_centers() {
-        // Deterministic xorshift: no rand dependency for one test.
-        fn next_u64(state: &mut u64) -> u64 {
-            let mut x = *state;
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            *state = x;
-            x
-        }
-        fn uniform(state: &mut u64) -> f64 {
-            ((next_u64(state) >> 11) as f64) / 9_007_199_254_740_992.0
-        }
-
         let mut state = 0x1234_5678_9ABC_DEF1_u64;
         // Randomized spherical rectangles: even indices are axis-aligned
         // squares, odd indices thin diagonal swaths whose longitude envelope
@@ -2521,6 +2642,122 @@ mod tests {
             &[6],
             "128-gon",
         );
+    }
+
+    #[test]
+    fn short_quad_ranges_match_center_tests_at_swath_edges() {
+        let resolution = 6;
+        let nside = 1 << resolution;
+        for index in [nside / 2, nside, 2 * nside, 3 * nside + 1] {
+            let ring = ring_info(nside, index);
+            let axis = center(ring.start + ring.cells / 3, resolution);
+            let east = normalize(cross([0.0, 0.0, 1.0], axis)).unwrap();
+            let north = cross(axis, east);
+            for shift in [-1e-10, 0.0, 1e-10] {
+                let corner = |u: f64, v: f64| {
+                    normalize(std::array::from_fn(|k| {
+                        axis[k] + east[k] * (u - v - shift) + north[k] * (u + v + shift)
+                    }))
+                    .unwrap()
+                };
+                let mut vertices = [
+                    corner(-0.045, 0.0),
+                    corner(0.045, 0.0),
+                    corner(0.045, 0.03),
+                    corner(-0.045, 0.03),
+                ];
+                for _ in 0..2 {
+                    let quad = prepare_normalized_quad(vertices, false).unwrap();
+                    let mut actual = Vec::new();
+                    assert!(super::cover_short_quad(&quad, resolution, &mut actual).unwrap());
+                    let expected: Vec<_> = (0..raw_cell_count(resolution))
+                        .filter(|&cell| {
+                            contains_center(&quad.edge_normals, center(cell, resolution))
+                        })
+                        .collect();
+                    assert_eq!(actual, expected);
+                    vertices.reverse();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn short_quad_ranges_match_cover_centers_across_resolutions_and_cutoffs() {
+        let check = |resolution, axis: Vec3, angle: f64, along, across, eligible| {
+            let east = normalize(cross([0.0, 0.0, 1.0], axis)).unwrap();
+            let north = cross(axis, east);
+            let (sin, cos) = angle.sin_cos();
+            let corner = |u: f64, v: f64| {
+                normalize(std::array::from_fn(|k| {
+                    axis[k] + east[k] * (u * cos - v * sin) + north[k] * (u * sin + v * cos)
+                }))
+                .unwrap()
+            };
+            let vertices = [
+                corner(along, across),
+                corner(-along, across),
+                corner(-along, -across),
+                corner(along, -across),
+            ];
+            let quad = prepare_normalized_quad(vertices, false).unwrap();
+            let mut actual = Vec::new();
+            let used = super::cover_short_quad(&quad, resolution, &mut actual).unwrap();
+            let case = (resolution, axis, angle, along, across);
+            assert_eq!(used, eligible, "short quad dispatch for {case:?}");
+            if !used {
+                assert!(actual.is_empty());
+                return;
+            }
+            let mut expected = Vec::new();
+            cover_centers(
+                &quad.vertices,
+                &quad.edge_normals,
+                resolution,
+                |x, y, z| contains_center(&quad.edge_normals, [x, y, z]),
+                |cell| {
+                    expected.push(cell);
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert!(!expected.is_empty(), "empty reference for {case:?}");
+            assert_eq!(actual, expected, "cell IDs for {case:?}");
+        };
+
+        let mut seed = 0x0051_7715;
+        for resolution in 1..=12 {
+            let nside = 1_u64 << resolution;
+            for _ in 0..12 {
+                let index = nside + (uniform(&mut seed) * (2 * nside) as f64) as u64;
+                let ring = ring_info(nside, index);
+                let offset = ((0.2 + 0.6 * uniform(&mut seed)) * ring.cells as f64) as u64;
+                let axis = center(ring.start + offset, resolution);
+                let angle = 0.2 + 1.12 * uniform(&mut seed);
+                let along = (0.02 + 0.06 * uniform(&mut seed)).min(40.0 / nside as f64);
+                let across = along * (0.1 + 0.8 * uniform(&mut seed));
+                check(resolution, axis, angle, along, across, true);
+            }
+        }
+
+        // At the equator the largest transverse/nearest ratio of these corners
+        // is along*cos(angle) + across*sin(angle).
+        let axis = lonlat(90.0, 0.0);
+        let angle = 0.65_f64;
+        for (ratio, eligible) in [(0.18 - 1e-10, true), (0.18 + 1e-10, false)] {
+            let along = ratio / (angle.cos() + 0.25 * angle.sin());
+            check(7, axis, angle, along, 0.25 * along, eligible);
+        }
+
+        // Resolution-12 polar rings 156 and 157 straddle radial = 1/32.
+        // The scan includes one neighboring ring at each end of its band.
+        for (index, eligible) in [(156, false), (157, false), (158, true)] {
+            for index in [index, 4 * 4096 - index] {
+                let ring = ring_info(4096, index);
+                let axis = center(ring.start + ring.cells / 3, 12);
+                check(12, axis, angle, 3e-5, 1e-5, eligible);
+            }
+        }
     }
 
     #[test]
