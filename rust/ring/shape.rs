@@ -2231,9 +2231,6 @@ fn cover_short_quad(quad: &Quad, resolution: u8, cells: &mut Vec<u64>) -> Native
             .try_reserve((end - first) as usize)
             .map_err(|_| NativeError::out_of_memory(crate::error::COVERAGE_OUT_OF_MEMORY))?;
         let fringe = |offsets: Range<u32>, cells: &mut Vec<u64>| {
-            if offsets.is_empty() {
-                return;
-            }
             let directions = ring_directions(ring);
             for offset in offsets {
                 let (s, c) = directions.map_or_else(
@@ -2245,9 +2242,14 @@ fn cover_short_quad(quad: &Quad, resolution: u8, cells: &mut Vec<u64>) -> Native
                 }
             }
         };
-        fringe(first..inner_first, cells);
+        // Most rings have no fringe; skip the call and its register spills.
+        if first < inner_first {
+            fringe(first..inner_first, cells);
+        }
         cells.extend(ring.start + u64::from(inner_first)..ring.start + u64::from(inner_end));
-        fringe(inner_end..end, cells);
+        if inner_end < end {
+            fringe(inner_end..end, cells);
+        }
     }
     Ok(true)
 }

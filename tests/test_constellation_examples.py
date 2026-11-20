@@ -53,7 +53,7 @@ def test_swath_edges_are_normalized_at_the_configured_half_width() -> None:
     )
 
 
-def test_service_caps_normalize_positions_and_use_altitude_dependent_radii() -> None:
+def test_service_caps_center_on_positions_with_altitude_dependent_radii() -> None:
     minimum_elevation_rad = math.radians(25.0)
     positions_km = np.asarray(
         [
@@ -69,7 +69,7 @@ def test_service_caps_normalize_positions_and_use_altitude_dependent_radii() -> 
         minimum_elevation_rad=minimum_elevation_rad,
     )
 
-    np.testing.assert_allclose(np.linalg.norm(centers, axis=1), 1.0)
+    np.testing.assert_array_equal(centers, positions_km)
     np.testing.assert_allclose(
         radii,
         np.arccos(EARTH_RADIUS_KM / orbit_radii_km * math.cos(minimum_elevation_rad))

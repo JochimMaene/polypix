@@ -93,15 +93,12 @@ def swath_edges(
     half_width_rad: float,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Return constant-width left and right ground-swath edge vectors."""
-    along_track = np.gradient(centers, axis=0)
-    along_track -= np.sum(along_track * centers, axis=-1, keepdims=True) * centers
-    along_track /= np.linalg.norm(along_track, axis=-1, keepdims=True)
-    cross_track = np.cross(centers, along_track)
-    cross_track /= np.linalg.norm(cross_track, axis=-1, keepdims=True)
-
-    left = math.cos(half_width_rad) * centers + math.sin(half_width_rad) * cross_track
-    right = math.cos(half_width_rad) * centers - math.sin(half_width_rad) * cross_track
-    return left, right
+    # The radial part of the track gradient drops out of the cross product.
+    cross_track = np.cross(centers, np.gradient(centers, axis=0))
+    length = np.sqrt(np.einsum("...i,...i", cross_track, cross_track))
+    cross_track *= (math.sin(half_width_rad) / length)[..., np.newaxis]
+    along_track = math.cos(half_width_rad) * centers
+    return along_track + cross_track, along_track - cross_track
 
 
 # --8<-- [start:service-caps]
@@ -113,7 +110,6 @@ def service_caps(
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """Return ground-service cap centers and altitude-dependent radii."""
     orbit_radii_km = np.sqrt(np.einsum("ij,ij->i", positions_km, positions_km))
-    centers = positions_km / orbit_radii_km[:, np.newaxis]
     radii = (
         np.arccos(
             np.clip(
@@ -124,7 +120,8 @@ def service_caps(
         )
         - minimum_elevation_rad
     )
-    return centers, radii
+    # Polypix ignores the length of a cap center, so the positions serve as is.
+    return positions_km, radii
 
 
 # --8<-- [end:service-caps]
