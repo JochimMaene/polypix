@@ -530,7 +530,8 @@ pub(crate) fn revisit_stats(
     // Dense state is a flat grid; sparse state is keyed by observed cell. Both
     // hold one accumulator per cell, never one per run.
     if let Some(cell_count) = dense_state_length(resolution, total_hits, size_of::<StatsState>()) {
-        if let Some(mut states) = try_dense_states(cell_count, StatsState::EMPTY) {
+        let mut states = Vec::new();
+        if states.try_reserve_exact(cell_count).is_ok() {
             if minimum_sources == 1 {
                 // Each worker reads the offsets. Bound their number by the hits
                 // per row so tiny or mostly empty rows stay cheap to replay.
@@ -541,8 +542,13 @@ pub(crate) fn revisit_stats(
                     None,
                     |parallel| {
                         let workers = if parallel {
+                            // The grid is fresh memory, so clearing it is mostly
+                            // first-touch page faults, which only overlap when
+                            // the workers share them.
+                            states.par_extend(rayon::iter::repeat_n(StatsState::EMPTY, cell_count));
                             rayon::current_num_threads().min(hits_per_row)
                         } else {
+                            states.resize(cell_count, StatsState::EMPTY);
                             1
                         };
                         observe_dense_union(
@@ -555,6 +561,7 @@ pub(crate) fn revisit_stats(
                     },
                 )?;
             } else {
+                states.resize(cell_count, StatsState::EMPTY);
                 let mut touched: Vec<usize> = Vec::new();
                 for segment in 0..segment_count {
                     accumulate_dense_segment(

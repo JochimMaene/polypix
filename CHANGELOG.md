@@ -30,7 +30,7 @@ omitted.
 - Batches of small quadrilaterals, about 0.7 by 0.5 degrees, are 1.45 to 1.65
   times as fast as in 1.0.0 at resolutions 4 to 7.
 - `revisit()` over the Earth-observation example's three 14-day coverages is
-  about 1.7 times as fast as in 1.0.0 on eight logical CPUs.
+  about 2.1 times as fast as in 1.0.0 on eight logical CPUs.
 - Validating a polygon ring with 1,000 to 4,000 vertices is about 5 times as
   fast as in 1.0.0.
 - Coverage over `candidate_cells` is up to 20 times as fast when the selection
