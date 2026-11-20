@@ -16,22 +16,23 @@ omitted.
 
 ### Performance
 
-- Global cap counts at resolutions up to 7 solve the ring crossings of eight
-  caps at once. Revisit statistics on large grids are gathered in parallel.
-- Center-sampled sweeps are up to 1.2 times as fast on one thread, and
-  high-latitude intervals through resolution 10 up to 1.9 times.
-
-- Counting constellation visibility at geographically dispersed ground sites
-  now searches nearby cap centers.
-- Dense revisit analyses share each footprint's cell range across workers so
-  they can skip swaths outside their part of the grid.
-
-- Center-sampled sweeps and quadrilaterals emit contiguous runs of interior
-  cells directly. Cap counts skip latitude rings outside the cap.
-
-- Global cap counts and swath coverage locate the intersecting latitude rings
-  directly at resolutions up to 20. Large, dense revisit timelines can now be
-  reduced in parallel.
+- Dense counts of about 10,000 caps, 3 to 9 degrees in radius, are 2.5 to 3.5
+  times as fast as in 1.0.0 on one thread at resolutions 4 to 7, and 1.8 to 4.4
+  times at resolutions 8 to 11. Coverage of the same caps is about 2.2 times
+  as fast.
+- Counting those caps at 1,024 scattered sites, such as ground stations, is
+  about 9 times as fast as in 1.0.0 at resolutions 8 to 12. Over an area the
+  size of Germany it is 5 to 9 times as fast at resolutions 8 and 9.
+- Sweeping a 290 km swath along one day of a polar orbit, sampled every minute,
+  is 3.2 to 3.8 times as fast as in 1.0.0 on one thread at resolutions 5 to 9.
+  A 10-degree strip along a meridian is about 1.5 times as fast at resolution
+  7, and a coarsely sampled diagonal swath is unchanged.
+- Batches of small quadrilaterals, about 0.7 by 0.5 degrees, are 1.45 to 1.65
+  times as fast as in 1.0.0 at resolutions 4 to 7.
+- `revisit()` over the Earth-observation example's three 14-day coverages is
+  about 1.7 times as fast as in 1.0.0 on eight logical CPUs.
+- Validating a polygon ring with 1,000 to 4,000 vertices is about 5 times as
+  fast as in 1.0.0.
 - Coverage over `candidate_cells` is up to 20 times as fast when the selection
   is much wider than each polygon or sweep.
 - Overlap coverage is 1.4 to 2.7 times as fast, and up to 2 times as fast
@@ -41,17 +42,13 @@ omitted.
   parallel.
 - `Count` and `Sum` over sparse `candidate_cells` at high resolutions are up to
   3 times as fast.
-- Cap counts at resolution 9 and above are up to 1.7 times as fast.
 - Dense cap counts no longer skip threading when the output grid outgrows the
   number of cap rings: about 3 times as fast at resolutions 8 and 9 on eight
   logical CPUs.
 - `revisit()` calls with few hits no longer clear a whole grid first, which
   made them up to 50 times slower at resolutions 5 to 8.
 - `cover_cap(..., reduce=Count())` over a few `candidate_cells` is up to 20
-  times as fast for a large batch of caps, and about 4 times as fast over a
-  regional selection.
-- Cap coverage and dense cap counts are about 1.25 times as fast.
-- Small polygons and sweeps are covered 1.2 to 1.7 times as fast.
+  times as fast for a large batch of caps.
 
 ## [1.0.0] — 2026-11-04
 
