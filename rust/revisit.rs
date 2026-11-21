@@ -433,6 +433,27 @@ fn cache_sorted_row_bounds(
         })
 }
 
+/// Replay the timeline in order on one thread, over the whole grid.
+fn observe_all(
+    sources: SegmentedSources<'_>,
+    segments: Range<usize>,
+    states: &mut [StatsState],
+    resolution: u8,
+) -> NativeResult<()> {
+    for segment in segments {
+        for cells in sources.segment_slices(segment) {
+            for &cell in cells {
+                let index = usize::try_from(cell).ok();
+                let Some(state) = index.and_then(|index| states.get_mut(index)) else {
+                    return Err(invalid_source_cell(cell, resolution));
+                };
+                state.observe(segment as u32);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Replay the timeline in order, giving each worker a disjoint band of cells.
 fn observe_dense_union(
     sources: SegmentedSources<'_>,
@@ -445,22 +466,20 @@ fn observe_dense_union(
     let fill = |first: u64,
                 states: &mut [StatsState],
                 segments: Range<usize>,
-                bounds: Option<&[(u32, u32)]>|
+                bounds: &[(u32, u32)]|
      -> NativeResult<()> {
         let stop = first + states.len() as u64;
         for (row, segment) in segments.enumerate() {
             for (source, mut cells) in sources.segment_slices(segment).enumerate() {
-                if let Some(bounds) = bounds {
-                    let (low, high) = bounds[row * source_count + source];
-                    if u64::from(high) < first || u64::from(low) >= stop {
-                        continue;
-                    }
-                    if u64::from(low) < first {
-                        cells = &cells[cells.partition_point(|&c| c < first)..];
-                    }
-                    if u64::from(high) >= stop {
-                        cells = &cells[..cells.partition_point(|&c| c < stop)];
-                    }
+                let (low, high) = bounds[row * source_count + source];
+                if u64::from(high) < first || u64::from(low) >= stop {
+                    continue;
+                }
+                if u64::from(low) < first {
+                    cells = &cells[cells.partition_point(|&c| c < first)..];
+                }
+                if u64::from(high) >= stop {
+                    cells = &cells[..cells.partition_point(|&c| c < stop)];
                 }
                 for &cell in cells {
                     let index = usize::try_from(cell - first).ok();
@@ -476,12 +495,12 @@ fn observe_dense_union(
     // Native footprints are ordered. Imported rows may be unsorted, and an
     // out-of-grid hit must reach the validating loop rather than be trimmed.
     if workers <= 1 || segment_count == 0 {
-        return fill(0, states, 0..segment_count, None);
+        return observe_all(sources, 0..segment_count, states, resolution);
     }
     // Limit the endpoint cache to 1 MiB, or one segment for very many sources.
     let block_size = (MAX_CACHED_ROWS / source_count).max(1).min(segment_count);
     let Some(mut bounds) = try_dense_states(block_size * source_count, (0, 0)) else {
-        return fill(0, states, 0..segment_count, None);
+        return observe_all(sources, 0..segment_count, states, resolution);
     };
     let cell_count = u32::try_from(states.len()).expect("dense grid fits in u32");
     let chunk_size = states.len().div_ceil(workers);
@@ -493,15 +512,10 @@ fn observe_dense_union(
                 .par_chunks_mut(chunk_size)
                 .enumerate()
                 .try_for_each(|(i, states)| {
-                    fill(
-                        (i * chunk_size) as u64,
-                        states,
-                        segments.clone(),
-                        Some(rows),
-                    )
+                    fill((i * chunk_size) as u64, states, segments.clone(), rows)
                 })?;
         } else {
-            fill(0, states, segments, None)?;
+            observe_all(sources, segments, states, resolution)?;
         }
     }
     Ok(())
