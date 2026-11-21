@@ -489,8 +489,51 @@ pub(crate) fn boundary(cell: u64, resolution: u8) -> [Vec3; 4] {
     ]
 }
 
+/// Continuous RING number at latitude asin(z).
+fn ring_position(nside: u64, z: f64) -> f64 {
+    let side = nside as f64;
+    if z.abs() <= 2.0 / 3.0 {
+        side * (2.0 - 1.5 * z)
+    } else {
+        let polar_ring = side * (3.0 * (1.0 - z.abs()).max(0.0)).sqrt();
+        if z > 0.0 {
+            polar_ring
+        } else {
+            4.0 * side - polar_ring
+        }
+    }
+}
+
+/// Center-sampled caps only need rings inside their inclusive z extent.
+/// At ordinary resolutions a few ulps of z cover both the cap extrema and
+/// the inverse transform. Keep the forward-checked range near the pole at
+/// high resolution, where several rings can share a rounded z.
+pub(super) fn cap_ring_range(nside: u64, minimum_z: f64, maximum_z: f64) -> (u64, u64) {
+    if nside > 1 << 12 {
+        return ring_range(nside, minimum_z, maximum_z);
+    }
+    let first = |z| {
+        let position = ring_position(nside, z + 64.0 * f64::EPSILON);
+        let index = position as u64;
+        (index + u64::from(position > index as f64)).max(1)
+    };
+    (first(maximum_z), 4 * nside - first(-minimum_z))
+}
+
 pub(super) fn ring_range(nside: u64, minimum_z: f64, maximum_z: f64) -> (u64, u64) {
     let last_ring = 4 * nside - 1;
+
+    // At these resolutions the inverse latitude is accurate to well under
+    // half a ring, even at the poles. Resolve the tie using the forward z.
+    if nside <= 1 << 20 {
+        let north_of = |z: f64| {
+            let z = z + CONTAINMENT_EPSILON;
+            let position = ring_position(nside, z);
+            let nearest = ((position + 0.5) as u64).clamp(1, last_ring);
+            (nearest - u64::from(ring_z(nside, nearest) <= z)).max(1)
+        };
+        return (north_of(maximum_z), 4 * nside - north_of(-minimum_z));
+    }
 
     let mut low = 1;
     let mut high = last_ring + 1;
@@ -674,6 +717,53 @@ mod tests {
             resolution,
             vectors.len() / 3 >= CELL_AT_PARALLEL_MIN_VECTORS,
         )
+    }
+
+    #[test]
+    fn cap_bands_include_tangent_rings_and_can_be_empty_between_them() {
+        for nside in [1, 64, 4096] {
+            for ring in 1..4 * nside {
+                let z = super::ring_z(nside, ring);
+                for tangent in [z.next_down(), z, z.next_up()] {
+                    assert_eq!(super::cap_ring_range(nside, tangent, tangent), (ring, ring));
+                }
+                if ring > 1 {
+                    let between = 0.5 * (z + super::ring_z(nside, ring - 1));
+                    assert_eq!(
+                        super::cap_ring_range(nside, between, between),
+                        (ring, ring - 1)
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn latitude_bounds_keep_the_neighbor_on_both_sides_of_a_ring_tie() {
+        for nside in [1, 64, 128, 1 << 20] {
+            let last = 4 * nside - 1;
+            let stride = (nside / 128).max(1);
+            for index in (1..=last)
+                .step_by(stride as usize)
+                .chain([nside, 3 * nside, last])
+            {
+                let center = super::ring_z(nside, index);
+                for tie in [
+                    center - super::CONTAINMENT_EPSILON,
+                    center + super::CONTAINMENT_EPSILON,
+                ] {
+                    for z in [tie.next_down(), tie, tie.next_up()] {
+                        let (north, south) = super::ring_range(nside, z, z);
+                        let hi = z + super::CONTAINMENT_EPSILON;
+                        let lo = z - super::CONTAINMENT_EPSILON;
+                        assert!(north == 1 || super::ring_z(nside, north) > hi);
+                        assert!(north == last || super::ring_z(nside, north + 1) <= hi);
+                        assert!(south == last || super::ring_z(nside, south) < lo);
+                        assert!(south == 1 || super::ring_z(nside, south - 1) >= lo);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

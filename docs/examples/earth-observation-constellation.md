@@ -29,23 +29,22 @@ inclined 98.6° and the swath is only 290 km wide.
 ## Performance
 
 The [pinned CodSpeed run][codspeed-run] measures the EO-shaped `revisit()`
-reference workload at about **75 ms** in simulation mode. That deterministic
-[benchmark][reference-benchmark] processes ten sources and 9.28 million hits;
+reference workload at about **94 ms** in simulation mode. That deterministic
+[benchmark][reference-benchmark] processes ten sources and 9.2 million hits;
 this case study uses three sources and 2.7 million hits. It is a regression
 reference for the same operation, not a complete-analysis wall-clock estimate.
 
-For context, one [GitHub-hosted documentation build][docs-build-run] of the
-complete example at the same commit produced this pipeline profile:
+The GitHub-hosted documentation build recorded these stage timings for the
+complete example. [Build log][docs-build-run]
 
 | Stage | Time |
 | --- | ---: |
-| SGP4 propagation and swath edges | 10 ms |
-| 3 `cover_sweep()` calls | **35 ms** |
-| `revisit()` and gap conversion | 22 ms |
-| Complete analysis | 67 ms |
+| SGP4 propagation and swath edges | 12 ms |
+| 3 `cover_sweep()` calls | **31 ms** |
+| `revisit()` and gap conversion | 12 ms |
+| Complete analysis | 55 ms |
 
-Those wall-clock figures show the relative cost of the end-to-end stages; they
-are pinned to that build and are not the regression benchmark.
+Times are rounded to the nearest millisecond and cover analysis before plotting.
 
 ## Method
 
@@ -111,6 +110,6 @@ python examples/earth_observation_constellation.py \
 
 [Full source](https://github.com/JochimMaene/polypix/blob/main/examples/earth_observation_constellation.py)
 
-[reference-benchmark]: https://github.com/JochimMaene/polypix/blob/bf26c009e6529367e1165cecbe7dbda486b5479c/benchmarks/test_polypix_benchmarks.py#L956
-[codspeed-run]: https://app.codspeed.io/JochimMaene/polypix/runs/compare/6a91b972915aa37294773c71..6a92bc48fd5591856db14fc8?q=revisit
-[docs-build-run]: https://github.com/JochimMaene/polypix/actions/runs/33249059091
+[reference-benchmark]: https://github.com/JochimMaene/polypix/blob/573cac31880f1be79c2963e390058a5cbb369864/benchmarks/test_polypix_benchmarks.py#L1068
+[codspeed-run]: https://github.com/JochimMaene/polypix/runs/135533390069
+[docs-build-run]: https://github.com/JochimMaene/polypix/actions/runs/44518637415/job/135541164097#step:5:1

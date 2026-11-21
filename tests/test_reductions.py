@@ -139,6 +139,32 @@ def test_cap_counts_agree_on_both_sides_of_the_selected_work_estimate() -> None:
         )
 
 
+def test_cap_counts_at_scattered_sites_match_membership() -> None:
+    rng = np.random.default_rng(427)
+    resolution = 6
+    sites = rng.integers(0, px.cell_count(resolution), size=256)
+    sites[:4] = [0, sites[-1], px.cell_count(resolution) - 1, 0]
+    centers = rng.normal(size=(1536, 3))
+    centers[:6] = np.concatenate((np.eye(3), -np.eye(3)))
+    centers[6:10] = px.cell_centers(sites[:4], resolution=resolution)
+    radii = rng.uniform(0.0, 0.5, size=len(centers))
+    radii[:6] = 0.5
+    radii[6:10] = 0.0
+
+    coverage = px.cover_cap(centers, radii, resolution=resolution)
+    expected = coverage.reduce(px.Count(), candidate_cells=sites)
+    for threads in [1, 2]:
+        counts = px.cover_cap(
+            centers,
+            radii,
+            resolution=resolution,
+            candidate_cells=sites,
+            reduce=px.Count(),
+            threads=threads,
+        )
+        np.testing.assert_array_equal(counts, expected)
+
+
 def test_fused_cap_counts_stay_available_for_caps_too_large_to_store() -> None:
     """A whole-sphere cap at resolution 29 can only be answered by fusing."""
     requested = np.asarray([12 * 4**29 - 1, 0, 6 * 4**29, 0], dtype=np.uint64)

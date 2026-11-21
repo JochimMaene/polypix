@@ -51,7 +51,7 @@ fn explicit_pool(worker_count: usize) -> Option<Arc<rayon::ThreadPool>> {
     Some(pool)
 }
 
-pub(super) fn run_with_parallelism<T: Send>(
+pub(crate) fn run_with_parallelism<T: Send>(
     item_count: usize,
     parallel_worthwhile: bool,
     threads: Option<usize>,

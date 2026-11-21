@@ -24,23 +24,10 @@ gateways, terrain, and the atmosphere are all outside the scope of the example.
 
 The [pinned CodSpeed run][codspeed-run] measures one single-threaded timestamp
 of this workload—10,771 caps at resolution 6 with dense `Count()` reduction—at
-about **32 ms** in simulation mode. The case study repeats that public call for
-61 timestamps. This is a stable regression reference, not wall-clock time
+about **32 ms** in simulation mode. The case study counts the same geometry across
+61 timestamps in batches. This is a stable regression reference, not wall-clock time
 promised for a particular machine; propagation and plotting are outside the
 [benchmark definition][reference-benchmark].
-
-For context, one [GitHub-hosted documentation build][docs-build-run] of the
-complete example at the same commit produced this pipeline profile:
-
-| Stage | Time |
-| --- | ---: |
-| Parse pinned TLE snapshot | 23 ms |
-| SGP4 propagation | 9 ms |
-| 61 cap builds and `cover_cap(reduce=Count())` calls | **261 ms** |
-| Complete analysis | 296 ms |
-
-Those wall-clock figures show where the end-to-end work goes; they are pinned
-to that build for reproducibility and are not the regression benchmark.
 
 ## Method
 
@@ -81,8 +68,8 @@ elevation mask:
 ```
 
 That is the whole conversion from a propagated state to something Polypix
-accepts: an array of centre directions and an array of radii in radians. All
-10,771 of them at one timestamp then go into a single call:
+accepts: an array of centre directions and an array of radii in radians. Each
+batch goes into one coverage call.
 
 ```{literalinclude} ../../examples/communication_constellation.py
 :language: python
@@ -97,9 +84,9 @@ the cap-cell pairs at all. Over the hour that is 657,031 caps and 137 million
 cap-cell hits, none of which is ever stored: the running total is one array of
 49,152 integers.
 
-The 61 timestamps are independent, so the example runs them side by side, each
-as a single-threaded count, instead of one internally threaded count after
-another:
+The hourly mean only needs the sum of the 61 visibility maps. Counting all
+satellite positions in a batch gives exactly the sum of its per-minute counts.
+The workers return one subtotal per batch, and the example divides their sum by 61.
 
 ```{literalinclude} ../../examples/communication_constellation.py
 :language: python
@@ -108,10 +95,6 @@ another:
 :end-before: "--8<-- [end:communications-timestamps]"
 :dedent: 4
 ```
-
-On a four-core, eight-thread laptop this made the coverage stage about 2.5
-times as fast. Measure the worker count on your own machine: two workers were
-slower than the plain loop there.
 
 ## Analyze only Germany
 
@@ -151,6 +134,15 @@ The selected-cell path is covered by the same public CodSpeed suite. Its exact
 cost depends on how many cells are requested, so this example makes no separate
 wall-clock claim for Germany.
 
+For a network of ground stations, put their Earth-fixed Cartesian directions
+in an array `station_xyz` of shape `(stations, 3)`. Each station receives its
+hourly mean in input order, including stations that share a cell.
+
+```python
+site_cells = px.cell_at(station_xyz, resolution=12)
+mean_visible = analyze(resolution=12, candidate_cells=site_cells).mean_visible
+```
+
 ## Run the example
 
 ```bash
@@ -162,7 +154,6 @@ python examples/communication_constellation.py --output PATH
 
 [reference-benchmark]: https://github.com/JochimMaene/polypix/blob/bf26c009e6529367e1165cecbe7dbda486b5479c/benchmarks/test_polypix_benchmarks.py#L733
 [codspeed-run]: https://app.codspeed.io/JochimMaene/polypix/runs/compare/6a91b972915aa37294773c71..6a92bc48fd5591856db14fc8
-[docs-build-run]: https://github.com/JochimMaene/polypix/actions/runs/33249059091
 
 ## Adapting it
 

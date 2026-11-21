@@ -278,6 +278,17 @@ class PolypixTests(unittest.TestCase):
             np.arange(12 * 4**resolution, dtype=np.uint64),
         )
 
+    def test_tangent_cap_scan_agrees_with_candidate_query(self) -> None:
+        axis = [0.6530489370668127, -0.484334104580942, -0.5821920309791978]
+        radius = 0.08575289365991236
+        cell = 37222
+
+        full = px.cover_cap(axis, radius, resolution=6)
+        selected = px.cover_cap(axis, radius, resolution=6, candidate_cells=[cell])
+
+        np.testing.assert_array_equal(selected.cells, [cell])
+        np.testing.assert_array_equal(full.cells[full.cells == cell], selected.cells)
+
     def test_cover_cap_handles_empty_batches_poles_and_the_longitude_seam(self) -> None:
         resolution = 4
         empty = np.empty((0, 3), dtype=np.float64)

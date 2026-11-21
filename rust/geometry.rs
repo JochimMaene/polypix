@@ -56,7 +56,9 @@ pub(crate) fn norm(vector: Vec3) -> f64 {
     (vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]).sqrt()
 }
 
-pub(crate) fn normalize(vector: Vec3) -> Result<Vec3, String> {
+/// The largest absolute component, after the checks `normalize` makes. A
+/// vector that passes always normalizes, so callers can validate up front.
+pub(crate) fn vector_scale(vector: Vec3) -> Result<f64, String> {
     if !vector.iter().all(|value| value.is_finite()) {
         return Err("must contain only finite values.".to_owned());
     }
@@ -67,6 +69,11 @@ pub(crate) fn normalize(vector: Vec3) -> Result<Vec3, String> {
     if scale == 0.0 {
         return Err("must not be zero-length.".to_owned());
     }
+    Ok(scale)
+}
+
+pub(crate) fn normalize(vector: Vec3) -> Result<Vec3, String> {
+    let scale = vector_scale(vector)?;
     let scaled = [vector[0] / scale, vector[1] / scale, vector[2] / scale];
     let inverse_length = (scaled[0] * scaled[0] + scaled[1] * scaled[1] + scaled[2] * scaled[2])
         .sqrt()
@@ -97,11 +104,49 @@ fn normalized_edge(left: Vec3, right: Vec3) -> Result<Vec3, String> {
     ])
 }
 
+fn reverse_winding(vertices: &mut [Vec3], edge_normals: &mut [Vec3]) {
+    vertices.reverse();
+    // Reversing the vertices reverses every edge. The closing edge stays last.
+    edge_normals[..vertices.len() - 1].reverse();
+    for normal in edge_normals {
+        *normal = normal.map(|component| -component);
+    }
+}
+
 pub(crate) fn validate_polygon(
     vertices: &mut [Vec3],
     edge_normals: &mut [Vec3],
 ) -> Result<(), String> {
     debug_assert_eq!(vertices.len(), edge_normals.len());
+    if let &[a, b, c, d] = &*vertices {
+        let raw = [
+            stable_cross(a, b),
+            stable_cross(b, c),
+            stable_cross(c, d),
+            stable_cross(d, a),
+        ];
+        let turns = [
+            dot(raw[0], c),
+            dot(raw[1], d),
+            dot(raw[2], a),
+            dot(raw[3], b),
+        ];
+        // The two nonincident vertices of each edge use two of these same
+        // four determinants (cyclic permutations). A strict common sign
+        // proves convexity and winding. Duplicates, including near-duplicates,
+        // cannot clear this guard since all vertices are unit directions.
+        let guard = 4.0 * VERTEX_EQUALITY_EPSILON;
+        if turns.iter().all(|&t| t > guard) || turns.iter().all(|&t| t < -guard) {
+            for (normal, raw) in edge_normals.iter_mut().zip(raw) {
+                let length = norm(raw);
+                *normal = raw.map(|component| component / length);
+            }
+            if turns[0] < 0.0 {
+                reverse_winding(vertices, edge_normals);
+            }
+            return Ok(());
+        }
+    }
     for left in 0..vertices.len() {
         for other in (left + 1)..vertices.len() {
             if nearly_equal(vertices[left], vertices[other]) {
@@ -147,12 +192,7 @@ pub(crate) fn validate_polygon(
         return Err("Polygon is degenerate or numerically ambiguous.".to_owned());
     }
     if orientation < 0.0 {
-        vertices.reverse();
-        // Reversing the vertices reverses every edge. The closing edge stays last.
-        edge_normals[..vertices.len() - 1].reverse();
-        for normal in edge_normals.iter_mut() {
-            *normal = normal.map(|component| -component);
-        }
+        reverse_winding(vertices, edge_normals);
     }
 
     for index in 0..edge_normals.len() {
@@ -685,19 +725,31 @@ fn prepare_ring(raw_vertices: &[[f64; 3]]) -> Result<Ring, String> {
     if maximum_turn <= VALIDATION_TRIPLE_EPSILON {
         return Err("Ring is degenerate.".to_owned());
     }
-    for first in 0..projected.len() {
-        let first_next = (first + 1) % projected.len();
-        for second in (first + 1)..projected.len() {
-            let second_next = (second + 1) % projected.len();
-            if first == second || first_next == second || second_next == first {
-                continue;
+    // Disjoint x intervals cannot cross. Expand by the same endpoint tolerance
+    // as between() so touching edges still reach the full predicate.
+    let count = projected.len();
+    let mut edges: Vec<_> = (0..count).collect();
+    let x_min = |i: usize| projected[i][0].min(projected[(i + 1) % count][0]);
+    edges.sort_unstable_by(|&a, &b| x_min(a).total_cmp(&x_min(b)));
+    let max_x = projected.iter().map(|p| p[0].abs()).fold(0.0, f64::max);
+    let guard = 2.0 * CONTAINMENT_EPSILON * (1.0 + max_x);
+    for (i, &first) in edges.iter().enumerate() {
+        let first_next = (first + 1) % count;
+        let stop = projected[first][0].max(projected[first_next][0]) + guard;
+        for &second in &edges[i + 1..] {
+            if x_min(second) > stop {
+                break;
             }
-            if segments_touch_or_cross(
-                projected[first],
-                projected[first_next],
-                projected[second],
-                projected[second_next],
-            ) {
+            let second_next = (second + 1) % count;
+            if first_next != second
+                && second_next != first
+                && segments_touch_or_cross(
+                    projected[first],
+                    projected[first_next],
+                    projected[second],
+                    projected[second_next],
+                )
+            {
                 return Err("Ring must not cross or touch itself.".to_owned());
             }
         }
