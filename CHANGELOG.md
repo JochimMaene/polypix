@@ -16,18 +16,19 @@ omitted.
 
 ### Performance
 
-- Dense counts of about 10,000 caps, 3 to 9 degrees in radius, are 2.5 to 3.5
-  times as fast as in 1.0.0 on one thread at resolutions 4 to 7, and 1.8 to 4.4
-  times at resolutions 8 to 11. Coverage of the same caps is about 2.2 times
-  as fast.
+- Dense counts of about 10,000 caps, 3 to 9 degrees in radius, are about 4
+  times as fast as in 1.0.0 on one thread at resolutions 4 to 7, and 1.6 to 4.5
+  times at resolutions 8 to 11. Coverage of the same caps is about 2.3 times
+  as fast. Eight snapshots of the Starlink example, 86,000 caps, count about
+  4.6 times as fast at resolution 6.
 - Counting those caps at 1,024 scattered sites, such as ground stations, is
   about 9 times as fast as in 1.0.0 at resolutions 8 to 12. Over an area the
   size of Germany it is 5 to 9 times as fast at resolutions 8 and 9.
 - Sweeping a 290 km swath along one day of a polar orbit, sampled every minute,
-  is 3.2 to 3.8 times as fast as in 1.0.0 on one thread at resolutions 5 to 9.
-  A 10-degree strip along a meridian is about 1.5 times as fast at resolution
+  is 3.2 to 4.4 times as fast as in 1.0.0 on one thread at resolutions 5 to 9.
+  A 10-degree strip along a meridian is about 1.4 times as fast at resolution
   7, and a coarsely sampled diagonal swath is unchanged.
-- Batches of small quadrilaterals, about 0.7 by 0.5 degrees, are 1.45 to 1.65
+- Batches of small quadrilaterals, about 0.7 by 0.5 degrees, are 1.45 to 1.7
   times as fast as in 1.0.0 at resolutions 4 to 7.
 - `revisit()` over the Earth-observation example's three 14-day coverages is
   about 2.1 times as fast as in 1.0.0 on eight logical CPUs.

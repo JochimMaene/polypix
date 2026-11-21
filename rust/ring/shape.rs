@@ -85,6 +85,7 @@ pub(super) struct Quad {
     pub(super) len: usize,
 }
 
+#[derive(Clone, Copy)]
 pub(super) struct Cap {
     pub(super) axis: Vec3,
     pub(super) sine_radius: f64,
@@ -554,28 +555,51 @@ pub(super) fn cap_input(values: Vec3, radius: f64, index: usize) -> Result<(Vec3
 }
 
 pub(super) fn scan_cap(axis: Vec3, effective_radius: f64) -> Cap {
+    let mut cap = scan_cap_without_longitude(axis, effective_radius);
+    cap.longitude = exact_longitude(axis);
+    cap
+}
+
+/// The libm longitude every exact path uses, in [0, 2pi).
+#[inline]
+fn exact_longitude(axis: Vec3) -> f64 {
+    let longitude = axis[1].atan2(axis[0]);
+    if longitude < 0.0 {
+        longitude + TAU
+    } else {
+        longitude
+    }
+}
+
+/// Everything but the longitude, which callers fill in.
+#[inline(always)]
+fn scan_cap_without_longitude(axis: Vec3, effective_radius: f64) -> Cap {
     let (half_chord, half_complement_chord) = (0.5 * effective_radius).sin_cos();
-    let sine_radius = 2.0 * half_chord * half_complement_chord;
-    let cosine_radius = (half_complement_chord - half_chord) * (half_complement_chord + half_chord);
     let radial_squared = axis[0] * axis[0] + axis[1] * axis[1];
     let radial = if radial_squared.is_normal() {
         radial_squared.sqrt()
     } else {
         axis[0].hypot(axis[1])
     };
-    let longitude = axis[1].atan2(axis[0]);
-    // A cap reaches a pole exactly when the axis-to-pole dot product
-    // satisfies the same cosine predicate as any other point.
-    let maximum_z = if axis[2] >= cosine_radius {
-        1.0
-    } else {
-        axis[2] * cosine_radius + radial * sine_radius
-    };
-    let minimum_z = if -axis[2] >= cosine_radius {
-        -1.0
-    } else {
-        axis[2] * cosine_radius - radial * sine_radius
-    };
+    scan_cap_from(
+        axis,
+        effective_radius,
+        half_chord,
+        half_complement_chord,
+        radial,
+    )
+}
+
+#[inline(always)]
+fn scan_cap_from(
+    axis: Vec3,
+    effective_radius: f64,
+    half_chord: f64,
+    half_complement_chord: f64,
+    radial: f64,
+) -> Cap {
+    let (sine_radius, cosine_radius) = cap_sine_cosine(half_chord, half_complement_chord);
+    let (minimum_z, maximum_z) = cap_z_extent(axis[2], radial, sine_radius, cosine_radius);
     Cap {
         axis,
         sine_radius,
@@ -584,15 +608,36 @@ pub(super) fn scan_cap(axis: Vec3, effective_radius: f64) -> Cap {
         complement_squared_chord: 4.0 * half_complement_chord * half_complement_chord,
         complement: effective_radius > std::f64::consts::FRAC_PI_2,
         full_sphere: effective_radius == std::f64::consts::PI,
-        minimum_z: minimum_z.clamp(-1.0, 1.0),
-        maximum_z: maximum_z.clamp(-1.0, 1.0),
-        longitude: if longitude < 0.0 {
-            longitude + TAU
-        } else {
-            longitude
-        },
+        minimum_z,
+        maximum_z,
+        longitude: f64::NAN,
         radial,
     }
+}
+
+#[inline(always)]
+fn cap_sine_cosine(half_chord: f64, half_complement_chord: f64) -> (f64, f64) {
+    (
+        2.0 * half_chord * half_complement_chord,
+        (half_complement_chord - half_chord) * (half_complement_chord + half_chord),
+    )
+}
+
+#[inline(always)]
+fn cap_z_extent(z: f64, radial: f64, sine_radius: f64, cosine_radius: f64) -> (f64, f64) {
+    // A cap reaches a pole exactly when the axis-to-pole dot product
+    // satisfies the same cosine predicate as any other point.
+    let maximum_z = if z >= cosine_radius {
+        1.0
+    } else {
+        z * cosine_radius + radial * sine_radius
+    };
+    let minimum_z = if -z >= cosine_radius {
+        -1.0
+    } else {
+        z * cosine_radius - radial * sine_radius
+    };
+    (minimum_z.clamp(-1.0, 1.0), maximum_z.clamp(-1.0, 1.0))
 }
 
 pub(super) fn prepare_caps(centers: &[f64], radii: &[f64]) -> NativeResult<Vec<Cap>> {
@@ -696,10 +741,32 @@ fn narrow_half_width(t: f64, scale: f64) -> f64 {
     (2.0 * t.sqrt() * scale) * (1.0 + t * (1.0 / 6.0 + t * (3.0 / 40.0)))
 }
 
+/// 2 asin(sqrt(t)) in bins from ten series terms, for t <= 1/4.
+#[inline(always)]
+fn series_half_width(t: f64, scale: f64) -> f64 {
+    const ASIN: [f64; 10] = [
+        1.0,
+        1.0 / 6.0,
+        3.0 / 40.0,
+        5.0 / 112.0,
+        35.0 / 1152.0,
+        63.0 / 2816.0,
+        231.0 / 13312.0,
+        143.0 / 10240.0,
+        6435.0 / 557_056.0,
+        12155.0 / 1_245_184.0,
+    ];
+    let mut series = ASIN[9];
+    for c in ASIN[..9].iter().rev() {
+        series = series * t + c;
+    }
+    (2.0 * t.sqrt() * scale) * series
+}
+
 /// Integer longitude bins for a narrow cap crossing. The validity flag keeps
 /// the four independent solves vectorizable, including their boundary guards.
 #[inline(always)]
-fn narrow_cap_bins(
+fn narrow_cap_bins<const LONG_SERIES: bool>(
     cap: &Cap,
     ring: &ScanRing,
     inverse_amplitude: f64,
@@ -709,12 +776,16 @@ fn narrow_cap_bins(
     let dz = ring.ring.z - cap.axis[2];
     let available = cap.squared_chord_radius - (dr * dr + dz * dz);
     let t = available * (inverse_amplitude * ring.inverse_radial);
-    let narrow = (t > 0.0) & (t <= 1.0 / 16.0);
+    let narrow = (t > 0.0) & (t <= if LONG_SERIES { 0.25 } else { 1.0 / 16.0 });
     // Keep speculative lanes finite, including zero-amplitude polar rings.
     let t = if narrow { t } else { 0.0 };
     let x = t.sqrt();
     let scale = ring.offsets_per_radian;
-    let width = narrow_half_width(t, scale);
+    let width = if LONG_SERIES {
+        series_half_width(t, scale)
+    } else {
+        narrow_half_width(t, scale)
+    };
     let axis = cap.longitude * scale - ring.ring.shift;
     let west = axis - width;
     let east = axis + width;
@@ -723,15 +794,21 @@ fn narrow_cap_bins(
     const BIAS: f64 = (3_u64 << 51) as f64;
     let first = (west - 0.5) + BIAS;
     let last = (east - 0.5) + BIAS;
-    // For x <= 1/4 the omitted asin terms sum to less than (5/112) x^7 / (1-x^2).
+    // For x <= 1/4 the omitted asin terms of the short series sum to less
+    // than (5/112) x^7 / (1-x^2); for x <= 1/2 those of the long series to
+    // less than (46189/5505024) x^21 / (1-x^2). Twice either is the bound below.
     // Near a tangent, sqrt magnifies the rounding in `available`. Since
     // |sqrt(a) - sqrt(b)| <= sqrt(|a - b|), x is off by at most
     // sqrt(1024 eps * inverse_amplitude * inverse_radial), split per cap and ring.
     let rounding = cap_rounding * ring.root_inverse_radial;
-    let guard = scale
-        * (0.1 * x * t * t * t
-            + 2.0 * rounding
-            + 2.0 * INDEX_UNCERTAINTY_ULPS * f64::EPSILON * TAU);
+    let truncation = if LONG_SERIES {
+        let t4 = (t * t) * (t * t);
+        0.023 * x * (t4 * t4) * (t * t)
+    } else {
+        0.1 * x * t * t * t
+    };
+    let guard =
+        scale * (truncation + 2.0 * rounding + 2.0 * INDEX_UNCERTAINTY_ULPS * f64::EPSILON * TAU);
     let clear = (((west - 0.5) - (first - BIAS)).abs() < 0.5 - guard)
         & (((east - 0.5) - (last - BIAS)).abs() < 0.5 - guard);
     (
@@ -780,7 +857,7 @@ fn count_cap_band(group: &[BandedCap; CAP_LANES], rings: &[ScanRing], deltas: &m
         }
         for (item, (west, east)) in group.iter().zip(west.into_iter().zip(east)) {
             if west & 1023 == 0 || east & 1023 == 0 {
-                visit_cap_ring(&item.cap, scan, &mut |span| {
+                visit_cap_ring(&item.cap.with_exact_longitude(), scan, &mut |span| {
                     deltas[span.start as usize] += 1;
                     deltas[span.end as usize] -= 1;
                 });
@@ -796,12 +873,135 @@ fn count_cap_band(group: &[BandedCap; CAP_LANES], rings: &[ScanRing], deltas: &m
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
+#[inline(never)]
 unsafe fn count_cap_band_avx2(
     group: &[BandedCap; CAP_LANES],
     rings: &[ScanRing],
     deltas: &mut [i64],
 ) {
     count_cap_band(group, rings, deltas);
+}
+
+/// Caps prepared side by side before any is counted. Each stage is a short
+/// loop over a structure of arrays without data-dependent branches, so the
+/// divisions and square roots of neighbouring caps overlap (or share a vector)
+/// instead of each cap waiting out its own dependency chain.
+const PREPARE_BLOCK: usize = 32;
+
+#[derive(Clone, Copy)]
+struct CapBlock {
+    axis: [[f64; PREPARE_BLOCK]; 3],
+    radius: [f64; PREPARE_BLOCK],
+    half_chord: [f64; PREPARE_BLOCK],
+    half_complement_chord: [f64; PREPARE_BLOCK],
+    radial: [f64; PREPARE_BLOCK],
+    longitude: [f64; PREPARE_BLOCK],
+    sine_radius: [f64; PREPARE_BLOCK],
+    cosine_radius: [f64; PREPARE_BLOCK],
+    minimum_z: [f64; PREPARE_BLOCK],
+    maximum_z: [f64; PREPARE_BLOCK],
+    /// `cap_ring_range`, as floats so the block solves it in vectors.
+    first_ring: [f64; PREPARE_BLOCK],
+    last_ring: [f64; PREPARE_BLOCK],
+}
+
+impl CapBlock {
+    /// The same operations as `cap_input` and `scan_cap`, cap by cap, so
+    /// every exact field matches. Returns false if any input is invalid.
+    #[inline(always)]
+    fn prepare(&mut self, centers: &[f64], radii: &[f64], nside: u64) -> bool {
+        let mut valid = true;
+        for (i, (v, &radius)) in centers.chunks_exact(3).zip(radii).enumerate() {
+            let finite = v[0].is_finite() & v[1].is_finite() & v[2].is_finite();
+            let scale = v[0].abs().max(v[1].abs()).max(v[2].abs());
+            valid &= finite & (scale != 0.0) & (0.0..=std::f64::consts::PI).contains(&radius);
+            let scaled = [v[0] / scale, v[1] / scale, v[2] / scale];
+            let inverse_length =
+                (scaled[0] * scaled[0] + scaled[1] * scaled[1] + scaled[2] * scaled[2])
+                    .sqrt()
+                    .recip();
+            for (axis, scaled) in self.axis.iter_mut().zip(scaled) {
+                axis[i] = scaled * inverse_length;
+            }
+            self.radius[i] = (radius + CONTAINMENT_EPSILON).min(std::f64::consts::PI);
+        }
+        if !valid {
+            return false;
+        }
+        let count = radii.len();
+        for i in 0..count {
+            let (half_chord, half_complement_chord) = (0.5 * self.radius[i]).sin_cos();
+            self.half_chord[i] = half_chord;
+            self.half_complement_chord[i] = half_complement_chord;
+        }
+        let mut abnormal = false;
+        for i in 0..count {
+            let (x, y) = (self.axis[0][i], self.axis[1][i]);
+            let radial_squared = x * x + y * y;
+            abnormal |= !radial_squared.is_normal();
+            self.radial[i] = radial_squared.sqrt();
+            self.longitude[i] = kernel_longitude(x, y);
+        }
+        if abnormal {
+            for i in 0..count {
+                let (x, y) = (self.axis[0][i], self.axis[1][i]);
+                if !(x * x + y * y).is_normal() {
+                    self.radial[i] = x.hypot(y);
+                }
+            }
+        }
+        // grid::cap_ring_range without its branches. Each position is
+        // positive, so truncating and rounding up is a ceiling.
+        debug_assert!(nside <= 1 << 12);
+        let side = nside as f64;
+        let first_ring = |z: f64| {
+            let z = z + 64.0 * f64::EPSILON;
+            let polar = side * (3.0 * (1.0 - z.abs()).max(0.0)).sqrt();
+            let position = if z.abs() <= 2.0 / 3.0 {
+                side * (2.0 - 1.5 * z)
+            } else if z > 0.0 {
+                polar
+            } else {
+                4.0 * side - polar
+            };
+            position.ceil().max(1.0)
+        };
+        for i in 0..count {
+            let (sine, cosine) = cap_sine_cosine(self.half_chord[i], self.half_complement_chord[i]);
+            let (minimum_z, maximum_z) =
+                cap_z_extent(self.axis[2][i], self.radial[i], sine, cosine);
+            self.sine_radius[i] = sine;
+            self.cosine_radius[i] = cosine;
+            self.minimum_z[i] = minimum_z;
+            self.maximum_z[i] = maximum_z;
+            self.first_ring[i] = first_ring(maximum_z);
+            self.last_ring[i] = 4.0 * side - first_ring(-minimum_z);
+        }
+        true
+    }
+
+    /// Cap `i` with the kernel longitude.
+    #[inline(always)]
+    fn cap(&self, i: usize) -> Cap {
+        let (radius, half_chord, half_complement_chord) = (
+            self.radius[i],
+            self.half_chord[i],
+            self.half_complement_chord[i],
+        );
+        Cap {
+            axis: [self.axis[0][i], self.axis[1][i], self.axis[2][i]],
+            sine_radius: self.sine_radius[i],
+            cosine_radius: self.cosine_radius[i],
+            squared_chord_radius: 4.0 * half_chord * half_chord,
+            complement_squared_chord: 4.0 * half_complement_chord * half_complement_chord,
+            complement: radius > std::f64::consts::FRAC_PI_2,
+            full_sphere: radius == std::f64::consts::PI,
+            minimum_z: self.minimum_z[i],
+            maximum_z: self.maximum_z[i],
+            longitude: self.longitude[i],
+            radial: self.radial[i],
+        }
+    }
 }
 
 pub(super) fn add_cap_batch(
@@ -811,57 +1011,187 @@ pub(super) fn add_cap_batch(
     resolution: u8,
     deltas: &mut [i64],
 ) -> NativeResult<()> {
+    #[cfg(target_arch = "x86_64")]
+    if is_x86_feature_detected!("avx2") {
+        // SAFETY: the runtime check covers this function's target feature.
+        return unsafe { add_cap_batch_avx2(centers, radii, start, resolution, deltas) };
+    }
+    add_cap_batch_with(centers, radii, start, resolution, deltas, count_cap_band)
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn add_cap_batch_avx2(
+    centers: &[f64],
+    radii: &[f64],
+    start: usize,
+    resolution: u8,
+    deltas: &mut [i64],
+) -> NativeResult<()> {
+    add_cap_batch_with(
+        centers,
+        radii,
+        start,
+        resolution,
+        deltas,
+        |group, rings, deltas| {
+            // SAFETY: this function's caller checked for AVX2.
+            unsafe { count_cap_band_avx2(group, rings, deltas) }
+        },
+    )
+}
+
+#[inline(always)]
+fn add_cap_batch_with(
+    centers: &[f64],
+    radii: &[f64],
+    start: usize,
+    resolution: u8,
+    deltas: &mut [i64],
+    count_band: impl Fn(&[BandedCap; CAP_LANES], &[ScanRing], &mut [i64]),
+) -> NativeResult<()> {
     let nside = 1 << resolution;
     let rings = (resolution <= 7 && radii.len() >= CAP_LANES * nside as usize)
         .then(|| cached_scan_rings(resolution))
         .flatten();
+    // Without the ring table no cap reaches the band kernel, and a block
+    // would compute kernel longitudes only to replace each one.
+    let Some(rings) = rings else {
+        for input in cap_inputs(centers, radii, start) {
+            let (axis, radius) = input?;
+            super::cover::add_cap_deltas(deltas, &scan_cap(axis, radius), resolution);
+        }
+        return Ok(());
+    };
     let mut groups = Vec::new();
-    let group_count = rings.map_or(0, |r| r.len().div_ceil(4));
+    let group_count = rings.len().div_ceil(2);
     let oom = || NativeError::out_of_memory(crate::error::COVERAGE_OUT_OF_MEMORY);
     groups.try_reserve_exact(group_count).map_err(|_| oom())?;
     groups.resize_with(group_count, Vec::new);
-    for input in cap_inputs(centers, radii, start) {
-        let (axis, radius) = input?;
-        let cap = scan_cap(axis, radius);
-        // These caps avoid both poles and the longitude seam. Their widest
-        // crossing is asin(0.32), so t < 0.027. The first omitted asin term
-        // and its tail cost < 0.1 * 0.165^7 radians. The tangent guard from
-        // narrow_cap_bins is < 2.1e-6 radians (ring radial > 0.18 on a
-        // crossing). Together these are < 1/2048 bin through resolution 7.
-        let compact = !cap.complement
-            && cap.radial >= 0.3
-            && cap.sine_radius <= 0.32 * cap.radial
-            && (cap.axis[0] <= 0.0 || cap.axis[1].abs() > cap.sine_radius + CONTAINMENT_EPSILON);
-        if let Some(rings) = rings.filter(|_| compact) {
-            let (first, last) = cap_ring_range(nside, cap.minimum_z, cap.maximum_z);
-            if first > last {
-                continue;
+    let empty = [0.0; PREPARE_BLOCK];
+    let mut block = CapBlock {
+        axis: [empty; 3],
+        radius: empty,
+        half_chord: empty,
+        half_complement_chord: empty,
+        radial: empty,
+        longitude: empty,
+        sine_radius: empty,
+        cosine_radius: empty,
+        minimum_z: empty,
+        maximum_z: empty,
+        first_ring: empty,
+        last_ring: empty,
+    };
+    for (index, (centers, radii)) in centers
+        .chunks(3 * PREPARE_BLOCK)
+        .zip(radii.chunks(PREPARE_BLOCK))
+        .enumerate()
+    {
+        if !block.prepare(centers, radii, nside) {
+            // Report the first invalid input in input order.
+            for input in cap_inputs(centers, radii, start + index * PREPARE_BLOCK) {
+                let (axis, radius) = input?;
+                super::cover::add_cap_deltas(deltas, &scan_cap(axis, radius), resolution);
             }
-            let band = first as usize - 1..last as usize;
-            let group = &mut groups[band.start / 4];
-            if group.capacity() == 0 {
-                group.try_reserve_exact(CAP_LANES).map_err(|_| oom())?;
-            }
-            group.push(BandedCap { cap, rings: band });
-            if let Ok(batch) = group.as_slice().try_into() {
-                #[cfg(target_arch = "x86_64")]
-                if is_x86_feature_detected!("avx2") {
-                    // SAFETY: the runtime check covers this function's target feature.
-                    unsafe { count_cap_band_avx2(batch, rings, deltas) };
-                    group.clear();
+            continue;
+        }
+        for i in 0..radii.len() {
+            let cap = block.cap(i);
+            // These caps avoid both poles and the longitude seam. Their widest
+            // crossing is asin(0.32), so t < 0.027. The first omitted asin term
+            // and its tail cost < 0.1 * 0.165^7 radians. The tangent guard from
+            // narrow_cap_bins is < 2.1e-6 radians (ring radial > 0.18 on a
+            // crossing), and kernel_longitude is off by < 1e-13 radians.
+            // Together these are < 1/2048 bin through resolution 7.
+            let compact = !cap.complement
+                && cap.radial >= 0.3
+                && cap.sine_radius <= 0.32 * cap.radial
+                && (cap.axis[0] <= 0.0
+                    || cap.axis[1].abs() > cap.sine_radius + CONTAINMENT_EPSILON);
+            if compact {
+                let (first, last) = (block.first_ring[i], block.last_ring[i]);
+                if first > last {
                     continue;
                 }
-                count_cap_band(batch, rings, deltas);
-                group.clear();
+                let band = first as usize - 1..last as usize;
+                let group = &mut groups[band.start / 2];
+                if group.capacity() == 0 {
+                    group.try_reserve_exact(CAP_LANES).map_err(|_| oom())?;
+                }
+                group.push(BandedCap { cap, rings: band });
+                if let Ok(batch) = group.as_slice().try_into() {
+                    count_band(batch, rings, deltas);
+                    group.clear();
+                }
+            } else {
+                super::cover::add_cap_deltas(deltas, &cap.with_exact_longitude(), resolution);
             }
-        } else {
-            super::cover::add_cap_deltas(deltas, &cap, resolution);
         }
     }
     for item in groups.iter().flatten() {
-        super::cover::add_cap_deltas(deltas, &item.cap, resolution);
+        super::cover::add_cap_deltas(deltas, &item.cap.with_exact_longitude(), resolution);
     }
     Ok(())
+}
+
+/// atan2(y, x) in [0, 2pi) to within 1e-13 radians. Selects rather than
+/// branches keep a block of these vectorizable. Exact paths still use libm.
+#[inline(always)]
+fn kernel_longitude(x: f64, y: f64) -> f64 {
+    // (atan(q) - q) / q^3 as a polynomial in q^2 on |q| <= tan(pi/8).
+    const ODD: [f64; 8] = [
+        -0.333_333_333_332_661_96,
+        0.199_999_999_498_547_94,
+        -0.142_857_081_103_604,
+        0.111_108_197_167_456_76,
+        -0.090_841_018_953_464_29,
+        0.076_048_000_460_782_92,
+        -0.060_273_074_609_466_75,
+        0.032_956_795_418_701_36,
+    ];
+    const TAN_PI_8: f64 = 0.414_213_562_373_095_03;
+    let (ax, ay) = (x.abs(), y.abs());
+    let (low, high) = (ax.min(ay), ax.max(ay));
+    // atan(low / high) = pi/4 + atan((low - high) / (low + high)).
+    let upper = low > TAN_PI_8 * high;
+    // The clamp gives the pole a longitude of zero, as atan2 does.
+    let q = if upper { low - high } else { low }
+        / if upper {
+            low + high
+        } else {
+            high.max(f64::MIN_POSITIVE)
+        };
+    let u = q * q;
+    let mut p = ODD[7];
+    for c in ODD[..7].iter().rev() {
+        p = p * u + c;
+    }
+    let mut angle = q
+        + q * u * p
+        + if upper {
+            std::f64::consts::FRAC_PI_4
+        } else {
+            0.0
+        };
+    if ay > ax {
+        angle = std::f64::consts::FRAC_PI_2 - angle;
+    }
+    if x < 0.0 {
+        angle = std::f64::consts::PI - angle;
+    }
+    if y < 0.0 {
+        angle = TAU - angle;
+    }
+    angle
+}
+
+impl Cap {
+    fn with_exact_longitude(&self) -> Cap {
+        let mut cap = *self;
+        cap.longitude = exact_longitude(cap.axis);
+        cap
+    }
 }
 
 pub(super) fn visit_cap_ranges_in_rings(
@@ -882,8 +1212,8 @@ pub(super) fn visit_cap_ranges_in_rings(
             visit_cap_ring(cap, scan_ring, &mut visit);
         } else if first < end {
             let count = ring.cells as i64;
-            // longitude in [0, TAU), shift <= 1/2 and t <= 1/16 keep the span
-            // under a twelfth of the ring, so at most one end leaves [0, count].
+            // longitude in [0, TAU), shift <= 1/2 and t <= 1/4 keep the span
+            // under a third of the ring, so at most one end leaves [0, count].
             debug_assert!(first > -count && end < 2 * count);
             if first >= 0 && end <= count {
                 visit(ring.start + first as u64..ring.start + end as u64);
@@ -903,6 +1233,9 @@ pub(super) fn visit_cap_ranges_in_rings(
             }
         }
     };
+    // A crossing reaches t > 1/16 only if the cap spans more than
+    // 2 asin(1/4) of longitude, so sin r > ~0.48 radial: near a pole.
+    let long_series = cap.sine_radius > 0.48 * cap.radial;
     if let Some(table) = cached_scan_rings(resolution) {
         let rings = &table[first_ring as usize - 1..last_ring as usize];
         if cap.complement {
@@ -911,31 +1244,48 @@ pub(super) fn visit_cap_ranges_in_rings(
             }
             return;
         }
-        let mut groups = rings.chunks_exact(4);
-        for group in &mut groups {
-            let bins = std::array::from_fn::<_, 4, _>(|i| {
-                narrow_cap_bins(cap, &group[i], inverse_amplitude, cap_rounding)
-            });
-            for (ring, span) in group.iter().zip(bins) {
-                emit(ring, span);
-            }
-        }
-        for ring in groups.remainder() {
-            emit(
-                ring,
-                narrow_cap_bins(cap, ring, inverse_amplitude, cap_rounding),
-            );
+        if long_series {
+            solve_cap_rings::<true>(cap, rings, inverse_amplitude, cap_rounding, &mut emit);
+        } else {
+            solve_cap_rings::<false>(cap, rings, inverse_amplitude, cap_rounding, &mut emit);
         }
     } else {
         for index in first_ring..=last_ring {
             let ring = ScanRing::new(ring_info(1 << resolution, index));
             let span = if cap.complement {
                 (0, 0, false)
+            } else if long_series {
+                narrow_cap_bins::<true>(cap, &ring, inverse_amplitude, cap_rounding)
             } else {
-                narrow_cap_bins(cap, &ring, inverse_amplitude, cap_rounding)
+                narrow_cap_bins::<false>(cap, &ring, inverse_amplitude, cap_rounding)
             };
             emit(&ring, span);
         }
+    }
+}
+
+#[inline(always)]
+fn solve_cap_rings<const LONG_SERIES: bool>(
+    cap: &Cap,
+    rings: &[ScanRing],
+    inverse_amplitude: f64,
+    cap_rounding: f64,
+    emit: &mut impl FnMut(&ScanRing, (i64, i64, bool)),
+) {
+    let mut groups = rings.chunks_exact(4);
+    for group in &mut groups {
+        let bins = std::array::from_fn::<_, 4, _>(|i| {
+            narrow_cap_bins::<LONG_SERIES>(cap, &group[i], inverse_amplitude, cap_rounding)
+        });
+        for (ring, span) in group.iter().zip(bins) {
+            emit(ring, span);
+        }
+    }
+    for ring in groups.remainder() {
+        emit(
+            ring,
+            narrow_cap_bins::<LONG_SERIES>(cap, ring, inverse_amplitude, cap_rounding),
+        );
     }
 }
 
@@ -2175,10 +2525,16 @@ fn cover_short_quad(quad: &Quad, resolution: u8, cells: &mut Vec<u64>) -> Native
         let b = ny * cos - nx * sin;
         // Dividing the edge predicate by ring.radial gives
         // a*cos(d) + b*sin(d) + nz*tan(latitude), d = longitude - origin.
-        // Bound the error of replacing cos(d) by 1 and sin(d) by d,
-        // including the inclusive plane tolerance and floating-point error.
-        let plane_error = half_width * half_width * (a.abs() * 0.5 + b.abs() * half_width / 6.0)
+        // For |d| <= h, cos(d) lies within h²/4 of 1 - h²/4. Subtracting
+        // d*(1-h²/8) from the cubic sine expansion leaves a cubic with
+        // extrema ±h³/24, plus the Taylor remainder bounded by h⁵/120.
+        // Tighter bounds leave fewer cell centers to test on the fringe.
+        let square = half_width * half_width;
+        let plane_error = square
+            * (a.abs() * 0.25 + b.abs() * half_width * (1.0 / 24.0 + square / 120.0))
             + (CONTAINMENT_EPSILON + 128.0 * f64::EPSILON) / MIN_RADIAL;
+        let a = a * (1.0 - square / 4.0);
+        let b = b * (1.0 - square / 8.0);
         if b.abs() * half_width <= plane_error {
             return Ok(false);
         }
@@ -2243,10 +2599,12 @@ fn cover_short_quad(quad: &Quad, resolution: u8, cells: &mut Vec<u64>) -> Native
         let end = after(outer_east);
         let inner_first = after(max(west, max(w1.1, w2.1))).min(end);
         let inner_end = after(min(east, min(e1.0, e2.0))).max(inner_first);
-        // Room for this ring's cells plus a fixed-width interior write.
-        cells
-            .try_reserve((end - first) as usize + RUN_BLOCK)
-            .map_err(|_| NativeError::out_of_memory(crate::error::COVERAGE_OUT_OF_MEMORY))?;
+        let needed = (end - first) as usize + RUN_BLOCK;
+        if cells.capacity() - cells.len() < needed {
+            cells
+                .try_reserve(needed)
+                .map_err(|_| NativeError::out_of_memory(crate::error::COVERAGE_OUT_OF_MEMORY))?;
+        }
         let fringe = |offsets: Range<u32>, cells: &mut Vec<u64>| {
             let directions = ring_directions(ring);
             for offset in offsets {
@@ -2453,7 +2811,7 @@ mod tests {
         contains_center, cross, dot, norm, normalize, polygon_contains, prepare_polygon, Vec3,
         CONTAINMENT_EPSILON,
     };
-    use crate::ring::grid::{center, raw_cell_count, ring_range};
+    use crate::ring::grid::{cap_ring_range, center, raw_cell_count, ring_range};
 
     #[test]
     fn narrow_cap_spans_resolve_both_sides_of_cell_boundaries() {
@@ -2488,6 +2846,142 @@ mod tests {
                         );
                     }
                     assert_eq!(cells, expected, "{bins} bins, delta {delta}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn polar_cap_spans_match_center_tests_at_cell_boundaries() {
+        // Caps near a pole cross rings at t in (1/16, 1/4], where the long
+        // asin series answers. Put their edges on cell centers, then nudge
+        // them to either side, and compare each ring with point tests.
+        let mut seed = 0x9013_u64;
+        // Resolution 13 takes the uncached ring path. Every cap stays within
+        // the first eight rings around a pole, so point tests stay cheap.
+        for resolution in [3, 6, 9, 13] {
+            let nside = 1_u64 << resolution;
+            let reach = 6.5 / nside as f64;
+            let mut tested = 0;
+            while tested < 200 {
+                let north = tested % 2 == 0;
+                let index = (uniform(&mut seed) * 144.0) as u64;
+                let cell = if north {
+                    index
+                } else {
+                    raw_cell_count(resolution) - 1 - index
+                };
+                let point = center(cell, resolution);
+                let (colatitude, longitude) =
+                    (reach * uniform(&mut seed), TAU * uniform(&mut seed));
+                let axis = [
+                    colatitude.sin() * longitude.cos(),
+                    colatitude.sin() * longitude.sin(),
+                    if north { 1.0 } else { -1.0 } * colatitude.cos(),
+                ];
+                let chord = norm(std::array::from_fn(|k| axis[k] - point[k]));
+                let distance = 2.0 * (0.5 * chord).asin() - CONTAINMENT_EPSILON;
+                let cap = super::scan_cap(axis, distance.max(0.0));
+                if distance < 0.5 / nside as f64 || cap.sine_radius <= 0.48 * cap.radial {
+                    continue;
+                }
+                tested += 1;
+                for offset in [0.0, 1e-13, -1e-13, 1e-9, -1e-9] {
+                    let cap = super::scan_cap(axis, distance + offset);
+                    let (first, last) = ring_range(nside, cap.minimum_z, cap.maximum_z);
+                    let mut cells = Vec::new();
+                    super::visit_cap_ranges_in_rings(&cap, resolution, first, last, |range| {
+                        cells.extend(range)
+                    });
+                    let mut expected = Vec::new();
+                    for index in first..=last {
+                        let ring = ring_info(nside, index);
+                        expected.extend(
+                            (0..ring.cells)
+                                .filter(|&j| cap.contains_on_ring(&ring, j))
+                                .map(|j| ring.start + j),
+                        );
+                    }
+                    assert_eq!(cells, expected, "resolution {resolution}, {axis:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cap_blocks_match_scalar_caps_bit_for_bit() {
+        // Exact paths take a block cap as is, so every field but the kernel
+        // longitude must equal scan_cap's, and the ring range cap_ring_range's.
+        let mut seed = 0x5eed_b10c_u64;
+        let (mut centers, mut radii) = (Vec::new(), Vec::new());
+        for i in 0..4096 {
+            let scale = [1e-300, 1e-3, 1.0, 7e3, 1e300][i % 5];
+            let mut axis = [0.0; 3].map(|_| scale * (2.0 * uniform(&mut seed) - 1.0));
+            // Poles, the seam, axes and both tan(pi/8) octant boundaries.
+            match i % 7 {
+                0 => axis[0] = 0.0,
+                1 => axis[1] = 0.0,
+                2 => (axis[0], axis[1]) = (0.0, 0.0),
+                3 => axis[1] = axis[0] * 0.414_213_562_373_095,
+                4 => axis[1] = -axis[0],
+                _ => {}
+            }
+            if axis == [0.0; 3] {
+                axis[2] = 1.0;
+            }
+            centers.extend(axis);
+            radii.push(std::f64::consts::PI * uniform(&mut seed).powi(1 + i as i32 % 4));
+        }
+        for resolution in [0, 6, 7, 12] {
+            let nside = 1 << resolution;
+            let mut block = super::CapBlock {
+                axis: [[0.0; super::PREPARE_BLOCK]; 3],
+                radius: [0.0; super::PREPARE_BLOCK],
+                half_chord: [0.0; super::PREPARE_BLOCK],
+                half_complement_chord: [0.0; super::PREPARE_BLOCK],
+                radial: [0.0; super::PREPARE_BLOCK],
+                longitude: [0.0; super::PREPARE_BLOCK],
+                sine_radius: [0.0; super::PREPARE_BLOCK],
+                cosine_radius: [0.0; super::PREPARE_BLOCK],
+                minimum_z: [0.0; super::PREPARE_BLOCK],
+                maximum_z: [0.0; super::PREPARE_BLOCK],
+                first_ring: [0.0; super::PREPARE_BLOCK],
+                last_ring: [0.0; super::PREPARE_BLOCK],
+            };
+            let blocks = centers.chunks(3 * super::PREPARE_BLOCK);
+            for (centers, radii) in blocks.zip(radii.chunks(super::PREPARE_BLOCK)) {
+                assert!(block.prepare(centers, radii, nside));
+                for (i, input) in super::cap_inputs(centers, radii, 0).enumerate() {
+                    let (axis, radius) = input.unwrap();
+                    let (actual, expected) = (block.cap(i), super::scan_cap(axis, radius));
+                    let bits = |cap: &super::Cap| {
+                        [
+                            cap.axis[0],
+                            cap.axis[1],
+                            cap.axis[2],
+                            cap.sine_radius,
+                            cap.cosine_radius,
+                            cap.squared_chord_radius,
+                            cap.complement_squared_chord,
+                            cap.minimum_z,
+                            cap.maximum_z,
+                            cap.radial,
+                        ]
+                        .map(f64::to_bits)
+                    };
+                    assert_eq!(bits(&actual), bits(&expected), "{axis:?} {radius}");
+                    assert_eq!(
+                        (actual.complement, actual.full_sphere),
+                        (expected.complement, expected.full_sphere)
+                    );
+                    let error = (actual.longitude - expected.longitude).abs();
+                    assert!(error.min(TAU - error) < 1e-13, "{axis:?}: {error:e}");
+                    let (first, last) =
+                        cap_ring_range(nside, expected.minimum_z, expected.maximum_z);
+                    assert_eq!(
+                        (block.first_ring[i], block.last_ring[i]),
+                        (first as f64, last as f64)
+                    );
                 }
             }
         }
