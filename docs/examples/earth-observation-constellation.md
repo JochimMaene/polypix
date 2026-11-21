@@ -39,10 +39,10 @@ complete example. [Build log][docs-build-run]
 
 | Stage | Time |
 | --- | ---: |
-| SGP4 propagation and swath edges | 12 ms |
-| 3 `cover_sweep()` calls | **31 ms** |
-| `revisit()` and gap conversion | 12 ms |
-| Complete analysis | 55 ms |
+| SGP4 propagation and swath edges | 9 ms |
+| 3 `cover_sweep()` calls | **18 ms** |
+| `revisit()` and gap conversion | 10 ms |
+| Complete analysis | 36 ms |
 
 Times are rounded to the nearest millisecond and cover analysis before plotting.
 
@@ -112,4 +112,4 @@ python examples/earth_observation_constellation.py \
 
 [reference-benchmark]: https://github.com/JochimMaene/polypix/blob/573cac31880f1be79c2963e390058a5cbb369864/benchmarks/test_polypix_benchmarks.py#L1068
 [codspeed-run]: https://github.com/JochimMaene/polypix/runs/135533390069
-[docs-build-run]: https://github.com/JochimMaene/polypix/actions/runs/44518637415/job/135541164097#step:5:1
+[docs-build-run]: https://github.com/JochimMaene/polypix/actions/runs/44895733631/job/136820861260#step:5:1
