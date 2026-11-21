@@ -6,6 +6,8 @@ omitted.
 
 ## Unreleased
 
+## [1.1.0] — 2026-11-21
+
 ### Features
 
 - Python 3.15 is supported.
@@ -251,7 +253,8 @@ changes to Apache-2.0. Earlier releases keep their original license.
 - Returned packed HEALPix NESTED cell IDs with center and boundary helpers.
 - Published Python 3.12 wheels for Linux and macOS.
 
-[Unreleased]: https://github.com/JochimMaene/polypix/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/JochimMaene/polypix/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/JochimMaene/polypix/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/JochimMaene/polypix/compare/v0.5.1...v1.0.0
 [0.5.1]: https://github.com/JochimMaene/polypix/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/JochimMaene/polypix/compare/v0.4.0...v0.5.0
