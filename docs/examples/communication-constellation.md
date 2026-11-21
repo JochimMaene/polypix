@@ -24,7 +24,7 @@ gateways, terrain, and the atmosphere are all outside the scope of the example.
 
 The [pinned CodSpeed run][codspeed-run] measures one single-threaded timestamp
 of this workload—10,771 caps at resolution 6 with dense `Count()` reduction—at
-about **32 ms** in simulation mode. The case study counts the same geometry across
+about **19 ms** in simulation mode. The case study counts the same geometry across
 61 timestamps in batches. This is a stable regression reference, not wall-clock time
 promised for a particular machine; propagation and plotting are outside the
 [benchmark definition][reference-benchmark].
@@ -152,8 +152,8 @@ python examples/communication_constellation.py --output PATH
 
 [Full example source](https://github.com/JochimMaene/polypix/blob/main/examples/communication_constellation.py)
 
-[reference-benchmark]: https://github.com/JochimMaene/polypix/blob/bf26c009e6529367e1165cecbe7dbda486b5479c/benchmarks/test_polypix_benchmarks.py#L733
-[codspeed-run]: https://app.codspeed.io/JochimMaene/polypix/runs/compare/6a91b972915aa37294773c71..6a92bc48fd5591856db14fc8
+[reference-benchmark]: https://github.com/JochimMaene/polypix/blob/5cb9a7c726cfd7c02bbd4bf4e19629c4b81ab0e1/benchmarks/test_polypix_benchmarks.py#L845
+[codspeed-run]: https://github.com/JochimMaene/polypix/runs/136804329126
 
 ## Adapting it
 
