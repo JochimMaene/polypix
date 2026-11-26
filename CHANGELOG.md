@@ -6,6 +6,18 @@ omitted.
 
 ## Unreleased
 
+### Performance
+
+- On eight logical CPUs, covering the three 14-day Sentinel-2 swaths took
+  about 7% less time than in v1.1.0 when both builds used the same scheduling.
+  The example also runs the three calls concurrently, bringing its coverage
+  stage from 12.55 ms to 10.31 ms (18% less time overall).
+- Counting global Starlink visibility across 61 timestamps at resolution 6
+  took 11% less time than in v1.1.0 on the same host.
+- `cell_centers()` decodes consecutive RING IDs faster. In warmed full-grid
+  lookups on the same host, resolution 6 took 0.44 ms (2.57 ms in v1.1.0)
+  and resolution 7 took 1.52 ms (3.87 ms in v1.1.0).
+
 ## [1.1.0] — 2026-11-21
 
 ### Features

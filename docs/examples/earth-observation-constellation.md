@@ -34,17 +34,25 @@ reference workload at about **94 ms** in simulation mode. That deterministic
 this case study uses three sources and 2.7 million hits. It is a regression
 reference for the same operation, not a complete-analysis wall-clock estimate.
 
-The GitHub-hosted documentation build recorded these stage timings for the
-complete example. [Build log][docs-build-run]
+The v1.1.0 example calls `cover_sweep()` once per spacecraft in sequence.
+The unreleased example submits the same three calls concurrently to Polypix's
+shared worker pool.
 
-| Stage | Time |
-| --- | ---: |
-| SGP4 propagation and swath edges | 9 ms |
-| 3 `cover_sweep()` calls | **18 ms** |
-| `revisit()` and gap conversion | 10 ms |
-| Complete analysis | 36 ms |
+| Stage | v1.1.0 (sequential calls) | Unreleased (concurrent calls) |
+| --- | ---: | ---: |
+| SGP4 propagation and swath edges | 6.55 ms | 6.62 ms |
+| Three spacecraft swaths (`cover_sweep()`) | 12.55 ms | 10.31 ms |
+| `revisit()` and gap conversion | 11.09 ms | 11.14 ms |
+| Complete analysis before plotting | 30.23 ms | 28.38 ms |
 
-Times are rounded to the nearest millisecond and cover analysis before plotting.
+Holding the example's scheduling fixed, the new library reduced sweep time by
+about 7% in both comparisons. With sequential calls, the medians were
+12.55 ms on v1.1.0 and 11.66 ms on the unreleased build. With concurrent calls,
+they were 11.09 ms and 10.31 ms, respectively.
+
+These are median wall times on an Intel Core i7-1165G7 with eight logical
+CPUs. Both builds used the pinned catalogue. The four combinations ran in
+rotating order, with eight warm-ups and 120 measured runs per combination.
 
 ## Method
 
@@ -112,4 +120,3 @@ python examples/earth_observation_constellation.py \
 
 [reference-benchmark]: https://github.com/JochimMaene/polypix/blob/573cac31880f1be79c2963e390058a5cbb369864/benchmarks/test_polypix_benchmarks.py#L1068
 [codspeed-run]: https://github.com/JochimMaene/polypix/runs/135533390069
-[docs-build-run]: https://github.com/JochimMaene/polypix/actions/runs/44895733631/job/136820861260#step:5:1

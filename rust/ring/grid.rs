@@ -5,7 +5,9 @@
 
 use std::collections::HashSet;
 use std::f64::consts::TAU;
+use std::mem::MaybeUninit;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::OnceLock;
 
 use rayon::prelude::*;
 
@@ -41,6 +43,31 @@ impl Ring {
     pub(super) fn longitude_sin_cos(&self, offset: u64) -> (f64, f64) {
         ((offset as f64 + self.shift) * TAU / self.cells as f64).sin_cos()
     }
+}
+
+// All shifted polar rings through nside 256 and the unshifted equatorial
+// rings together use just over 2 MiB when every length has been visited.
+pub(super) const MAX_DIRECTION_RING_CELLS: usize = 1024;
+
+/// Rings of the same length and phase have identical longitudes at every
+/// resolution. A small shared table lets narrow sweeps test adjacent cells
+/// without a sin_cos per ring or a loop-carried rotation per cell.
+pub(super) fn ring_directions(ring: &Ring) -> Option<&'static [(f64, f64)]> {
+    const MAX_SIDE: usize = MAX_DIRECTION_RING_CELLS / 4;
+    static TABLES: [OnceLock<Vec<(f64, f64)>>; 2 * MAX_SIDE] =
+        [const { OnceLock::new() }; 2 * MAX_SIDE];
+    let side = (ring.cells / 4) as usize;
+    let table = TABLES.get(2 * (side - 1) + usize::from(ring.shift != 0.0))?;
+    if let Some(directions) = table.get() {
+        return Some(directions);
+    }
+    if crate::forked() {
+        return None;
+    }
+    let mut directions = Vec::new();
+    directions.try_reserve_exact(ring.cells as usize).ok()?;
+    directions.extend((0..ring.cells).map(|i| ring.longitude_sin_cos(i)));
+    Some(table.get_or_init(|| directions))
 }
 
 pub(super) fn ring_z(nside: u64, ring: u64) -> f64 {
@@ -651,26 +678,60 @@ pub(crate) fn validate_coverage_arrays(
     Ok(())
 }
 
-pub(super) fn centers(cells: &[u64], resolution: u8, parallel: bool) -> NativeResult<Vec<f64>> {
-    let output_count = cells.len().checked_mul(3).ok_or_else(|| {
-        NativeError::out_of_memory("Center result is too large to fit in memory.")
-    })?;
-    let mut values = Vec::new();
-    values
-        .try_reserve_exact(output_count)
-        .map_err(|_| NativeError::out_of_memory("Center result is too large to fit in memory."))?;
-    if !parallel {
-        for &cell in cells {
-            values.extend(center(cell, resolution));
+/// Adjacent RING IDs share their latitude, and all equatorial rings use just
+/// two sets of longitudes. Walk one ring at a time when decoding a map.
+fn fill_centers(output: &mut [MaybeUninit<[f64; 3]>], cells: &[u64], resolution: u8) {
+    if cells.len() < 8 || !cells.windows(2).all(|ids| ids[1] == ids[0] + 1) {
+        for (slot, &cell) in output.iter_mut().zip(cells) {
+            slot.write(center(cell, resolution));
         }
-        return Ok(values);
+        return;
     }
-    values.resize(output_count, 0.0);
+    let nside = 1_u64 << resolution;
+    let mut cell = cells[0];
+    let mut ring_index = ring_of_cell(cell, nside);
+    let mut remaining = output;
+    while !remaining.is_empty() {
+        let ring = ring_info(nside, ring_index);
+        let offset = cell - ring.start;
+        let count = remaining.len().min((ring.cells - offset) as usize);
+        let (chunk, tail) = remaining.split_at_mut(count);
+        if let Some(directions) = ring_directions(&ring) {
+            for (slot, &(s, c)) in chunk.iter_mut().zip(&directions[offset as usize..]) {
+                slot.write([ring.radial * c, ring.radial * s, ring.z]);
+            }
+        } else {
+            for (slot, i) in chunk.iter_mut().zip(offset..) {
+                let (s, c) = ring.longitude_sin_cos(i);
+                slot.write([ring.radial * c, ring.radial * s, ring.z]);
+            }
+        }
+        remaining = tail;
+        cell += count as u64;
+        ring_index += 1;
+    }
+}
+
+pub(super) fn centers(cells: &[u64], resolution: u8, parallel: bool) -> NativeResult<Vec<f64>> {
+    let mut values = Vec::<Vec3>::new();
     values
-        .par_chunks_mut(3)
-        .zip(cells.par_iter())
-        .for_each(|(output, &cell)| output.copy_from_slice(&center(cell, resolution)));
-    Ok(values)
+        .try_reserve_exact(cells.len())
+        .map_err(|_| NativeError::out_of_memory("Center result is too large to fit in memory."))?;
+    let output = &mut values.spare_capacity_mut()[..cells.len()];
+    const CHUNK: usize = 4096;
+    if parallel {
+        output
+            .par_chunks_mut(CHUNK)
+            .zip(cells.par_chunks(CHUNK))
+            .for_each(|(out, ids)| fill_centers(out, ids, resolution));
+    } else {
+        for (out, ids) in output.chunks_mut(CHUNK).zip(cells.chunks(CHUNK)) {
+            fill_centers(out, ids, resolution);
+        }
+    }
+    // SAFETY: fill_centers wrote one Vec3 for each cell, in disjoint chunks.
+    unsafe { values.set_len(cells.len()) };
+    Ok(values.into_flattened())
 }
 
 pub(super) fn corners(cells: &[u64], resolution: u8, parallel: bool) -> NativeResult<Vec<f64>> {

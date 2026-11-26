@@ -18,8 +18,8 @@ use crate::geometry::{
 
 use super::cover::push_coverage_cell;
 use super::grid::{
-    cap_ring_range, face_coordinate, normalized_cell_at, raw_cell_count, ring_info, ring_range,
-    ring_to_face_xy, Ring,
+    cap_ring_range, face_coordinate, normalized_cell_at, raw_cell_count, ring_directions,
+    ring_info, ring_range, ring_to_face_xy, Ring, MAX_DIRECTION_RING_CELLS,
 };
 
 pub(super) const ROTATION_RESYNC_STEPS: u64 = 64;
@@ -818,22 +818,35 @@ fn narrow_cap_bins<const LONG_SERIES: bool>(
     )
 }
 
-const CAP_LANES: usize = 8;
+const CAP_LANES: usize = 16;
 
+// Only a boundary tie needs the rest of Cap. Keep the normalized axis and
+// effective radius to reconstruct its exact geometry in that case.
 struct BandedCap {
-    cap: Cap,
+    axis: Vec3,
+    radial: f64,
+    squared_chord_radius: f64,
+    longitude: f64,
+    effective_radius: f64,
     rings: Range<usize>,
 }
 
 /// Process caps with nearby northern edges together. One ring's geometry and
-/// its count deltas then stay hot for all eight longitude solves.
+/// its count deltas stay hot while the group solves its longitude bounds.
 #[inline(always)]
-fn count_cap_band(group: &[BandedCap; CAP_LANES], rings: &[ScanRing], deltas: &mut [i64]) {
-    let z = group.each_ref().map(|v| v.cap.axis[2]);
-    let radial = group.each_ref().map(|v| v.cap.radial);
-    let chord = group.each_ref().map(|v| v.cap.squared_chord_radius);
-    let longitude = group.each_ref().map(|v| v.cap.longitude);
-    let inverse = radial.map(|r| 0.25 / r);
+fn count_cap_band(group: &[BandedCap], rings: &[ScanRing], deltas: &mut [i64]) {
+    let mut z = [0.0; CAP_LANES];
+    let mut radial = [0.0; CAP_LANES];
+    let mut inverse = [0.0; CAP_LANES];
+    let mut chord = [0.0; CAP_LANES];
+    let mut longitude = [0.0; CAP_LANES];
+    for (i, item) in group.iter().enumerate() {
+        z[i] = item.axis[2];
+        radial[i] = item.radial;
+        inverse[i] = 0.25 / radial[i];
+        chord[i] = item.squared_chord_radius;
+        longitude[i] = item.longitude;
+    }
     let first = group.iter().map(|v| v.rings.start).min().unwrap();
     let end = group.iter().map(|v| v.rings.end).max().unwrap();
     for scan in &rings[first..end] {
@@ -842,6 +855,7 @@ fn count_cap_band(group: &[BandedCap; CAP_LANES], rings: &[ScanRing], deltas: &m
         // into the AVX2 instance, which then runs these solves as SSE2.
         let mut west = [0_i32; CAP_LANES];
         let mut east = [0_i32; CAP_LANES];
+        let mut ambiguous = 0_u32;
         for i in 0..CAP_LANES {
             let dr = radial[i] - ring.radial;
             let dz = z[i] - ring.z;
@@ -852,33 +866,49 @@ fn count_cap_band(group: &[BandedCap; CAP_LANES], rings: &[ScanRing], deltas: &m
             // The ULP at this bias is 1/1024 bin. Its low word holds the
             // signed fixed-point offset, including for negative seam offsets.
             const BIAS: f64 = (3_u64 << 41) as f64;
-            west[i] = ((mid - width) + BIAS).to_bits() as i32;
-            east[i] = ((mid + width) + BIAS).to_bits() as i32;
+            let w = ((mid - width) + BIAS).to_bits() as i32;
+            let e = ((mid + width) + BIAS).to_bits() as i32;
+            let tie = (w & 1023 == 0) | (e & 1023 == 0);
+            ambiguous |= u32::from(tie) << i;
+            let base = ring.start as i32 + 1;
+            west[i] = (w >> 10) + base;
+            east[i] = (e >> 10) + base;
         }
-        for (item, (west, east)) in group.iter().zip(west.into_iter().zip(east)) {
-            if west & 1023 == 0 || east & 1023 == 0 {
-                visit_cap_ring(&item.cap.with_exact_longitude(), scan, &mut |span| {
-                    deltas[span.start as usize] += 1;
-                    deltas[span.end as usize] -= 1;
-                });
-            } else {
-                let first = (west >> 10) + 1;
-                let end = (east >> 10) + 1;
-                deltas[(ring.start as i32 + first) as usize] += 1;
-                deltas[(ring.start as i32 + end) as usize] -= 1;
-            }
+        let n = group.len();
+        if n < CAP_LANES {
+            ambiguous &= (1 << n) - 1;
+        }
+        while ambiguous != 0 {
+            let i = ambiguous.trailing_zeros() as usize;
+            ambiguous &= ambiguous - 1;
+            // The exact scan counts this lane. Equal endpoints cancel in the delta loop below.
+            west[i] = 0;
+            east[i] = 0;
+            add_exact_ring(&group[i], scan, deltas);
+        }
+        for (&start, &stop) in west[..n].iter().zip(&east[..n]) {
+            deltas[start as usize] += 1;
+            deltas[stop as usize] -= 1;
         }
     }
+}
+
+#[inline(never)]
+fn add_exact_ring(item: &BandedCap, scan: &ScanRing, deltas: &mut [i64]) {
+    visit_cap_ring(
+        &scan_cap(item.axis, item.effective_radius),
+        scan,
+        &mut |span| {
+            deltas[span.start as usize] += 1;
+            deltas[span.end as usize] -= 1;
+        },
+    );
 }
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 #[inline(never)]
-unsafe fn count_cap_band_avx2(
-    group: &[BandedCap; CAP_LANES],
-    rings: &[ScanRing],
-    deltas: &mut [i64],
-) {
+unsafe fn count_cap_band_avx2(group: &[BandedCap], rings: &[ScanRing], deltas: &mut [i64]) {
     count_cap_band(group, rings, deltas);
 }
 
@@ -1048,10 +1078,12 @@ fn add_cap_batch_with(
     start: usize,
     resolution: u8,
     deltas: &mut [i64],
-    count_band: impl Fn(&[BandedCap; CAP_LANES], &[ScanRing], &mut [i64]),
+    count_band: impl Fn(&[BandedCap], &[ScanRing], &mut [i64]),
 ) -> NativeResult<()> {
     let nside = 1 << resolution;
-    let rings = (resolution <= 7 && radii.len() >= CAP_LANES * nside as usize)
+    // There are nside latitude bands. Require eight input caps per band on average.
+    const MIN_CAPS_PER_BAND: usize = 8;
+    let rings = (resolution <= 7 && radii.len() >= MIN_CAPS_PER_BAND * nside as usize)
         .then(|| cached_scan_rings(resolution))
         .flatten();
     // Without the ring table no cap reaches the band kernel, and a block
@@ -1064,7 +1096,7 @@ fn add_cap_batch_with(
         return Ok(());
     };
     let mut groups = Vec::new();
-    let group_count = rings.len().div_ceil(2);
+    let group_count = rings.len().div_ceil(4);
     let oom = || NativeError::out_of_memory(crate::error::COVERAGE_OUT_OF_MEMORY);
     groups.try_reserve_exact(group_count).map_err(|_| oom())?;
     groups.resize_with(group_count, Vec::new);
@@ -1115,13 +1147,22 @@ fn add_cap_batch_with(
                     continue;
                 }
                 let band = first as usize - 1..last as usize;
-                let group = &mut groups[band.start / 2];
+                let group = &mut groups[band.start / 4];
+                // Flush full groups immediately. Each latitude band retains at most
+                // one group regardless of how many timestamps are counted together.
                 if group.capacity() == 0 {
                     group.try_reserve_exact(CAP_LANES).map_err(|_| oom())?;
                 }
-                group.push(BandedCap { cap, rings: band });
-                if let Ok(batch) = group.as_slice().try_into() {
-                    count_band(batch, rings, deltas);
+                group.push(BandedCap {
+                    axis: cap.axis,
+                    radial: cap.radial,
+                    squared_chord_radius: cap.squared_chord_radius,
+                    longitude: cap.longitude,
+                    effective_radius: block.radius[i],
+                    rings: band,
+                });
+                if group.len() == CAP_LANES {
+                    count_band(group, rings, deltas);
                     group.clear();
                 }
             } else {
@@ -1129,8 +1170,8 @@ fn add_cap_batch_with(
             }
         }
     }
-    for item in groups.iter().flatten() {
-        super::cover::add_cap_deltas(deltas, &item.cap.with_exact_longitude(), resolution);
+    for group in groups.iter().filter(|group| !group.is_empty()) {
+        count_band(group, rings, deltas);
     }
     Ok(())
 }
@@ -1732,31 +1773,6 @@ pub(super) fn ring_offset_windows<const WHOLE_CELL_MARGIN: bool>(
         merged_count += 1;
     }
     (ranges, merged_count)
-}
-
-// All shifted polar rings through nside 256 and the unshifted equatorial
-// rings together use just over 2 MiB when every length has been visited.
-const MAX_DIRECTION_RING_CELLS: usize = 1024;
-
-/// Rings of the same length and phase have identical longitudes at every
-/// resolution. A small shared table lets narrow sweeps test adjacent cells
-/// without a sin_cos per ring or a loop-carried rotation per cell.
-fn ring_directions(ring: &Ring) -> Option<&'static [(f64, f64)]> {
-    const MAX_SIDE: usize = MAX_DIRECTION_RING_CELLS / 4;
-    static TABLES: [OnceLock<Vec<(f64, f64)>>; 2 * MAX_SIDE] =
-        [const { OnceLock::new() }; 2 * MAX_SIDE];
-    let side = (ring.cells / 4) as usize;
-    let table = TABLES.get(2 * (side - 1) + usize::from(ring.shift != 0.0))?;
-    if let Some(directions) = table.get() {
-        return Some(directions);
-    }
-    if crate::forked() {
-        return None;
-    }
-    let mut directions = Vec::new();
-    directions.try_reserve_exact(ring.cells as usize).ok()?;
-    directions.extend((0..ring.cells).map(|i| ring.longitude_sin_cos(i)));
-    Some(table.get_or_init(|| directions))
 }
 
 fn cover_cells_in_bounds<const WHOLE_CELL_MARGIN: bool>(
@@ -2464,6 +2480,21 @@ impl<T: std::borrow::Borrow<PreparedFootprint>> PreparedFootprintOverlap<T> {
     }
 }
 
+impl Quad {
+    fn cover(&self, resolution: u8, cells: &mut Vec<u64>) -> NativeResult<()> {
+        if cover_short_quad(self, resolution, cells)? {
+            return Ok(());
+        }
+        cover_centers(
+            &self.vertices[..self.len],
+            &self.edge_normals[..self.len],
+            resolution,
+            |x, y, z| quad_contains(self, x, y, z),
+            |cell| push_coverage_cell(cells, cell, 1024),
+        )
+    }
+}
+
 /// Interior cells a short quad writes as one fixed block per ring.
 const RUN_BLOCK: usize = 8;
 
@@ -2733,14 +2764,7 @@ impl PreparedFootprint {
 
     pub(super) fn cover(&self, resolution: u8, cells: &mut Vec<u64>) -> NativeResult<()> {
         match self {
-            Self::Quad(quad) if cover_short_quad(quad, resolution, cells)? => Ok(()),
-            Self::Quad(quad) => cover_centers(
-                &quad.vertices[..quad.len],
-                &quad.edge_normals[..quad.len],
-                resolution,
-                |x, y, z| quad_contains(quad, x, y, z),
-                |cell| push_coverage_cell(cells, cell, 1024),
-            ),
+            Self::Quad(quad) => quad.cover(resolution, cells),
             Self::Polygon(polygon) => cover_centers(
                 &polygon.vertices,
                 &polygon.edge_normals,
@@ -2782,6 +2806,28 @@ pub(super) fn sweep_quad(left: &[f64], right: &[f64], index: usize) -> [f64; 12]
 /// well past its tip.
 fn convex_path_is_exact(vertices: &[Vec3], edge_normals: &[Vec3]) -> bool {
     !has_reflex_vertex(vertices, edge_normals) && !has_sharp_vertex(edge_normals)
+}
+
+/// Rasterize an ordinary convex interval directly. Pinches and ambiguous
+/// turns go through the same preparation as overlap and selected-cell sweeps.
+pub(super) fn cover_sweep_segment(
+    vertices: [Vec3; 4],
+    index: usize,
+    resolution: u8,
+    cells: &mut Vec<u64>,
+) -> NativeResult<()> {
+    let mut oriented = vertices;
+    if let Some((edge_normals, wide_turns)) = crate::geometry::convex_quad_edges(&mut oriented) {
+        if wide_turns || convex_path_is_exact(&oriented, &edge_normals) {
+            return Quad {
+                vertices: oriented,
+                edge_normals,
+                len: 4,
+            }
+            .cover(resolution, cells);
+        }
+    }
+    prepare_sweep_footprint(vertices, index)?.cover(resolution, cells)
 }
 
 pub(super) fn prepare_sweep_footprint(
@@ -2989,7 +3035,7 @@ mod tests {
 
     #[test]
     fn banded_cap_counts_match_scalar_counts_at_cell_centers() {
-        // The eight-cap path rounds each crossing to 1/1024 bin and only
+        // The banded path rounds each crossing to 1/1024 bin and only
         // takes the exact ring scan within half of that of a cell center.
         // Put cap edges on cell centers and just either side of the rounding
         // cutoff, then compare every count with the scalar path.
@@ -3470,6 +3516,34 @@ mod tests {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn sweep_segments_match_prepared_footprints_in_both_windings() {
+        // A wide interval clears the determinant guard. A thin one needs the
+        // sharp-vertex check, and a pinched interval uses the triangle path.
+        let a = lonlat(15.0, 48.0);
+        let b = lonlat(18.0, 48.0);
+        for vertices in [
+            [a, b, lonlat(18.2, 51.0), lonlat(15.2, 51.0)],
+            [a, b, lonlat(18.0, 48.001), lonlat(15.0, 48.001)],
+            [a, b, lonlat(18.2, 51.0), a],
+        ] {
+            for mut vertices in [
+                vertices,
+                [vertices[0], vertices[3], vertices[2], vertices[1]],
+            ] {
+                vertices = vertices.map(|p| normalize(p).unwrap());
+                let mut expected = Vec::new();
+                super::prepare_sweep_footprint(vertices, 0)
+                    .unwrap()
+                    .cover(7, &mut expected)
+                    .unwrap();
+                let mut actual = Vec::new();
+                super::cover_sweep_segment(vertices, 0, 7, &mut actual).unwrap();
+                assert_eq!(actual, expected);
             }
         }
     }
