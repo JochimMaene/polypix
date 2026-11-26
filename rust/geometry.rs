@@ -113,37 +113,53 @@ fn reverse_winding(vertices: &mut [Vec3], edge_normals: &mut [Vec3]) {
     }
 }
 
+/// Normalize the four edge planes only after their turns prove strict
+/// convexity. The returned normals follow the (possibly reversed) vertices.
+#[inline]
+pub(crate) fn convex_quad_edges(vertices: &mut [Vec3; 4]) -> Option<([Vec3; 4], bool)> {
+    let [a, b, c, d] = *vertices;
+    let raw = [
+        stable_cross(a, b),
+        stable_cross(b, c),
+        stable_cross(c, d),
+        stable_cross(d, a),
+    ];
+    let turns = [
+        dot(raw[0], c),
+        dot(raw[1], d),
+        dot(raw[2], a),
+        dot(raw[3], b),
+    ];
+    let clearance = if turns[0] < 0.0 {
+        -turns.into_iter().fold(f64::NEG_INFINITY, f64::max)
+    } else {
+        turns.into_iter().fold(f64::INFINITY, f64::min)
+    };
+    // The two nonincident vertices of each edge use two of the same four
+    // determinants. A shared strict sign proves winding and excludes duplicates.
+    if clearance <= 4.0 * VERTEX_EQUALITY_EPSILON {
+        return None;
+    }
+    let mut normals = raw.map(|edge| {
+        let length = norm(edge);
+        edge.map(|component| component / length)
+    });
+    if turns[0] < 0.0 {
+        reverse_winding(vertices, &mut normals);
+    }
+    // At a unit vertex the determinant is the sine of its turn times the
+    // lengths of both incident cross products, each at most one.
+    Some((normals, clearance > SHARP_VERTEX_SINE + 64.0 * f64::EPSILON))
+}
+
 pub(crate) fn validate_polygon(
     vertices: &mut [Vec3],
     edge_normals: &mut [Vec3],
 ) -> Result<(), String> {
     debug_assert_eq!(vertices.len(), edge_normals.len());
-    if let &[a, b, c, d] = &*vertices {
-        let raw = [
-            stable_cross(a, b),
-            stable_cross(b, c),
-            stable_cross(c, d),
-            stable_cross(d, a),
-        ];
-        let turns = [
-            dot(raw[0], c),
-            dot(raw[1], d),
-            dot(raw[2], a),
-            dot(raw[3], b),
-        ];
-        // The two nonincident vertices of each edge use two of these same
-        // four determinants (cyclic permutations). A strict common sign
-        // proves convexity and winding. Duplicates, including near-duplicates,
-        // cannot clear this guard since all vertices are unit directions.
-        let guard = 4.0 * VERTEX_EQUALITY_EPSILON;
-        if turns.iter().all(|&t| t > guard) || turns.iter().all(|&t| t < -guard) {
-            for (normal, raw) in edge_normals.iter_mut().zip(raw) {
-                let length = norm(raw);
-                *normal = raw.map(|component| component / length);
-            }
-            if turns[0] < 0.0 {
-                reverse_winding(vertices, edge_normals);
-            }
+    if let Ok(quad) = <&mut [Vec3; 4]>::try_from(&mut *vertices) {
+        if let Some((normals, _)) = convex_quad_edges(quad) {
+            edge_normals.copy_from_slice(&normals);
             return Ok(());
         }
     }

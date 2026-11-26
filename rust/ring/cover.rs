@@ -780,6 +780,31 @@ pub(super) fn add_cap_deltas(deltas: &mut [i64], cap: &Cap, resolution: u8) {
 
 const MAX_DELTA_ENTRIES: usize = (8 << 20) / size_of::<i64>();
 
+/// Bit i is set when cap i needs the full geometry or input validation.
+/// Independent comparisons let the compiler test several axes at once.
+#[allow(
+    clippy::manual_range_contains,
+    reason = "Bitwise comparisons let the compiler test cap axes in parallel without short-circuiting."
+)]
+fn regional_cap_mask(centers: &[f64], radii: &[f64], anchor: Vec3, reach: f64) -> u32 {
+    let mut mask = 0;
+    for (i, (v, &radius)) in centers.chunks_exact(3).zip(radii).enumerate() {
+        let axis = [v[0], v[1], v[2]];
+        let length = dot(axis, axis);
+        let extent = radius + reach;
+        let threshold = 1.0 - 0.5 * extent * extent - 64.0 * f64::EPSILON;
+        let projection = dot(axis, anchor).max(0.0);
+        let outside = (radius >= 0.0)
+            & (radius <= std::f64::consts::PI)
+            & (length >= f64::MIN_POSITIVE)
+            & (length <= f64::MAX)
+            & (threshold > 0.0)
+            & (projection * projection < (threshold * threshold) * length);
+        mask |= u32::from(!outside) << i;
+    }
+    mask
+}
+
 /// Count a dense regional selection by rejecting distant caps before preparing
 /// their geometry, then scanning just the latitude rings that reach the region.
 fn regional_cap_counts(
@@ -813,11 +838,15 @@ fn regional_cap_counts(
 
     // Any selected center lies within reach of this anchor. Stop constructing
     // the bound as soon as the selection proves too wide for regional pruning.
-    let anchor = center(first, resolution);
+    let north = center(first, resolution);
+    let south = center(last, resolution);
+    let diagonal = std::array::from_fn(|k| north[k] - south[k]);
+    if dot(diagonal, diagonal) > 0.25 {
+        return Ok(None);
+    }
+    let anchor = normalize(std::array::from_fn(|k| north[k] + south[k]))?;
     let mut reach_squared: f64 = 0.0;
-    // The last cell is often the farthest. Testing it first lets a wide
-    // selection bail out before decoding every center.
-    for &cell in std::iter::once(&last).chain(cells) {
+    for &cell in cells {
         let point = center(cell, resolution);
         let offset = std::array::from_fn(|k| point[k] - anchor[k]);
         reach_squared = reach_squared.max(dot(offset, offset));
@@ -827,31 +856,48 @@ fn regional_cap_counts(
     }
     let reach = reach_squared.sqrt() + CONTAINMENT_EPSILON;
     let chunk = |range: Range<usize>| {
+        let mut uniform = 0_i64;
         let caps = centers[3 * range.start..3 * range.end]
-            .chunks_exact(3)
-            .zip(&radii[range.clone()])
+            .chunks(3 * 32)
+            .zip(radii[range.clone()].chunks(32))
             .enumerate()
-            .filter_map(|(i, (v, &radius))| {
-                let axis = [v[0], v[1], v[2]];
-                // A hit requires |unit(axis) - anchor| <= radius + reach (chord <= arc).
-                // Square the dot-product bound to avoid normalizing distant directions.
-                let extent = radius + reach;
-                let threshold = 1.0 - 0.5 * extent * extent - 64.0 * f64::EPSILON;
-                let length_squared = dot(axis, axis);
-                if (0.0..=std::f64::consts::PI).contains(&radius)
-                    && length_squared.is_normal()
-                    && threshold > 0.0
-                    && dot(axis, anchor).max(0.0).powi(2) < threshold * threshold * length_squared
-                {
+            .flat_map(|(block, (xyz, radii))| {
+                let mut mask = regional_cap_mask(xyz, radii, anchor, reach);
+                std::iter::from_fn(move || {
+                    if mask == 0 {
+                        return None;
+                    }
+                    let i = mask.trailing_zeros() as usize;
+                    mask &= mask - 1;
+                    Some((
+                        block * 32 + i,
+                        [xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]],
+                        radii[i],
+                    ))
+                })
+            })
+            .filter_map(|(i, axis, radius)| {
+                let (axis, radius) = match cap_input(axis, radius, range.start + i) {
+                    Ok(input) => input,
+                    Err(error) => return Some(Err(NativeError::from(error))),
+                };
+                // 2 sin(r/2) >= r - r^3/24. The chord triangle inequality
+                // then certifies all selected centers with one comparison.
+                let inner = radius * (1.0 - radius * radius / 24.0) - reach;
+                let d = std::array::from_fn(|k| axis[k] - anchor[k]);
+                if inner > 0.0 && dot(d, d) + 64.0 * f64::EPSILON < inner * inner {
+                    uniform += 1;
                     return None;
                 }
-                Some(
-                    cap_input(axis, radius, range.start + i)
-                        .map(|(axis, radius)| scan_cap(axis, radius))
-                        .map_err(NativeError::from),
-                )
+                Some(Ok(scan_cap(axis, radius)))
             });
-        count_caps_in_cell_span(caps, resolution, cells, span.clone())
+        let mut counts = count_caps_in_cell_span(caps, resolution, cells, span.clone())?;
+        if uniform != 0 {
+            for value in &mut counts {
+                *value += uniform;
+            }
+        }
+        Ok(counts)
     };
     // Each worker owns one span and its selected counts. Share the same
     // scratch budget as the dense counter and amortize each new span.
@@ -1324,13 +1370,14 @@ pub(super) fn compute_sweep_chunk(
     for index in range {
         let next_l = edge_sample(left, index + 1, "left_edge_xyz")?;
         let next_r = edge_sample(right, index + 1, "right_edge_xyz")?;
-        let footprint = prepare_sweep_footprint([l, r, next_r, next_l], index)?;
+        let vertices = [l, r, next_r, next_l];
         l = next_l;
         r = next_r;
         if overlap {
-            footprint.cover_overlap(resolution, &mut coverage.cells)?;
+            prepare_sweep_footprint(vertices, index)?
+                .cover_overlap(resolution, &mut coverage.cells)?;
         } else {
-            footprint.cover(resolution, &mut coverage.cells)?;
+            cover_sweep_segment(vertices, index, resolution, &mut coverage.cells)?;
         }
         coverage.offsets.push(coverage.cells.len() as u64);
     }

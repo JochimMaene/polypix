@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from io import BytesIO
@@ -86,14 +87,17 @@ def cover_constellation(
     right_edges: npt.NDArray[np.float64],
 ) -> list[px.Coverage]:
     """Cover every one-minute interval of every spacecraft's swath."""
-    return [
-        px.cover_sweep(
+
+    def cover_satellite(satellite: int) -> px.Coverage:
+        return px.cover_sweep(
             left_edges[:, satellite],
             right_edges[:, satellite],
             resolution=HEALPIX_RESOLUTION,
         )
-        for satellite in range(left_edges.shape[1])
-    ]
+
+    # The calls share Polypix's native worker pool. map keeps catalogue order.
+    with ThreadPoolExecutor() as pool:
+        return list(pool.map(cover_satellite, range(left_edges.shape[1])))
 
 
 # --8<-- [end:eo-cover]
